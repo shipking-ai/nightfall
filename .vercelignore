@@ -1,0 +1,7 @@
+node_modules
+dist
+captures
+screenshots
+.env.local
+server
+docs

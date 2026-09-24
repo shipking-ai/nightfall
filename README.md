@@ -1,0 +1,131 @@
+<p align="center">
+  <a href="https://nightfall-sand.vercel.app"><img src="docs/media/banner.jpg" alt="NIGHTFALL: the city remembers what people forget" width="100%"></a>
+</p>
+
+<p align="center">
+  <a href="https://nightfall-sand.vercel.app"><img alt="Play in your browser" src="https://img.shields.io/badge/%E2%96%B6%20play-nightfall--sand.vercel.app-f0c46a?style=for-the-badge&labelColor=111214"></a>
+</p>
+
+<p align="center">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178c6?style=flat-square&logo=typescript&logoColor=white">
+  <img alt="Three.js" src="https://img.shields.io/badge/three.js-r186-111214?style=flat-square&logo=threedotjs&logoColor=white">
+  <img alt="Vite" src="https://img.shields.io/badge/Vite-8-646cff?style=flat-square&logo=vite&logoColor=white">
+  <img alt="Cloudflare Workers" src="https://img.shields.io/badge/rooms-Cloudflare%20Durable%20Objects-f38020?style=flat-square&logo=cloudflare&logoColor=white">
+  <img alt="Supabase" src="https://img.shields.io/badge/accounts-Supabase-3ecf8e?style=flat-square&logo=supabase&logoColor=white">
+  <img alt="Zero assets" src="https://img.shields.io/badge/assets-0%20downloads-6b6b6b?style=flat-square">
+</p>
+
+**NIGHTFALL** is a rainy, lamp-lit city at 3:17 a.m. that you can walk, drive, sail and fight your way around, alone or with friends, right in the browser. Nothing is downloaded. The buildings, people, textures, rain, radio static and every voice are generated in code when the page opens.
+
+> The station clock has said 03:17 for eighteen years. It is not broken.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/river.jpg" alt="The riverside promenade at night"><br><sub><b>The Riverside.</b> Wet stone, the river, and the skyline over the water.</sub></td>
+    <td width="50%"><img src="docs/media/market.jpg" alt="Kestrel Market square under string lights"><br><sub><b>Kestrel Market.</b> People talk under the string lights. Walk up and say something.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/police.jpg" alt="Police officers taking aim beside patrol cars"><br><sub><b>Two stars.</b> Patrol cars pull up and officers get out. At three, a helicopter holds you in its searchlight.</sub></td>
+    <td><img src="docs/media/station.jpg" alt="The Old Station with its clock at 3:17"><br><sub><b>The Old Station.</b> Every train is cancelled except the one that's delayed.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/deli.jpg" alt="Inside Kowalczyk &amp; Sons delicatessen"><br><sub><b>Real interiors.</b> A hotel lobby, a launderette, a deli, a pharmacy, a stairwell that never reaches the top, and a holding cell.</sub></td>
+    <td><img src="docs/media/outskirts.jpg" alt="An endless street in the outskirts"><br><sub><b>The Outskirts.</b> Past the edge of the map the streets keep going, forever.</sub></td>
+  </tr>
+</table>
+
+## What's in it
+
+| | |
+|---|---|
+| 🌧 **A living night** | A district of seven neighbourhoods, from 03:17 to 05:29 and then around again. Procedural rain you can hear change under an awning, fog, wet reflections, and roughly 200 lamps. |
+| 🚶 **People who notice you** | A crowd that walks, waits, smokes, argues and sits by the river. They have their own synthesised voices. They answer when you talk to them, snap at you when you bump into them, and jump out of the way of your car. A few of them are *wrong*. |
+| 🚗 **Cars, taxis, boats** | Get into parked cars (the electric ones have a working YouTube dash screen), hail a taxi, and tune into live internet radio. Step down into a launch on the river, or just dive in and swim. |
+| 🔫 **GTA-style trouble** | Fists, pistol and SMG. Shooting in the street raises your wanted level, from officers on foot to patrol cars to a helicopter with a searchlight. Muggers and gangs are fair game. You can get busted and do time in a cell, and there's blood if you want it. |
+| 🗺 **Things to do** | Side quests that begin with things you find, an Archive that photographs each place the moment you discover it, hidden marks, a payphone that rings for passers-by, and a garden you have to find. |
+| 👥 **Together** | Invite anyone with a link. You share the same crowd, traffic and taxi, with text chat, **proximity voice chat**, and PvP. |
+| 🧥 **You** | Accounts (email, magic link, Google) or play as a guest, a wardrobe for your look, and saves that follow you between devices. |
+| 🛠 **Admin tools** | Fly / noclip, teleport, spawn a car, set the time and weather, blackouts, announcements, kick / ban / jail (checked server-side), live stats, and notes you can leave in the world. |
+| 📱 **Anywhere** | Desktop, phones and tablets (with a thumbstick and touch buttons), all in the browser. |
+
+## Controls
+
+| Keyboard & mouse | | Touch |
+|---|---|---|
+| **W A S D** · **Shift** · **Space** | move · run · jump | left thumbstick (push to the edge to run) · Jump |
+| **Mouse** (click the game first) | look | drag anywhere |
+| **E** | talk · read · open doors · get in and out · board a boat | Use (it shows what it'll do) |
+| **Left click** or **F** · **right click** | shoot / punch · aim | Fire · Aim |
+| **1 2 3**, **Q** or mouse wheel · **R** | fists / pistol / SMG · reload | Weapon · Reload |
+| **H** · **R** · **V** | in a car: horn · radio · dash screen | Horn · Radio · Screen |
+| **T** or **Enter** · **N** | chat · microphone on/off | Chat · Mic |
+| **M** · **J** · **Esc** | map · archive · pause | top row |
+| **`** or **F10** | admin panel (staff accounts) | ⚙ |
+
+## Running it
+
+```bash
+npm install
+npm run dev          # http://localhost:5317
+npm run build        # typecheck + production bundle in dist/
+```
+
+The game runs on its own with `localStorage` saves. Everything online is optional and switched on through environment variables (copy `.env.example` to `.env.local`):
+
+| Feature | What to set up |
+|---|---|
+| Accounts, cloud saves, admin | A Supabase project: `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, then apply `supabase/migrations/*.sql` |
+| Multiplayer rooms, chat, voice, admin kicks | The room server in [`server/`](server): `cd server && npm install && npx wrangler deploy`, then `VITE_ROOM_SERVER` |
+| Multiplayer fallbacks | Firebase Realtime Database (`VITE_FIREBASE_*`, rules in [`firebase/`](firebase)) and Convex (`VITE_CONVEX_URL`, functions in [`convex/`](convex)) |
+
+Deploys go to Vercel: `npx vercel deploy --prod`.
+
+## How it's made
+
+```mermaid
+flowchart LR
+  subgraph Browser["Browser · TypeScript + three.js"]
+    W["World builders<br/>(procedural city)"] --> R["Renderer<br/>bloom · grade · grain"]
+    S["Crowd · Traffic · Police<br/>Player · Boats"] --> R
+    A["Web Audio<br/>rain · voices · radio"]
+  end
+  Browser <-- "rooms (WebSocket)" --> CF["Cloudflare Worker<br/>+ Durable Object per room"]
+  Browser -. "if unreachable" .-> FB["Firebase RTDB"] -. then .-> CX["Convex"] -. then .-> SR["Supabase Realtime"]
+  Browser <-- "accounts · saves · admin RPCs" --> SB[("Supabase<br/>Postgres + Auth")]
+  CF -- "verifies staff tokens" --> SB
+  Browser <-- "voice (WebRTC, peer to peer)" --> P2P["Other players"]
+```
+
+A few decisions worth knowing:
+
+- **No assets.** Facades are a single shader, with per-building parameters carried on vertex attributes, so the whole city merges into a few dozen draw calls. Signs, posters and boards are drawn on canvas; people are built from shared part geometries on one instanced rig.
+- **Lights are pooled.** Only the nearest few of about 200 lamps get a real light; every lamp still gets a halo, a shaft of rain-lit air and a wet-road streak. The shader's light count never changes, so moving never triggers a shader recompile.
+- **Every voice is synthesised.** Formant filters glide between vowels one syllable at a time, and the subtitle tells you what was said.
+- **One host simulates the city.** In a shared room the earliest player runs the crowd and traffic and sends snapshots twice a second; everyone else follows with dead reckoning.
+- **Admin is checked on the server.** The room server verifies the sender's Supabase token and role before it kicks, bans or broadcasts anything.
+- **The outskirts are endless.** 80 m slices are generated around you from a seed and forgotten behind you.
+
+<details>
+<summary><b>Project layout</b></summary>
+
+```
+src/
+  core/        App (state machine + main loop), Input, Settings, SaveState, Cloud
+  world/       layout (the city plan), City (build + merge), builders/, Outskirts,
+               Collision (grid AABBs), GeoBatch, materials (facade + wet-ground shaders)
+  entities/    Humanoid rig, Player, Crowd (+ police, criminals), Traffic, Vehicles,
+               Boats, Police (cars + helicopter), Remotes (other players)
+  env/ fx/     sky, rain, water, the night's clock; lamp FX, tracers, blood, quest marker
+  audio/       procedural rain, voices, radio, the whole mix
+  systems/     interaction, discovery, quests, combat
+  net/         Multiplayer (transport chain), accounts, voice chat, transports/
+  ui/          HUD, menus, map, archive, wardrobe, chat, admin panel, touch controls
+  data/        archive entries, lines people say, side quests
+server/        the room server (Cloudflare Worker + Durable Objects)
+supabase/      database migrations (accounts, saves, admin)
+firebase/ convex/   multiplayer fallbacks
+```
+
+</details>
+
+More detail on every system, and what to build next, is in [`HANDOFF.md`](HANDOFF.md).

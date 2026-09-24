@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 120" role="img" aria-label="Nightfall">
+  <rect width="560" height="120" fill="#0a0b0c"/>
+  <g transform="translate(60 60)">
+    <circle r="26" fill="none" stroke="#c8a064" stroke-width="3"/>
+    <path d="M0 -40v80" stroke="#e9e5dc" stroke-width="3" stroke-linecap="round"/>
+    <circle r="4" fill="#c8a064"/>
+  </g>
+  <text x="118" y="78" fill="#e9e5dc" font-family="'Instrument Serif', 'Times New Roman', serif" font-size="58" letter-spacing="4">NIGHTFALL</text>
+  <text x="121" y="100" fill="#8e9192" font-family="'IBM Plex Mono', monospace" font-size="10" letter-spacing="3.4">THE CITY REMEMBERS WHAT PEOPLE FORGET</text>
+</svg>

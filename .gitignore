@@ -1,0 +1,14 @@
+node_modules
+dist
+captures
+.env.local
+.vercel
+server/node_modules
+server/.wrangler
+.wrangler
+screenshots
+.claude
+*.log
+.firebase
+server/.dev.vars
+.DS_Store

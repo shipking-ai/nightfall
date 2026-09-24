@@ -1,0 +1,18 @@
+{
+  // NIGHTFALL room server: one Durable Object per multiplayer room (free Workers plan)
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nightfall-rooms",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+  },
+  // the free plan only allows SQLite-backed Durable Objects
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "vars": {
+    "SUPABASE_URL": "https://ueypttzxedsbnbrsmena.supabase.co",
+    "SUPABASE_KEY": "sb_publishable_38i626iNVIWCvYINfj8eVg_neAM-kYK",
+    "ALLOWED_ORIGINS": "https://nightfall-sand.vercel.app,*-matt-smiths-projects-4e410eda.vercel.app,http://localhost:5317,http://localhost:5329,http://localhost:4173"
+  },
+  "observability": { "enabled": true }
+}

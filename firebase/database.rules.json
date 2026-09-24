@@ -1,0 +1,130 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "rooms": {
+      "$room": {
+        ".read": "$room.matches(/^[a-z0-9]{6,16}$/)",
+        "members": {
+          "$id": {
+            ".write": "$room.matches(/^[a-z0-9]{6,16}$/) && $id.matches(/^[a-z0-9]{8}$/)",
+            ".validate": "newData.hasChildren(['name', 'coat', 'joined'])",
+            "name": {
+              ".validate": "newData.isString() && newData.val().length <= 24"
+            },
+            "coat": {
+              ".validate": "newData.isNumber()"
+            },
+            "joined": {
+              ".validate": "newData.isNumber()"
+            },
+            "$other": {
+              ".validate": false
+            },
+            "look": {
+              "$k": {
+                ".validate": "$k.matches(/^[a-zA-Z]{1,12}$/) && (newData.isNumber() || newData.isBoolean() || (newData.isString() && newData.val().length <= 12))"
+              }
+            }
+          }
+        },
+        "state": {
+          "$id": {
+            ".write": "$room.matches(/^[a-z0-9]{6,16}$/) && $id.matches(/^[a-z0-9]{8}$/)",
+            ".validate": "newData.hasChildren(['s'])",
+            "s": {
+              "$i": {
+                ".validate": "$i.matches(/^[0-9]$/) && newData.isNumber()"
+              }
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "ev": {
+          "$id": {
+            ".write": "$room.matches(/^[a-z0-9]{6,16}$/) && $id.matches(/^[a-z0-9]{8}$/)",
+            ".validate": "newData.hasChildren(['t', 'at']) && newData.child('t').isString() && newData.child('t').val().matches(/^(hn|pk|ck|tx|sh|ch)$/)",
+            "t": {
+              ".validate": true
+            },
+            "at": {
+              ".validate": "newData.isNumber()"
+            },
+            "x": {
+              ".validate": "newData.isNumber()"
+            },
+            "y": {
+              ".validate": "newData.isNumber()"
+            },
+            "z": {
+              ".validate": "newData.isNumber()"
+            },
+            "n": {
+              ".validate": "newData.isNumber()"
+            },
+            "m": {
+              ".validate": "newData.isNumber()"
+            },
+            "on": {
+              ".validate": "newData.isBoolean()"
+            },
+            "p": {
+              ".validate": "newData.isNumber()"
+            },
+            "c": {
+              ".validate": "newData.isString() && newData.val().length <= 140"
+            },
+            "q": {
+              ".validate": "newData.isNumber()"
+            },
+            "r": {
+              ".validate": "newData.isNumber()"
+            },
+            "$other": {
+              ".validate": false
+            },
+            "a": {
+              ".validate": "newData.isString() && newData.val().length <= 8"
+            }
+          }
+        },
+        "city": {
+          ".write": "$room.matches(/^[a-z0-9]{6,16}$/)",
+          ".validate": "newData.hasChildren(['i', 'at', 'n', 'c'])",
+          "i": {
+            ".validate": "newData.isString() && newData.val().matches(/^[a-z0-9]{8}$/)"
+          },
+          "at": {
+            ".validate": "newData.isNumber()"
+          },
+          "n": {
+            "$k": {
+              "$j": {
+                ".validate": "$j.matches(/^[0-5]$/) && newData.isNumber()"
+              },
+              ".validate": "$k.matches(/^[0-9]{1,2}$/)"
+            }
+          },
+          "c": {
+            "$k": {
+              "$j": {
+                ".validate": "$j.matches(/^[0-3]$/) && newData.isNumber()"
+              },
+              ".validate": "$k.matches(/^[0-9]$/)"
+            }
+          },
+          "r": {
+            "$k": {
+              ".validate": "$k.matches(/^[0-9]$/) && newData.isString() && newData.val().length <= 16"
+            }
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
+    }
+  }
+}

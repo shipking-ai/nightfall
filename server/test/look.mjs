@@ -1,0 +1,14 @@
+const url = `wss://nightfall-rooms.nightfall-rooms.workers.dev/room/look${Math.random().toString(36).slice(2, 9)}`;
+const H = { headers: { Origin: 'https://nightfall-sand.vercel.app' } };
+const open = () => new Promise((res) => { const ws = new WebSocket(url, H); const inbox = []; ws.onmessage = (e) => inbox.push(JSON.parse(e.data)); ws.onopen = () => res({ ws, inbox }); });
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const a = await open();
+a.ws.send(JSON.stringify({ t: 'hello', name: 'A', coat: 1, joined: 1 }));
+await wait(300);
+const b = await open();
+b.ws.send(JSON.stringify({ t: 'hello', name: 'B', coat: 0x6b2b25, joined: 2, look: { garment: 'jacket', hair: 'beanie', top: 0x6b2b25, scarf: true, height: 1.04, evil: { nested: 1 }, 'bad key!': 1, long: 'x'.repeat(50) } }));
+await wait(500);
+const join = a.inbox.find((m) => m.t === 'join');
+console.log(JSON.stringify(join.p.look));
+console.log(join.p.look.garment === 'jacket' && join.p.look.top === 0x6b2b25 && !('evil' in join.p.look) && !('bad key!' in join.p.look) && !('long' in join.p.look) ? 'PASS look relayed, junk dropped' : 'FAIL');
+a.ws.close(); b.ws.close();
