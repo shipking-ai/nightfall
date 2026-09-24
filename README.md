@@ -84,16 +84,20 @@ Deploys go to Vercel: `npx vercel deploy --prod`.
 
 ```mermaid
 flowchart LR
-  subgraph Browser["Browser · TypeScript + three.js"]
-    W["World builders<br/>(procedural city)"] --> R["Renderer<br/>bloom · grade · grain"]
-    S["Crowd · Traffic · Police<br/>Player · Boats"] --> R
-    A["Web Audio<br/>rain · voices · radio"]
-  end
-  Browser <-- "rooms (WebSocket)" --> CF["Cloudflare Worker<br/>+ Durable Object per room"]
-  Browser -. "if unreachable" .-> FB["Firebase RTDB"] -. then .-> CX["Convex"] -. then .-> SR["Supabase Realtime"]
-  Browser <-- "accounts · saves · admin RPCs" --> SB[("Supabase<br/>Postgres + Auth")]
-  CF -- "verifies staff tokens" --> SB
-  Browser <-- "voice (WebRTC, peer to peer)" --> P2P["Other players"]
+  G["Game in the browser<br/>three.js world · crowd · traffic · police<br/>Web Audio rain, voices, radio"]
+  CF["Room server<br/>Cloudflare Worker +<br/>a Durable Object per room"]
+  FB["Firebase RTDB"]
+  CX["Convex"]
+  SR["Supabase Realtime"]
+  SB[("Supabase<br/>Postgres + Auth")]
+  P["Other players"]
+  G <-->|rooms over WebSocket| CF
+  G -.->|if unreachable| FB
+  FB -.->|then| CX
+  CX -.->|then| SR
+  G <-->|accounts, saves, admin| SB
+  CF -->|checks staff tokens| SB
+  G <-->|voice, WebRTC| P
 ```
 
 A few decisions worth knowing:
