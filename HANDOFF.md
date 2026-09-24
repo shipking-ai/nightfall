@@ -85,6 +85,13 @@ Two of the drivable cars are **electric**: pearl white, and marked `{ drive: tru
   - The in-car prompt no longer shows through the open screen.
 - **Unverified:** Lofi Girl's streams return **error 150** in the in-app preview browser, although YouTube's oEmbed says they can be embedded. It's probably the preview browser; check on the published site in a normal browser. Other videos play.
 
+## Repository (2026-09-24)
+
+- GitHub: https://github.com/shipking-ai/nightfall (**private**; `gh repo edit shipking-ai/nightfall --visibility public --accept-visibility-change-consequences` makes it public). The branch is `main`, and git is set up in this folder.
+- The README's banner and gallery live in `docs/media/`. They're made from dev captures (`/__capture` in vite.config.ts writes to `captures/`, which is gitignored) by a PIL script: crop and darken the hero shot, set NIGHTFALL in Georgia, and resize the screenshots to 1600 px wide.
+- Ignored: `.env.local`, `.vercel`, `captures/`, `screenshots/` (old logs and PowerShell scripts), `.claude/`. The only key committed is Supabase's publishable key in `server/wrangler.jsonc`, which is public by design.
+- There is no LICENSE yet (all rights reserved by default); that's the owner's choice.
+
 ## Roadmap (owner's list, 2026-09-23), in build order
 
 1. ~~Realistic rain~~ and ~~shared traffic and NPCs~~: **done** (below).
