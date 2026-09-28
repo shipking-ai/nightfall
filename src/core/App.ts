@@ -70,6 +70,8 @@ import { bindGlyphs, refreshGlyphs } from '../input/glyphs';
 import type { Action } from '../input/actions';
 import { MODES, type ModeId, type ModeRules } from '../modes/rules';
 import type { ControlContext } from '../ui/Hud';
+import { Fight, ARENA } from '../modes/Fight';
+import { charFill } from '../entities/FigureBatch';
 
 type State = 'boot' | 'landing' | 'entering' | 'playing' | 'overlay' | 'leaving';
 interface NoteRow {
@@ -189,6 +191,8 @@ export class App {
     return MODES[this.mode];
   }
   private controlCtx: ControlContext | null = null;
+  /** FIGHT's match: the arena, the rounds, the camera (modes/Fight.ts) */
+  private fight!: Fight;
   /** photo mode: a free camera and a shutter (After Hours, City) */
   private photo!: PhotoMode;
   private get photoOn() {
@@ -507,6 +511,18 @@ export class App {
     this.crowd.onSay = (n, k) => this.npcSay(n, k);
     this.scene.add(this.crowd.group, this.traffic.group, this.player.group);
     this.player.group.visible = false;
+    this.fight = new Fight({
+      audio: this.audio,
+      input: this.input,
+      traffic: this.traffic,
+      collision: this.world.collision,
+      ui: this.ui,
+      onModes: () => this.fightToModes(),
+      onLeave: () => this.leave(),
+    });
+    this.fight.light = this.fitLight;
+    this.scene.add(this.fight.group);
+    this.nav.scope(this.fight.hud.end, { back: () => undefined });
     this.interaction = new Interaction(this.world.interact);
     this.quests = new Quests(this.save, new Map(this.world.interact.map((s) => [s.id, s.pos])));
     this.quests.onEvent = (e) => this.onQuest(e);
@@ -728,6 +744,8 @@ export class App {
     if (r.combat !== 'street') this.combat.select(0);
     if (!r.quests) this.hud.objective(null);
     document.body.dataset.mode = r.id;
+    // a little more light on people where the mode is about reading bodies
+    charFill.value = r.combat === 'fight' ? 0.075 : r.combat === 'warzone' ? 0.065 : 0.045;
   }
 
   private async enter() {
@@ -753,10 +771,16 @@ export class App {
     this.fade(false, 700);
 
     const p = this.save.data.player;
-    if (p) this.player.place(p.x, p.y, p.z, p.yaw);
+    const fight = this.rules.combat === 'fight';
+    if (fight) {
+      // FIGHT: the crossing, you in what you wear in the city
+      this.player.place(ARENA.x - 1.9, 0, ARENA.z, Math.PI / 2);
+      this.setInside(null);
+      this.fight.start({ outfit: this.player.outfit, body: this.player.body });
+    } else if (p) this.player.place(p.x, p.y, p.z, p.yaw);
     else this.player.place(SPAWN.x, 0.15, SPAWN.z, SPAWN.yaw);
-    this.setInside(interiorAt(this.player.pos.x, this.player.pos.z));
-    this.player.group.visible = true;
+    if (!fight) this.setInside(interiorAt(this.player.pos.x, this.player.pos.z));
+    this.player.group.visible = !fight;
     this.cine.endPush();
     this.follow.alignBehind(this.player);
     this.introT = 0;
@@ -771,6 +795,7 @@ export class App {
     this.input.enabled = true;
     this.discovery.reset();
     await this.fade(false, 1800);
+    if (fight) return;
     this.hud.show(true);
     if (this.inside) this.hud.location(this.inside.name, this.inside.code);
     else this.discovery.update(this.player.pos.x, this.player.pos.z);
@@ -783,6 +808,7 @@ export class App {
   }
 
   private async leave() {
+    if (this.state !== 'playing' && this.state !== 'overlay') return;
     this.carScreen.show(false);
     this.leaveVehicle(true);
     this.radio.off();
@@ -798,7 +824,26 @@ export class App {
     this.audio.setMuffled(false);
     await this.fade(true, 900);
     this.hud.show(false);
+    if (this.fight.active) {
+      this.fight.stop();
+      this.fitLight.distance = 7;
+      this.applyRulesFor('city');
+    }
     await this.toLanding();
+  }
+
+  /** From the end of a match straight to the mode select. */
+  private async fightToModes() {
+    await this.leave();
+    await this.openModes();
+  }
+
+  /** The title screen shows the ordinary city behind it, whatever you last played. */
+  private applyRulesFor(id: ModeId) {
+    const keep = this.mode;
+    this.mode = id;
+    this.applyRules();
+    this.mode = keep;
   }
 
   /* ─────────────────────────── overlays ─────────────────────── */
@@ -1108,7 +1153,8 @@ export class App {
   }
 
   private persist(leaving = false) {
-    if (this.state === 'playing' || this.state === 'overlay' || this.state === 'leaving') {
+    const explore = this.rules.combat === 'street' || this.rules.combat === 'none';
+    if (explore && (this.state === 'playing' || this.state === 'overlay' || this.state === 'leaving')) {
       this.save.data.player = { x: this.player.pos.x, y: this.player.pos.y, z: this.player.pos.z, yaw: this.player.facing };
     }
     if (this.time) this.save.data.clock = this.time.minutes;
@@ -2028,13 +2074,16 @@ export class App {
       }
       this.introT = Math.min(1, this.introT + dt / 3.2);
       const v = this.vehicle;
-      if (this.photoOn) {
+      if (this.fight.active) {
+        this.fight.update(dt, t, this.camera, playing && !this.overlay);
+        this.player.pos.copy(this.fight.fighters[0].pos);
+      } else if (this.photoOn) {
         if (this.photo.update(dt, this.input, this.camera, this.player.pos, this.world.collision) === 'exit') this.photoMode(false);
       } else if (this.boat) this.follow.updateVehicle(dt, this.boat.group.position, this.boat.yaw, this.boat.v, null);
       else if (v?.kind === 'drive') this.follow.updateVehicle(dt, v.car.pos, v.car.yaw, v.car.v, this.world.collision, this.vehicles.impact);
       else if (v?.kind === 'ride') this.follow.updateVehicle(dt, v.car.group.position, v.car.yaw, v.car.v, this.world.collision);
       else this.follow.update(dt, this.player, this.world.collision, t);
-      if (this.introT < 1 && !v && !this.photoOn) {
+      if (this.introT < 1 && !v && !this.photoOn && !this.fight.active) {
         // settle down behind the shoulder as the world fades in
         const k = 1 - easeOut(this.introT);
         this.camera.position.y += k * 2.6;
@@ -2051,7 +2100,7 @@ export class App {
 
     // menus: a controller (or the arrow keys) moves the focus in whatever's open
     const menuUp =
-      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen;
+      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen;
     this.nav.active = menuUp;
     if (menuUp) {
       if (this.overlay === 'settings') this.settingsView.update();
@@ -2127,7 +2176,7 @@ export class App {
         }
         this.police.obstacles(this.obstacles);
         if (this.player.seat) this.player.seat = null;
-        this.player.update(dt, move && !this.wheel.isOpen ? this.input : null, this.follow.yaw, this.world.collision, this.obstacles);
+        if (!this.fight.active) this.player.update(dt, move && !this.wheel.isOpen ? this.input : null, this.follow.yaw, this.world.collision, this.obstacles);
         if (this.boarding) {
           this.boarding.t -= dt;
           if (this.boarding.t <= 0) {
@@ -2236,7 +2285,9 @@ export class App {
     this.weather.update(this.camera.position);
     this.sky.followCamera(this.camera);
 
-    if (playing) {
+    if (playing && this.fight.active) {
+      if (!this.fight.hud.endOpen) this.padGlobals();
+    } else if (playing) {
       this.padGlobals();
       this.updateControlContext();
       this.emotesAndPhotos();

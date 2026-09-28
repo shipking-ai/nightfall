@@ -277,8 +277,10 @@ export class Animator {
           } else if (before <= e.t && e.t < l.t) l.onEvent(e.name);
         }
       }
-      if (l.stay && l.t > dur) l.t = dur;
-      else if (!l.loop && !l.out && l.t >= dur - l.fadeOut * l.speed) this.release(l, l.fadeOut);
+      // a clip that stays holds its last frame (and never fades on its own)
+      if (l.stay) {
+        if (l.t > dur) l.t = dur;
+      } else if (!l.loop && !l.out && l.t >= dur - l.fadeOut * l.speed) this.release(l, l.fadeOut);
       const target = l.out ? 0 : l.max;
       const rate = dt / (l.out ? l.fadeOut : l.fadeIn);
       l.w = l.w < target ? Math.min(target, l.w + rate * l.max) : Math.max(target, l.w - rate * l.max);

@@ -364,6 +364,27 @@ export class Input extends Emitter<{ device: Device }> implements Controls {
     };
   }
 
+  /**
+   * Keyboard and mouse plus one particular pad (or none): player one in a
+   * local versus, who mustn't be driven by the other player's controller.
+   */
+  controlsWith(pad: Pad | null): Controls {
+    const pc = pad ? this.padControls(pad) : null;
+    const kb = (a: Action) => this.bindings.get(a).kbm;
+    return {
+      held: (a) => kb(a).some((c) => this.keyHeld(c)) || !!pc?.held(a),
+      pressed: (a) => kb(a).some((c) => this.keyPressed(c)) || !!pc?.pressed(a),
+      value: (a) => Math.max(kb(a).some((c) => this.keyHeld(c)) ? 1 : 0, pc?.value(a) ?? 0),
+      move: () => {
+        const on = (a: Action) => kb(a).some((c) => this.keyHeld(c));
+        const x = (on('right') ? 1 : 0) - (on('left') ? 1 : 0), y = (on('forward') ? 1 : 0) - (on('back') ? 1 : 0);
+        const len = Math.hypot(x, y);
+        if (len > 0) return { x: x / len, y: y / len, mag: 1 };
+        return pc ? pc.move() : { x: 0, y: 0, mag: 0 };
+      },
+    };
+  }
+
   /** Is this pad button held on player one's pad? (menus) */
   padHeld(b: PadButton) {
     return !!this.pad?.held(b);

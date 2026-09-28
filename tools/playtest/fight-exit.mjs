@@ -1,0 +1,27 @@
+// FIGHT → the match menu's "Leave to the title" → CITY: the city comes back as it was (traffic moving, people out).
+import { launch } from './lib.mjs';
+const t = await launch({ pad: process.env.PAD ?? 'xbox' });
+const { page, shot, step, press, waitState, state, errors } = t;
+await waitState('landing');
+await t.wait(3000);
+await page.evaluate(() => { window.nf.mode = 'fight'; window.nf.enter(); });
+console.log('state', await waitState('playing', 200));
+await step(5);
+await page.evaluate(() => window.nf.fight.over());
+await step(0.5);
+console.log('focus', await t.focused());
+for (let i = 0; i < 3; i++) await press('Down');
+console.log('focus', await t.focused());
+await press('A');
+page.evaluate(() => window.nf.realtime());
+console.log('after leave', await waitState('landing', 60));
+console.log('fight active', await page.evaluate(() => window.nf.fight.active), 'traffic visible', await page.evaluate(() => window.nf.traffic.group.visible), 'crowd', await page.evaluate(() => window.nf.crowd.enabled));
+await t.wait(3000);
+await page.evaluate(() => { window.nf.mode = 'city'; window.nf.enter(); });
+console.log('state', await waitState('playing', 200));
+await step(4);
+const moving = await page.evaluate(() => window.nf.traffic.cars.filter((c) => c.path).length);
+console.log('cars on the road', moving, 'player visible', await page.evaluate(() => window.nf.player.group.visible), 'charFill', await page.evaluate(() => document.body.dataset.mode));
+await shot('fight-17-back-in-city');
+console.log('state', await state(), 'errors', errors);
+await t.browser.close();

@@ -589,6 +589,124 @@ export class AudioEngine {
     o.stop(t + 0.15);
   }
 
+  /**
+   * FIGHT: a blow landing (a body thud under a slap of skin), a block (a
+   * dull forearm thump), a parry (a bright ring), a swing through the air, a
+   * body hitting the road, the bell. All synthesised, all short.
+   */
+  fight(kind: 'hit' | 'heavy' | 'block' | 'parry' | 'swing' | 'slam' | 'ko' | 'bell' | 'grab', power = 1) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = 1;
+    out.connect(this.sfx);
+    const tone = (f0: number, f1: number, dur: number, vol: number, type: OscillatorType = 'sine') => {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.setValueAtTime(f0, t);
+      o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.connect(g).connect(out);
+      o.start(t);
+      o.stop(t + dur + 0.02);
+    };
+    const noise = (freq: number, q: number, dur: number, vol: number, type: BiquadFilterType = 'bandpass', attack = 0.003, sweepTo?: number) => {
+      const n = ctx.createBufferSource();
+      n.buffer = this.noise;
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.setValueAtTime(freq, t);
+      if (sweepTo) f.frequency.exponentialRampToValueAtTime(sweepTo, t + dur);
+      f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      n.connect(f).connect(g).connect(out);
+      n.start(t, Math.random() * 2, dur + 0.05);
+    };
+    const p = Math.max(0.2, Math.min(1.5, power));
+    switch (kind) {
+      case 'hit':
+        tone(150, 55, 0.12, 0.55 * p);
+        noise(2400, 0.9, 0.07, 0.35 * p);
+        break;
+      case 'heavy':
+        tone(110, 38, 0.24, 0.8 * p);
+        noise(1500, 0.7, 0.12, 0.5 * p);
+        noise(300, 1, 0.3, 0.3 * p, 'lowpass');
+        out.connect(this.reverbIn);
+        break;
+      case 'block':
+        tone(220, 110, 0.08, 0.35 * p, 'triangle');
+        noise(800, 1.4, 0.06, 0.18 * p);
+        break;
+      case 'parry':
+        tone(1320, 1250, 0.5, 0.16, 'triangle');
+        tone(1980, 1900, 0.35, 0.08, 'sine');
+        noise(4200, 2, 0.05, 0.25);
+        out.connect(this.reverbIn);
+        break;
+      case 'swing':
+        noise(700, 1.6, 0.16 + 0.08 * p, 0.09 * p, 'bandpass', 0.05, 2200);
+        break;
+      case 'grab':
+        noise(1100, 0.8, 0.09, 0.2);
+        tone(180, 120, 0.08, 0.2, 'triangle');
+        break;
+      case 'slam':
+        tone(80, 30, 0.45, 0.9 * p);
+        noise(220, 0.8, 0.5, 0.6 * p, 'lowpass', 0.004);
+        noise(1800, 0.6, 0.12, 0.25 * p);
+        out.connect(this.reverbIn);
+        break;
+      case 'ko':
+        tone(70, 26, 0.9, 1);
+        noise(180, 0.7, 1.1, 0.7, 'lowpass', 0.004);
+        out.connect(this.reverbIn);
+        break;
+      case 'bell':
+        [1, 2.4, 4.1, 6.3].forEach((r, i) => tone(740 * r, 740 * r * 0.998, 1.8 - i * 0.3, [0.22, 0.1, 0.05, 0.02][i], 'sine'));
+        out.connect(this.reverbIn);
+        break;
+    }
+  }
+
+  private crowdNodes: { g: GainNode; f: BiquadFilterNode } | null = null;
+  /** People round the fight: a murmur, and a roar that swells on a big hit (`level` 0..1). */
+  crowd(level: number, swell = 0) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    if (!this.crowdNodes) {
+      if (level <= 0) return;
+      const n = ctx.createBufferSource();
+      n.buffer = this.brown;
+      n.loop = true;
+      const f = ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.value = 520;
+      f.Q.value = 0.8;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      n.connect(f).connect(g).connect(this.amb);
+      g.connect(this.reverbIn);
+      n.start();
+      this.crowdNodes = { g, f };
+    }
+    const { g, f } = this.crowdNodes;
+    g.gain.cancelScheduledValues(t);
+    g.gain.setTargetAtTime(level * 0.18, t, 0.8);
+    if (swell > 0) {
+      g.gain.setValueAtTime(Math.max(level * 0.18, 0.05), t);
+      g.gain.linearRampToValueAtTime(level * 0.18 + swell * 0.35, t + 0.12);
+      g.gain.setTargetAtTime(level * 0.18, t + 0.5, 0.9);
+      f.frequency.setValueAtTime(900, t);
+      f.frequency.setTargetAtTime(520, t + 0.3, 0.8);
+    }
+  }
+
   private sirenNodes: { g: GainNode; o: OscillatorNode } | null = null;
   /** Police sirens somewhere nearby; 0 = none. */
   siren(level: number) {

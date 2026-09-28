@@ -167,7 +167,9 @@ export class Traffic {
       const turn = wrapA(car.yaw - p.lastYaw) / Math.max(dt, 1e-3);
       p.lastYaw = car.yaw;
       m.steer += (THREE.MathUtils.clamp(turn * 1.6, -1, 1) - m.steer) * Math.min(1, dt * 5);
-      m.lookYaw += (m.steer * 0.35 + Math.sin(t * 0.3 + i * 2) * 0.15 - m.lookYaw) * Math.min(1, dt * 2);
+      // held at the lights by a fight: everyone's watching it
+      const watch = this.held ? THREE.MathUtils.clamp(wrapA(Math.atan2(this.heldLook.x - car.group.position.x, this.heldLook.z - car.group.position.z) - car.yaw), -1.1, 1.1) : null;
+      m.lookYaw += ((watch ?? m.steer * 0.35 + Math.sin(t * 0.3 + i * 2) * 0.15) - m.lookYaw) * Math.min(1, dt * 2);
       m.speed = 0;
       stepPhase(m, dt);
       this.tmpM.makeScale(p.body.height, p.body.height, p.body.height);
@@ -315,8 +317,43 @@ export class Traffic {
     this.limit = Math.max(1, Math.round(this.cars.length * k));
   }
 
+  /** FIGHT: cars stopped at the lights round the crossing (lights on, engines running, drivers watching). */
+  private held: { x: number; z: number; yaw: number }[] | null = null;
+  private heldLook = new THREE.Vector3();
+  hold(spots: { x: number; z: number; yaw: number }[] | null, lookAt?: THREE.Vector3) {
+    this.held = spots;
+    if (lookAt) this.heldLook.copy(lookAt);
+    this.group.visible = !!spots;
+    const fwd = new THREE.Vector3();
+    this.cars.forEach((car, i) => {
+      car.path = null;
+      car.v = 0;
+      car.wait = 2 + Math.random() * 4;
+      const s = spots?.[i];
+      car.group.visible = !!s;
+      for (const l of car.lamps) l.gain = 0;
+      if (!s) return;
+      fwd.set(Math.sin(s.yaw), 0, Math.cos(s.yaw));
+      car.group.position.set(s.x, 0, s.z);
+      car.yaw = s.yaw;
+      car.group.rotation.y = s.yaw;
+      car.group.updateMatrixWorld();
+      const m = car.group.matrixWorld;
+      car.lamps[0].pos.set(-0.62, 0.66, 2.4).applyMatrix4(m).addScaledVector(fwd, 1.5);
+      car.lamps[1].pos.set(0.62, 0.66, 2.4).applyMatrix4(m);
+      car.lamps[2].pos.set(-0.68, 0.74, -2.3).applyMatrix4(m);
+      car.lamps[3].pos.set(0.68, 0.74, -2.3).applyMatrix4(m);
+      car.lamps[0].gain = car.lamps[1].gain = 1;
+      car.lamps[2].gain = car.lamps[3].gain = 2.6;
+      car.tailMat.emissiveIntensity = 11;
+      car.sound?.setPosition(car.group.position, 0);
+      if (car.taxi) Object.assign(car.taxi, { hailed: false, rider: false, riderId: '', stopping: false, arrived: false });
+    });
+  }
+
   /** Off (WARZONE, FIGHT): every car off the streets. */
   setEnabled(on: boolean) {
+    this.held = null;
     this.group.visible = on;
     if (on) return;
     for (const car of this.cars) {
@@ -330,7 +367,7 @@ export class Traffic {
   }
 
   update(dt: number, player: THREE.Vector3 | null, playerSpeed = 0, blockers: THREE.Vector3[] = [], others: { pos: THREE.Vector3; speed: number }[] = []) {
-    if (!this.group.visible) return;
+    if (!this.group.visible || this.held) return;
     if (this.puppet) return this.follow(dt);
     const tmp = new THREE.Vector3();
     const fwd = new THREE.Vector3();
