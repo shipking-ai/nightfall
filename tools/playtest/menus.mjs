@@ -1,0 +1,56 @@
+// Controller-only: boot → title → mode select → City → pause → settings → back to play.
+import { launch } from './lib.mjs';
+const t = await launch({ pad: process.env.PAD ?? 'xbox' });
+const { page, shot, tap, stick, focused, wait, waitState, state, errors } = t;
+console.log('state', await waitState('landing'));
+console.log('fps', await page.evaluate(() => new Promise((r) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 2000) requestAnimationFrame(f); else r(n / 2); }; requestAnimationFrame(f); })));
+await wait(6000);
+await tap('LS'); // any press claims the pad
+await wait(800);
+console.log('focus on title:', await focused());
+await shot('01-title-pad');
+await tap('A');
+await wait(2500);
+console.log('focus in modes:', await focused());
+await shot('02-modes');
+for (const d of ['Up', 'Up', 'Down']) { await tap(d); await wait(1300); console.log('  ', await focused()); await shot(`03-modes-${await page.evaluate(() => document.querySelector('.modes')?.dataset.mode)}`); }
+await tap('Down');
+await wait(1200);
+console.log('choose:', await focused());
+await tap('A');
+console.log('state', await waitState('playing', 120));
+await wait(4000);
+await shot('04-city-start');
+await stick(0, 0, -1);
+await wait(2500);
+await stick(0, 0, 0);
+await stick(1, 0.8, 0);
+await wait(700);
+await stick(1, 0, 0);
+await wait(500);
+await shot('05-city-moved');
+await tap('Menu');
+await wait(1200);
+console.log('pause:', await state(), await focused());
+await shot('06-pause');
+for (let i = 0; i < 4; i++) { await tap('Down'); await wait(200); }
+console.log('on:', await focused());
+await tap('A');
+await wait(1200);
+console.log('settings focus:', await focused());
+await shot('07-settings');
+await tap('RB'); await wait(600);
+await shot('08-settings-audio');
+await tap('RB'); await wait(600);
+console.log('controller tab:', await focused());
+await shot('09-settings-controller');
+await tap('B'); await wait(900);
+console.log('back to:', await state(), await focused());
+await tap('Menu'); await wait(1200);
+console.log('resumed:', await state());
+await tap('View'); await wait(1400);
+console.log('map:', await state());
+await shot('10-map');
+await tap('B'); await wait(900);
+console.log('after map:', await state(), 'errors:', errors);
+await t.browser.close();

@@ -34,6 +34,14 @@ export class FollowCamera {
     this.pitch = THREE.MathUtils.clamp(this.pitch, -0.55, 1.0);
   }
 
+  /** Right-stick look, already in radians (Input shapes and scales it). */
+  stick(yaw: number, pitch: number) {
+    if (!yaw && !pitch) return;
+    this.sinceLook = 0;
+    this.yaw -= yaw;
+    this.pitch = THREE.MathUtils.clamp(this.pitch + pitch, -0.55, 1.0);
+  }
+
   snap(player: Player, col: Collision | null = null) {
     this.initialised = false;
     this.update(0.016, player, col, 0);

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Settings, budget } from './Settings';
+import { Settings, budget, distanceBudget, populationShare } from './Settings';
 import { SaveState } from './SaveState';
 import { Cloud } from './Cloud';
 import { Input } from './Input';
@@ -59,6 +59,12 @@ import { Remotes } from '../entities/Remotes';
 import { Account } from '../net/Account';
 import { h, wait } from '../ui/dom';
 import { ENTRIES } from '../data/archive';
+import { Nav } from '../ui/Nav';
+import { ModeSelect } from '../ui/ModeSelect';
+import { bindGlyphs, refreshGlyphs } from '../input/glyphs';
+import type { Action } from '../input/actions';
+import { MODES, type ModeId, type ModeRules } from '../modes/rules';
+import type { ControlContext } from '../ui/Hud';
 
 type State = 'boot' | 'landing' | 'entering' | 'playing' | 'overlay' | 'leaving';
 interface NoteRow {
@@ -170,6 +176,18 @@ export class App {
   private remotes!: Remotes;
   private myState: PeerState = { x: 0, y: 0, z: 0, yaw: 0, speed: 0, mode: 'walk' };
 
+  private nav: Nav;
+  private modeSelect: ModeSelect;
+  /** the way of playing chosen on the title screen (one world, different rules) */
+  private mode: ModeId = 'city';
+  private get rules(): ModeRules {
+    return MODES[this.mode];
+  }
+  private controlCtx: ControlContext | null = null;
+  /** photo mode: a free camera and a shutter (After Hours, City) */
+  private photoOn = false;
+  private controlSeen = new Map<ControlContext, number>();
+
   private state: State = 'boot';
   private overlay: Overlay = null;
   private overlayReturn: 'pause' | 'landing' | 'playing' = 'playing';
@@ -194,6 +212,13 @@ export class App {
     const stage = document.getElementById('stage')!;
     this.renderer = new Renderer(stage, this.scene, this.camera);
     this.input = new Input(this.renderer.canvas);
+    bindGlyphs(this.input);
+    this.nav = new Nav(this.ui, this.input);
+    this.nav.tick = () => this.audio.uiTick();
+    this.nav.fallbackBack = () => {
+      if (this.modeSelect.isOpen) this.closeModes();
+      else if (this.overlay) this.back();
+    };
     this.follow = new FollowCamera(this.camera);
     this.cine = new CinematicCamera(this.camera);
     this.discovery = new Discovery(this.save);
@@ -201,7 +226,7 @@ export class App {
     this.ui.append(this.boxTop, this.boxBottom);
     this.intermission = new Intermission(this.ui);
     this.landing = new Landing(this.ui, {
-      enter: () => this.enter(),
+      enter: () => this.openModes(),
       explore: () => this.openOverlay('map', 'landing'),
       archive: () => this.openOverlay('archive', 'landing'),
       settings: () => this.openOverlay('settings', 'landing'),
@@ -209,6 +234,13 @@ export class App {
       toggleSound: () => this.toggleSound(),
     });
     this.hud = new Hud(this.ui);
+    this.modeSelect = new ModeSelect(this.ui, {
+      preview: (id) => this.previewMode(id),
+      choose: (id) => this.chooseMode(id),
+      back: () => this.closeModes(),
+      tick: () => this.audio.uiTick(),
+    });
+    this.mode = this.settings.data.lastMode;
     this.pause = new PauseMenu(this.ui, {
       resume: () => this.closeOverlay(),
       map: () => this.openOverlay('map', 'pause'),
@@ -268,6 +300,7 @@ export class App {
       google: () => this.account.google(),
       signOut: () => this.account.signOut(),
     });
+    this.settingsView.input = this.input;
     this.account.onChange = () => this.onAccount();
     this.save.onFlush = (d) => {
       this.cloud.push(d);
@@ -291,6 +324,14 @@ export class App {
       this.radioHost = null;
     };
     this.ui.append(this.blackout);
+
+    // what back and the shoulder buttons mean in each menu
+    this.nav.scope(this.pause.el, { back: () => this.closeOverlay() });
+    this.nav.scope(this.archive.el, { back: () => this.back(), tab: (d) => this.archive.cycleTab(d) });
+    this.nav.scope(this.settingsView.el, { back: () => this.back(), tab: (d) => this.settingsView.cycleTab(d) });
+    this.nav.scope(this.wardrobe.el, { back: () => this.back() });
+    this.nav.scope(this.modeSelect.el, { back: () => this.closeModes() });
+    this.nav.scope(this.carScreen.el, { back: () => this.carScreen.close() });
 
     this.bindEvents();
   }
@@ -456,6 +497,7 @@ export class App {
     this.loadNotes();
     this.map = new MapView(this.ui, () => this.back(), this.world.interact);
     this.ui.insertBefore(this.map.el, this.blackout);
+    this.nav.scope(this.map.el, { back: () => this.back(), tab: () => this.openOverlay('archive', this.overlayReturn) });
     this.photographer = new Photographer(
       this.renderer.renderer,
       this.scene,
@@ -490,6 +532,7 @@ export class App {
 
     this.applySettings();
     this.settings.on('change', () => this.applySettings());
+    this.input.on('device', () => this.applyInterface());
 
     // warm up: compile every program, position the title camera
     this.cine.update(0, 0);
@@ -541,6 +584,40 @@ export class App {
     this.cine.reducedMotion = d.reducedMotion;
     this.audio.setVolumes(d.master, d.ambience, d.music);
     this.radio.setVolume(d.radio);
+    // controller
+    const inp = this.input;
+    inp.shape.deadzone = d.padDeadzone;
+    inp.shape.curve = d.padCurve;
+    Object.assign(inp.look, { sensX: d.padSensX, sensY: d.padSensY, aimSens: d.padAimSens, accel: d.padAccel, invertX: d.padInvertX, invertY: d.padInvertY, southpaw: d.southpaw });
+    inp.modes.sprint = d.sprintMode;
+    inp.modes.aim = d.aimMode;
+    inp.modes.crouch = d.crouchMode;
+    inp.haptics.enabled = d.vibration;
+    inp.haptics.strength = d.vibrationStrength;
+    inp.haptics.triggers = d.triggerEffects;
+    this.applyInterface();
+    // how much of the city is alive, and how far you can see it
+    const pop = populationShare(d.population);
+    this.crowd?.setDensity(pop.people);
+    this.traffic?.setDensity(pop.traffic);
+    const dist = distanceBudget(d.drawDistance);
+    this.camera.far = dist.far;
+    this.camera.updateProjectionMatrix();
+    this.crowd?.setLod(dist.lodNear, dist.lodMid);
+  }
+
+  /** Television-sized interface when a controller is in use (or always, if asked). */
+  private applyInterface() {
+    const d = this.settings.data;
+    const tv = d.uiSize === 'large' || (d.uiSize === 'auto' && this.input.isPad);
+    document.body.classList.toggle('ui-tv', tv);
+    const b = document.body.classList;
+    if (d.prompts !== 'auto') {
+      b.toggle('input-pad', d.prompts !== 'keyboard');
+      b.toggle('pad-playstation', d.prompts === 'playstation');
+      b.toggle('pad-xbox', d.prompts === 'xbox');
+    }
+    refreshGlyphs();
   }
 
   private async toggleSound() {
@@ -594,17 +671,33 @@ export class App {
     this.landing.show();
   }
 
+  /** One city, the chosen mode's rules: who's out, what can hurt you, what the interface shows. */
+  private applyRules() {
+    const r = this.rules;
+    this.crowd.setEnabled(r.crowd);
+    this.traffic.setEnabled(r.traffic);
+    this.crowd.crimeOn = r.crime;
+    this.crowd.uneaseRate = r.unease;
+    this.questMarker.group.visible = r.quests;
+    if (!r.police) this.combat.heat = 0;
+    if (r.combat !== 'street') this.combat.select(0);
+    if (!r.quests) this.hud.objective(null);
+    document.body.dataset.mode = r.id;
+  }
+
   private async enter() {
     if (this.state !== 'landing') return;
     this.state = 'entering';
+    this.applyRules();
     if (this.soundWanted && !this.audio.enabled) {
       await this.audio.start(this.world.sounds);
       this.attachCarVoices();
     }
     this.input.lock();
     this.audio.setLanding(false);
+    this.cine.lock = null;
     this.cine.beginPush();
-    await this.landing.leave();
+    if (this.landing.el.classList.contains('is-on')) await this.landing.leave();
     await wait(500);
     await this.fade(true, 700);
 
@@ -802,16 +895,23 @@ export class App {
       if (e.repeat) return;
       if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select')) return;
       const k = e.code;
-      if ((k === 'KeyT' || k === 'Enter') && this.state === 'playing' && !this.chat?.isOpen && !this.carScreen.isOpen) {
+      // keyboard globals follow the (remappable) bindings; the pad's are read per frame (padGlobals)
+      const is = (a: Action) => this.input.bindings.get(a).kbm.includes(k);
+      const explore = this.rules.combat === 'street' || this.rules.combat === 'none';
+      if (this.modeSelect.isOpen) {
+        if (k === 'Escape') this.closeModes();
+        return;
+      }
+      if (is('chat') && this.state === 'playing' && explore && !this.chat?.isOpen && !this.carScreen.isOpen && !this.photoOn) {
         e.preventDefault();
         this.chat.open();
         return;
       }
-      if (k === 'KeyN' && this.state === 'playing') {
+      if (is('mic') && this.state === 'playing') {
         this.toggleMic();
         return;
       }
-      if ((k === 'Backquote' || k === 'F10') && (this.state === 'playing' || this.admin?.isOpen)) {
+      if (is('admin') && (this.state === 'playing' || this.admin?.isOpen)) {
         e.preventDefault();
         this.toggleAdmin();
         return;
@@ -820,8 +920,8 @@ export class App {
         if (k === 'Escape') {
           e.preventDefault();
           this.openOverlay('pause', 'playing');
-        } else if (k === 'KeyM') this.openOverlay('map', 'playing');
-        else if (k === 'KeyJ') this.openOverlay('archive', 'playing');
+        } else if (is('map') && explore) this.openOverlay('map', 'playing');
+        else if (is('archive') && explore) this.openOverlay('archive', 'playing');
         return;
       }
       if (this.overlay) {
@@ -829,7 +929,7 @@ export class App {
           if (this.overlay === 'pause' && performance.now() - this.pausedAt < 300) return;
           e.preventDefault();
           this.back();
-        } else if ((k === 'KeyM' && this.overlay === 'map') || (k === 'KeyJ' && this.overlay === 'archive')) {
+        } else if ((is('map') && this.overlay === 'map') || (is('archive') && this.overlay === 'archive')) {
           if (this.overlayReturn === 'playing') this.closeOverlay();
           else this.back();
         }
@@ -839,6 +939,93 @@ export class App {
       if (document.hidden) this.persist(true);
     });
     addEventListener('beforeunload', () => this.persist(true));
+  }
+
+  /** A pad press of an action's pad binding (keyboard presses of the same action are the keydown handler's). */
+  private padAct(a: Action): boolean {
+    const pad = this.input.pad;
+    if (!pad || !this.input.isPad) return false;
+    return this.input.bindings.get(a).pad.some((b) => pad.pressed(b));
+  }
+
+  /** In play, on a pad: pause, map. */
+  private padGlobals() {
+    if (!this.input.isPad) return;
+    const explore = this.rules.combat === 'street' || this.rules.combat === 'none';
+    if (this.padAct('pause')) this.openOverlay('pause', 'playing');
+    else if (explore && !this.vehicle && !this.boat && this.padAct('map')) this.openOverlay('map', 'playing');
+  }
+
+  /** Menus on a pad: what Menu, View and the map's stick do. The Nav does the rest. */
+  private padMenus(dt: number) {
+    const pad = this.input.pad;
+    if (!pad || !this.input.isPad) return;
+    if (this.overlay && this.overlayReturn !== 'landing' && pad.peek('Menu')) {
+      pad.pressed('Menu');
+      this.closeOverlay();
+      return;
+    }
+    if (this.overlay === 'map') {
+      const s = pad.stick(0, this.input.shape);
+      this.map.pad(dt, s.x, s.y, pad.value('RT') - pad.value('LT'), pad.pressed('A'));
+    }
+  }
+
+  /** Remember which prompts the player has seen, and show the strip for a new situation twice. */
+  private updateControlContext() {
+    let ctx: ControlContext;
+    const v = this.vehicle;
+    if (v) ctx = v.kind === 'drive' ? 'car' : 'taxi';
+    else if (this.boat) ctx = 'boat';
+    else if (this.player.swimming) ctx = 'swim';
+    else if (this.rules.combat === 'street' && this.combat.w.id !== 'fists') ctx = 'armed';
+    else ctx = this.mode === 'afterhours' ? 'afterhours' : 'foot';
+    if (ctx === this.controlCtx) return;
+    this.controlCtx = ctx;
+    const seen = this.controlSeen.get(ctx) ?? 0;
+    this.controlSeen.set(ctx, seen + 1);
+    this.hud.controlsFor(ctx, seen < 2);
+  }
+
+  /* ─────────────────────────── modes ─────────────────────────── */
+
+  /** Enter world → how do you want to spend the night? */
+  private async openModes() {
+    if (this.state !== 'landing' || this.modeSelect.isOpen) return;
+    this.audio.uiTick();
+    await this.landing.leave();
+    await this.modeSelect.open(this.mode);
+  }
+
+  private async closeModes() {
+    if (!this.modeSelect.isOpen) return;
+    this.previewToken++;
+    await this.modeSelect.close();
+    this.cine.lock = null;
+    this.landing.show();
+  }
+
+  private previewToken = 0;
+  /** The title camera cuts to where a mode happens: the background is the preview. */
+  private async previewMode(id: ModeId) {
+    const shot = MODES[id].shot;
+    if (this.cine.lock === shot) return;
+    const token = ++this.previewToken;
+    await this.fade(true, 220);
+    if (token !== this.previewToken) return;
+    this.cine.hold(shot);
+    this.cine.update(0, this.t);
+    this.lighting.focusNow(this.camera.position);
+    this.landing.setShot(this.cine.shot.caption);
+    await this.fade(false, 520);
+  }
+
+  private async chooseMode(id: ModeId) {
+    this.mode = id;
+    this.settings.set('lastMode', id);
+    this.previewToken++;
+    await this.modeSelect.close();
+    this.enter();
   }
 
   private persist(leaving = false) {
@@ -880,7 +1067,7 @@ export class App {
 
   /** What [E] would do right now about cars, if anything (nearest wins against inspect spots). */
   private vehicleOption(): { verb: string; name: string; go: () => void; d: number } | null {
-    if (this.vehicle || this.player.sitting || !this.player.grounded) return null;
+    if (this.vehicle || this.player.sitting || !this.player.grounded || !this.rules.vehicles) return null;
     const taxi = this.traffic.waitingTaxi(this.player.pos);
     if (taxi) return { verb: 'Ride along', name: 'Taxi', d: 0, go: () => this.enterVehicle({ kind: 'ride', car: taxi }) };
     const near = this.vehicles.nearest(this.player.pos, 1.4);
@@ -900,12 +1087,7 @@ export class App {
       if (this.mp.shared && !this.mp.isHost) this.mp.taxi('board');
     }
     this.audio.footstep(0.9, false);
-    this.hud.setHint(
-      v.kind === 'drive'
-        ? `W / S  drive and reverse  ·  A / D  steer  ·  Space  handbrake  ·  R  radio${v.car.screen ? '  ·  V  screen' : ''}`
-        : 'Mouse  look around  ·  R  radio  ·  E  ask to stop',
-    );
-    setTimeout(() => this.hud.setHint(null), 5000);
+    this.input.rumble('bump', 0.6);
   }
 
   /** Make (or reuse) a room and put its link on the clipboard. */
@@ -1024,12 +1206,15 @@ export class App {
       this.hud.combat(this.dying || this.vehicle ? { health: c.health, stars: c.stars, weapon: 'Fists', ammo: '', cross: false, hot: this.crowd.police > 0 } : null);
       return;
     }
-    if (inp.consume('Digit1')) c.select(0);
-    if (inp.consume('Digit2')) c.select(1);
-    if (inp.consume('Digit3')) c.select(2);
-    if (inp.consume('KeyQ') || inp.wheel > 0) c.cycle(1);
-    if (inp.wheel < 0) c.cycle(-1);
-    if (inp.consume('KeyR')) c.reload();
+    if (inp.pressed('weapon1')) c.select(0);
+    if (inp.pressed('weapon2')) c.select(1);
+    if (inp.pressed('weapon3')) c.select(2);
+    if (inp.pressed('nextWeapon')) c.cycle(1);
+    if (inp.pressed('prevWeapon')) c.cycle(-1);
+    if (inp.pressed('reload')) {
+      c.reload();
+      if (c.reloading > 0) inp.rumble('reload');
+    }
     if (c.stars > 0 && !this.dying) {
       const cop = this.crowd.npcs.slice(this.crowd.citizens, this.crowd.crooksFrom).some((n) => n.visible && n.dead < 0 && n.pos.distanceTo(p.pos) < 1.7);
       this.bustT = cop && p.speed < 2.2 ? this.bustT + dt : Math.max(0, this.bustT - dt);
@@ -1037,11 +1222,16 @@ export class App {
     } else this.bustT = 0;
     const w = c.w;
     const gun = w.id !== 'fists';
-    // fire with the left mouse button (once the pointer is captured), or F
-    const held = (inp.locked && inp.isDown('Mouse0')) || inp.isDown('KeyF');
-    const pressed = (inp.locked && inp.consume('Mouse0')) || inp.consume('KeyF');
-    const aiming = inp.isDown('Mouse2') || c.sinceFire < 0.9;
-    if (c.trigger(held, pressed)) this.fire();
+    // fire (the mouse only once the pointer is captured, so the capturing click isn't a shot)
+    const held = inp.locked && inp.value('attack') > 0.35;
+    const pressed = inp.locked && inp.pressed('attack');
+    const aimHeld = inp.state('aim');
+    const aiming = aimHeld || c.sinceFire < 0.9;
+    inp.aiming = aimHeld && gun;
+    if (c.trigger(held, pressed)) {
+      this.fire();
+      inp.rumble(w.id === 'smg' ? 'smg' : w.id === 'fists' ? 'punch' : 'gunshot');
+    }
     p.gun.visible = gun;
     p.armPose = gun ? (aiming ? 'aim' : null) : c.sinceFire < 0.2 ? 'punch' : aiming ? 'guard' : null;
     p.aimYaw = aiming ? this.follow.yaw : null;
@@ -1271,7 +1461,7 @@ export class App {
   /** At the promenade rail: a moored boat to step into, or the water to dive into. */
   private riverOption(): { name: string; verb: string; go: () => void } | null {
     const p = this.player.pos;
-    if (this.vehicle || this.player.sitting || this.inside || p.z < 160.5 || p.z > 163.3 || p.y < -0.5) return null;
+    if (this.vehicle || this.player.sitting || this.inside || !this.rules.vehicles || p.z < 160.5 || p.z > 163.3 || p.y < -0.5) return null;
     const b = this.boats.nearest(p);
     if (b) return { name: 'Boat', verb: 'Step aboard', go: () => this.enterBoat(b) };
     // not off the bridge (it has its own rails), and only facing the water
@@ -1440,6 +1630,8 @@ export class App {
       roomReady: () => this.mp.adminReady && this.account.isStaff,
       close: () => this.toggleAdmin(),
     });
+    this.nav.scope(this.admin.el, { back: () => this.toggleAdmin() });
+    this.admin.el.dataset.navScope = '';
     this.mp.onShot = (from, s) => this.remoteShot(from, s);
     this.mp.onAdmin = (act, m) => this.onAdminMessage(act, m);
     this.mp.onKicked = (reason) => {
@@ -1682,7 +1874,7 @@ export class App {
     if (def.action === 'bell') this.audio.bell();
     // side quests may have something to say here instead
     this.questFromUse = true;
-    const ql = this.quests.use(spot.id);
+    const ql = this.rules.quests ? this.quests.use(spot.id) : null;
     this.questFromUse = false;
     if (ql?.length) override = ql;
     if (def.action === 'mark') this.save.flag(spot.id);
@@ -1707,6 +1899,7 @@ export class App {
   /* ─────────────────────────── loop ─────────────────────────── */
 
   private frame(now: number) {
+    this.input.poll(now);
     this.clock.update(now);
     // clamp both ways: tab switches produce huge deltas, clock resets can produce negative ones
     const dt = Math.max(0, Math.min(this.clock.getDelta(), 0.05));
@@ -1736,7 +1929,10 @@ export class App {
       if (this.state === 'landing' && !this.overlay) this.cuts();
     } else if (inWorld) {
       this.fitLight.intensity = 0;
-      if (playing && this.input.enabled) this.follow.look(this.input.lookX, this.input.lookY);
+      if (playing && this.input.enabled) {
+        this.follow.look(this.input.lookX, this.input.lookY);
+        this.follow.stick(this.input.stickYaw, this.input.stickPitch);
+      }
       this.introT = Math.min(1, this.introT + dt / 3.2);
       const v = this.vehicle;
       if (this.boat) this.follow.updateVehicle(dt, this.boat.group.position, this.boat.yaw, this.boat.v, null);
@@ -1753,6 +1949,16 @@ export class App {
     }
     this.camera.updateMatrixWorld();
 
+    // menus: a controller (or the arrow keys) moves the focus in whatever's open
+    const menuUp =
+      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen;
+    this.nav.active = menuUp;
+    if (menuUp) {
+      if (this.overlay === 'settings') this.settingsView.update();
+      this.padMenus(dt);
+      if (!this.settingsView.listening) this.nav.update(dt);
+    }
+
     // world simulation keeps running under menus — the city doesn't pause for you
     this.obstacles.length = 0;
     this.crowd.obstacles(this.obstacles);
@@ -1768,7 +1974,7 @@ export class App {
         this.player.pos.set(b.pos.x, WATER_Y + 0.4, b.pos.z);
         this.player.facing = b.yaw;
         this.driveVoice?.setPosition(b.pos, Math.abs(b.v) * 1.4);
-        if (move && this.input.consume('KeyE')) this.leaveBoat();
+        if (move && this.input.pressed('exitVehicle')) this.leaveBoat();
       } else if (veh?.kind === 'drive') {
         const solid = this.obstacles.slice();
         for (const c of this.traffic.cars) {
@@ -1778,7 +1984,7 @@ export class App {
         this.vehicles.obstacles(solid, veh.car);
         this.remotes.obstacles(solid);
         this.vehicles.drive(veh.car, dt, move ? this.input : null, this.world.collision, solid);
-        const honk = move && this.input.isDown('KeyH');
+        const honk = move && this.input.held('horn');
         if (honk !== this.honking) {
           this.honking = honk;
           this.mp.horn(veh.car.pos.x, veh.car.pos.z, honk);
@@ -1841,9 +2047,10 @@ export class App {
     // in a shared room someone else may run the city: follow them while their snapshots keep coming
     const follower = this.mp.shared && !this.mp.isHost && performance.now() - this.lastCity < 3000;
     this.crowd.puppet = this.traffic.puppet = follower;
-    this.crowd.wanted = this.dying ? 0 : this.combat.stars;
+    const stars = this.dying || !this.rules.police ? 0 : this.combat.stars;
+    this.crowd.wanted = stars;
     if (this.police) {
-      this.police.update(dt, t, inWorld && !this.dying ? this.player.pos : null, this.dying ? 0 : this.combat.stars, !!this.inside, this.camera.getWorldDirection(this.tmpDir));
+      this.police.update(dt, t, inWorld && !this.dying ? this.player.pos : null, stars, !!this.inside, this.camera.getWorldDirection(this.tmpDir));
       this.audio.heli(this.police.heli.present && !this.inside ? this.police.heli.pos : null);
     }
     this.crowd.update(dt, t, playerPos, this.camera);
@@ -1905,6 +2112,8 @@ export class App {
     this.sky.followCamera(this.camera);
 
     if (playing) {
+      this.padGlobals();
+      this.updateControlContext();
       const fwd = this.camera.getWorldDirection(this.tmpV);
       this.interaction.update(this.player.pos, fwd, this.player.sitting || !!this.vehicle);
       const cur = this.interaction.current;
@@ -1916,38 +2125,48 @@ export class App {
       if (this.vehicle) {
         const v = this.vehicle;
         const stopping = v.kind === 'drive' ? v.car.leaving : !!v.car.taxi?.stopping;
-        this.hud.setPrompt(v.kind === 'drive' ? (v.car.van ? 'Van' : v.car.screen ? 'Electric car' : 'Car') : 'Taxi', stopping ? 'Stopping…' : 'Get out');
+        this.hud.setPrompt(v.kind === 'drive' ? (v.car.van ? 'Van' : v.car.screen ? 'Electric car' : 'Car') : 'Taxi', stopping ? 'Stopping…' : v.kind === 'ride' ? 'Ask to stop' : 'Get out', 'exitVehicle');
         if (this.carScreen.isOpen) this.hud.setPrompt(null);
-        if (this.input.consume('KeyE')) this.leaveVehicle();
-        if (v.kind === 'drive' && v.car.screen && this.input.consume('KeyV')) this.carScreen.open();
-        if (this.input.consume('KeyR')) this.tuneRadio(this.input.isDown('ShiftLeft') || this.input.isDown('ShiftRight') ? -1 : 1);
+        if (this.input.pressed('exitVehicle')) this.leaveVehicle();
+        if (v.kind === 'drive' && v.car.screen && this.input.pressed('screen')) this.carScreen.open();
+        if (this.input.pressed('radioPrev')) this.tuneRadio(-1);
+        else if (this.input.pressed('radioNext')) this.tuneRadio(1);
       } else if (this.boat) {
-        this.hud.setPrompt('Boat', Math.abs(this.boat.pos.z - RIVER_Z0) < 3 ? 'Step off' : 'Jump in');
+        this.hud.setPrompt('Boat', Math.abs(this.boat.pos.z - RIVER_Z0) < 3 ? 'Step off' : 'Jump in', 'exitVehicle');
       } else if (!this.player.swimming && (this.riverOption() as unknown) && !cur) {
         const opt = this.riverOption()!;
         this.hud.setPrompt(opt.name, opt.verb);
-        if (this.input.consume('KeyE')) opt.go();
+        if (this.input.pressed('interact')) opt.go();
       } else if (this.player.swimming) {
-        this.hud.setPrompt(this.player.pos.z < RIVER_Z0 + 1.4 ? 'Quay wall' : 'River', this.player.pos.z < RIVER_Z0 + 1.4 ? 'Climb out (Space)' : 'Swim to the quay');
+        const atWall = this.player.pos.z < RIVER_Z0 + 1.4;
+        this.hud.setPrompt(atWall ? 'Quay wall' : 'River', atWall ? 'Climb out' : 'Swim to the quay', 'jump');
+        if (!atWall) this.hud.setPrompt(null);
       } else if (car && carWins) {
         this.hud.setPrompt(car.name, car.verb);
-        if (this.input.consume('KeyE')) car.go();
+        if (this.input.pressed('interact')) car.go();
       } else {
         // nothing to look at here, but someone to talk to
         const who = !cur || busy ? this.crowd.nearestTalker(this.player.pos, fwd) : null;
         if (who && !this.player.sitting) {
           this.hud.setPrompt(this.whoIs(who), 'Talk');
-          if (this.input.consume('KeyE')) this.crowd.talk(who, this.player.pos);
+          if (this.input.pressed('interact')) this.crowd.talk(who, this.player.pos);
         } else {
           this.hud.setPrompt(cur && !busy ? cur.def.name : null, verb);
-          if (this.input.consume('KeyE')) this.interact();
+          // only claim the button when there's something to use (on a pad it's also reload)
+          if (cur && !busy && this.input.pressed('interact')) this.interact();
         }
       }
-      this.updateQuests(dt);
-      this.updateCombat(dt);
+      if (this.rules.quests) this.updateQuests(dt);
+      if (this.rules.combat === 'street') this.updateCombat(dt);
+      else if (this.rules.combat === 'none') {
+        this.player.armPose = null;
+        this.player.aimYaw = null;
+        this.player.gun.visible = false;
+        this.hud.combat(null);
+      }
       this.serveTime(dt);
       // indoors the rooms sit far off the map; the HUD keeps the room's name
-      if (!this.inside) this.discovery.update(this.player.pos.x, this.player.pos.z);
+      if (!this.inside && this.rules.discovery) this.discovery.update(this.player.pos.x, this.player.pos.z);
       this.updatePhone(dt);
       this.saveTimer -= dt;
       if (this.saveTimer <= 0) {

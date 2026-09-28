@@ -264,7 +264,28 @@ export class Traffic {
    * (multiplayer host). Traffic brakes for all of them, and the taxi will
    * pull in for any of them.
    */
+  /** how many cars are allowed out (population setting); the taxi is always one of them */
+  private limit = Infinity;
+  setDensity(k: number) {
+    this.limit = Math.max(1, Math.round(this.cars.length * k));
+  }
+
+  /** Off (WARZONE, FIGHT): every car off the streets. */
+  setEnabled(on: boolean) {
+    this.group.visible = on;
+    if (on) return;
+    for (const car of this.cars) {
+      car.path = null;
+      car.wait = 2 + Math.random() * 4;
+      car.v = 0;
+      car.group.visible = false;
+      car.sound?.setPosition(car.group.position, 0);
+      if (car.taxi) Object.assign(car.taxi, { rider: false, riderId: '', stopping: false, arrived: false });
+    }
+  }
+
   update(dt: number, player: THREE.Vector3 | null, playerSpeed = 0, blockers: THREE.Vector3[] = [], others: { pos: THREE.Vector3; speed: number }[] = []) {
+    if (!this.group.visible) return;
     if (this.puppet) return this.follow(dt);
     const tmp = new THREE.Vector3();
     const fwd = new THREE.Vector3();
@@ -274,6 +295,7 @@ export class Traffic {
       if (!car.path) {
         car.wait -= dt;
         for (const l of car.lamps) l.gain = 0;
+        if (this.cars.indexOf(car) >= this.limit) car.wait = Math.max(car.wait, 1);
         if (car.wait <= 0) {
           car.path = this.rng.pick(this.paths);
           car.s = 0;

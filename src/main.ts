@@ -1,4 +1,5 @@
 import './styles/main.css';
+import './styles/controller.css';
 import { App } from './core/App';
 
 function supportsWebGL2() {

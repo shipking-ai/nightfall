@@ -28,6 +28,10 @@ export class Player {
   grounded = true;
   sitting = false;
   sprinting = false;
+  /** WARZONE: low behind cover */
+  crouching = false;
+  /** an animation that holds the body (an emote you can't walk out of yet, a door) */
+  busy = false;
   private motion = newMotion();
   private rig = newRig();
   private batch = new FigureBatch(1);
@@ -83,19 +87,17 @@ export class Player {
 
   update(dt: number, input: Input | null, camYaw: number, col: Collision, obstacles: { x: number; z: number; r: number }[]) {
     // intent in camera space
-    let ix = 0, iz = 0;
-    if (input) {
-      if (input.isDown('KeyW') || input.isDown('ArrowUp')) iz += 1;
-      if (input.isDown('KeyS') || input.isDown('ArrowDown')) iz -= 1;
-      if (input.isDown('KeyA') || input.isDown('ArrowLeft')) ix += 1;
-      if (input.isDown('KeyD') || input.isDown('ArrowRight')) ix -= 1;
-    }
-    const moving = ix !== 0 || iz !== 0;
+    // analog on a stick (a gentle push walks slowly), full speed from the keys
+    const mv = input ? input.move() : { x: 0, y: 0, mag: 0 };
+    const ix = -mv.x, iz = mv.y;
+    const moving = mv.mag > 0.02;
     if (this.sitting && moving) this.sitting = false;
 
-    this.sprinting = !!input && moving && (input.isDown('ShiftLeft') || input.isDown('ShiftRight'));
+    this.sprinting = !!input && moving && input.state('sprint', !moving) && mv.mag > 0.5 && !this.crouching;
     this.swimming = !this.fly && inRiver(this.pos.x, this.pos.z, this.pos.y);
-    const speed = this.swimming ? (this.sprinting ? 2.9 : 1.8) : (this.sitting ? 0 : this.sprinting ? SPRINT : WALK) * this.speedMul * (this.aimYaw != null && !this.fly ? 0.7 : 1);
+    const push = Math.min(1, mv.mag * 1.15);
+    const base = this.sprinting ? SPRINT : WALK * (this.crouching ? 0.55 : 1) * (0.35 + 0.65 * push);
+    const speed = this.swimming ? (this.sprinting ? 2.9 : 1.8) : (this.sitting ? 0 : base) * this.speedMul * (this.aimYaw != null && !this.fly ? 0.7 : 1);
     const fwdX = Math.sin(camYaw), fwdZ = Math.cos(camYaw);
     let wx = fwdX * iz + fwdZ * ix;
     let wz = fwdZ * iz - fwdX * ix;
@@ -117,7 +119,7 @@ export class Player {
       this.pos.z = THREE.MathUtils.clamp(this.pos.z + this.vel.z * dt, RIVER_Z0 + 0.3, RIVER_Z1 - 0.3);
       this.pos.y += (surface + Math.sin(performance.now() * 0.002) * 0.04 - this.pos.y) * Math.min(1, dt * 4);
       this.grounded = false;
-      if (input && input.consume('Space') && this.pos.z < RIVER_Z0 + 1.4) {
+      if (input && input.pressed('jump') && this.pos.z < RIVER_Z0 + 1.4) {
         this.pos.set(this.pos.x, 0.15, QUAY_Z);
         this.vel.set(0, 0, 0);
         this.grounded = true;
@@ -125,13 +127,13 @@ export class Player {
       }
     } else if (this.fly) {
       // noclip: straight through walls, up with Space, down with C
-      const up = input ? (input.isDown('Space') ? 1 : 0) - (input.isDown('KeyC') || input.isDown('ControlLeft') ? 1 : 0) : 0;
+      const up = input ? (input.held('jump') ? 1 : 0) - (input.held('crouch') ? 1 : 0) : 0;
       this.vel.y = up * speed;
       this.pos.x += this.vel.x * dt;
       this.pos.z += this.vel.z * dt;
       this.pos.y = Math.max(0.15, this.pos.y + this.vel.y * dt);
       this.grounded = false;
-    } else if (input && this.grounded && !this.sitting && input.consume('Space')) {
+    } else if (input && this.grounded && !this.sitting && !this.busy && input.pressed('jump')) {
       this.vel.y = JUMP_V;
       this.grounded = false;
     }

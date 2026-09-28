@@ -519,13 +519,16 @@ export function stepPhase(m: Motion, dt: number) {
   return Math.sign(before) !== Math.sign(Math.sin(m.phase)) && m.speed > 0.6; // footfall
 }
 
+/** Detail distances (metres): full faces and hands inside `near`, garments inside `mid`, silhouettes beyond. */
+export const LOD = { near: 34, mid: 80 };
+
 /** Which rig parts a given outfit and distance actually shows. */
 export function visibleParts(o: Outfit, dist: number): Set<PartKey> {
   const s = new Set<PartKey>(['pelvis', 'torso', 'upperArmL', 'upperArmR', 'forearmL', 'forearmR', 'thighL', 'thighR', 'shinL', 'shinR', 'footL', 'footR']);
-  const near = dist < 38;
+  const near = dist < LOD.near;
   if (near) s.add('head').add('eyes').add('handL').add('handR');
   else s.add('headFar');
-  if (dist < 90) {
+  if (dist < LOD.mid) {
     if (o.hair !== 'none') s.add('hair');
     if (o.hem) s.add('hem');
     if (o.skirt) s.add('skirt');

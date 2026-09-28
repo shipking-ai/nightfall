@@ -67,11 +67,10 @@ export class Boats {
   drive(b: Boat, dt: number, input: Input | null) {
     let throttle = 0, steer = 0, brake = false;
     if (input) {
-      if (input.isDown('KeyW') || input.isDown('ArrowUp')) throttle += 1;
-      if (input.isDown('KeyS') || input.isDown('ArrowDown')) throttle -= 1;
-      if (input.isDown('KeyA') || input.isDown('ArrowLeft')) steer += 1;
-      if (input.isDown('KeyD') || input.isDown('ArrowRight')) steer -= 1;
-      brake = input.isDown('Space');
+      // analog triggers and stick on a pad; W/S and A/D on a keyboard
+      throttle = input.value('throttle') - input.value('brake');
+      steer = -input.steer();
+      brake = input.held('handbrake');
     }
     const max = throttle >= 0 ? 17 : 5;
     b.v += (throttle * max - b.v) * Math.min(1, dt * (throttle ? 0.7 : 0.35));

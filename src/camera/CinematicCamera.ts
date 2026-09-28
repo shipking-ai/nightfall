@@ -18,12 +18,20 @@ export const SHOTS: Shot[] = [
   { caption: 'Kestrel Market', from: v(-81, 1.5, 58), to: v(-81, 1.8, 46), lookFrom: v(-80, 3.5, 4), lookTo: v(-80, 3.8, 0), duration: 14 },
   { caption: 'The Old Station', from: v(15, 1.3, -110), to: v(8, 1.8, -121), lookFrom: v(0, 11, -152), lookTo: v(0, 12, -152), duration: 14 },
   { caption: 'Pier 9 Yard', from: v(58, 1.8, 66), to: v(62, 2.6, 60), lookFrom: v(78, 14, 10), lookTo: v(80, 12, 8), duration: 13 },
+  // mode previews (never in the title rotation)
+  { caption: 'Pier 9 Yard · the containers', from: v(76.5, 1.5, 44), to: v(76, 1.9, 36), lookFrom: v(74, 2.4, -20), lookTo: v(73, 2.6, -24), duration: 16 },
+  { caption: 'Harbor Lane crossing', from: v(9, 1.1, 66), to: v(6.5, 1.35, 63), lookFrom: v(-3, 1.6, 51), lookTo: v(-2, 1.8, 52), duration: 16 },
 ];
+
+/** the shots the title sequence cycles through */
+const TITLE_SHOTS = 5;
 
 /** Title-sequence camera and the push-in used when entering the world. */
 export class CinematicCamera {
   index = 0;
   t = 0;
+  /** a shot held on screen (the mode select previews) instead of the rotation */
+  lock: number | null = null;
   reducedMotion = false;
   private look = new THREE.Vector3();
   private pushT = -1;
@@ -42,7 +50,13 @@ export class CinematicCamera {
   }
 
   next() {
-    this.index = (this.index + 1) % SHOTS.length;
+    this.index = this.lock ?? (this.index + 1) % TITLE_SHOTS;
+    this.t = 0;
+  }
+
+  hold(i: number) {
+    this.lock = i;
+    this.index = i;
     this.t = 0;
   }
 

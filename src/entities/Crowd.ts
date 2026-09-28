@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { newMotion, newRig, randomBody, randomOutfit, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
+import { LOD, newMotion, newRig, randomBody, randomOutfit, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
 import { FigureBatch } from './FigureBatch';
 import { ROUTES, type Route } from '../world/layout';
 import type { Lamp, NpcSpot } from '../world/WorldContext';
@@ -69,6 +69,8 @@ export interface Npc {
   /** police and criminals: next shot */
   fireT: number;
   crook?: { state: CrookState; victim: Npc | null; t: number; ax: number; az: number };
+  /** kept off the streets by the population setting */
+  culled?: boolean;
   /** multiplayer: the host's latest word on this person (followers only) */
   net?: { a: number; b: number; c: number; v: number; flags: number; wrong: number; at: number };
 }
@@ -566,6 +568,10 @@ export class Crowd {
    */
   private crooksUpdate(dt: number, player: THREE.Vector3 | null) {
     if (!player || this.puppet) return;
+    if (!this.crimeOn) {
+      for (let i = this.crooksFrom; i < this.npcs.length; i++) this.npcs[i].visible = false;
+      return;
+    }
     this.crimeT -= dt;
     const free = this.npcs.slice(this.crooksFrom).filter((n) => !n.visible && n.dead < 0);
     if (this.crimeT <= 0 && this.wanted === 0 && free.length >= 2 && Math.abs(player.z) < 900) {
@@ -794,7 +800,41 @@ export class Crowd {
     }
   }
 
+  /** muggings and gangs (CITY only) */
+  crimeOn = true;
+  /** how often the quiet unsettling moments come (1 = normal, 0 = never) */
+  uneaseRate = 1;
+
+  /** Keep a share of ordinary people in the streets (population setting). */
+  setDensity(k: number) {
+    for (let i = 0; i < this.citizens; i++) {
+      const n = this.npcs[i];
+      if (n === this.watcher || n.mode === 'stare') continue;
+      // a fixed shuffle, so the same people stay home each time
+      const r = ((i * 2654435761) >>> 0) / 4294967296;
+      const was = !!n.culled;
+      n.culled = r >= k;
+      if (n.culled && !was) n.visible = false;
+      if (!n.culled && was && n.mode !== 'walk') n.visible = true;
+      if (!n.culled && was && n.mode === 'walk') (n.hidden = 0), (n.visible = true);
+    }
+  }
+
+  setLod(near: number, mid: number) {
+    LOD.near = near;
+    LOD.mid = mid;
+    for (const n of this.npcs) n.lod = -1;
+  }
+
+  /** Nobody on the streets at all (WARZONE, FIGHT). */
+  setEnabled(on: boolean) {
+    this.group.visible = on;
+    this.enabled = on;
+  }
+  enabled = true;
+
   update(dt: number, t: number, player: THREE.Vector3 | null, camera: THREE.Camera) {
+    if (!this.enabled) return;
     const camPos = camera.position;
     this.pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.pm);
@@ -804,6 +844,14 @@ export class Crowd {
     this.crooksUpdate(dt, player);
 
     this.npcs.forEach((n, i) => {
+      if (n.culled) {
+        if (n.lod !== -1 || n.visible) {
+          n.visible = false;
+          this.batch.hide(i);
+          n.lod = -1;
+        }
+        return;
+      }
       if (n.dead >= 0) this.down(n, dt, player);
       else if (n.mode === 'cop' || n.mode === 'crook') {
         /* policeUpdate / crooksUpdate moved them */
@@ -823,7 +871,7 @@ export class Crowd {
       const d = n.pos.distanceTo(camPos);
       // far standing figures don't need a new pose every frame
       if (d > 150 && n.mode !== 'walk' && n.lod === 2 && (i + Math.floor(t * 10)) % 6 !== 0) return;
-      const lod = d < 38 ? 0 : d < 90 ? 1 : 2;
+      const lod = d < LOD.near ? 0 : d < LOD.mid ? 1 : 2;
       if (lod !== n.lod) {
         n.lod = lod;
         n.parts = visibleParts(n.outfit, d);
@@ -1000,7 +1048,8 @@ export class Crowd {
 
   /** Rare, quiet, never twice in a row. */
   private direct(dt: number, player: THREE.Vector3, camPos: THREE.Vector3) {
-    this.unease -= dt;
+    this.unease -= dt * this.uneaseRate;
+    if (this.uneaseRate <= 0) return;
     if (this.unease > 0 || this.watcher.visible) return;
     this.unease = this.rng.range(110, 220);
     const roll = this.rng.next();

@@ -1,3 +1,4 @@
+import { glyph } from '../input/glyphs';
 import { h, setOn, svg } from './dom';
 import { CATEGORIES, ENTRIES, type Category, type Entry } from '../data/archive';
 
@@ -37,7 +38,7 @@ export class ArchiveView {
         'header',
         { class: 'panel__head' },
         h('div', {}, h('span', { class: 'meta' }, 'District 03 · The city record'), h('h2', { class: 'panel__title' }, 'Archive')),
-        h('button', { class: 'panel__close', onclick: () => this.onClose() }, h('span', { class: 'meta' }, 'Close'), h('span', { class: 'key' }, 'J')),
+        h('button', { class: 'panel__close', onclick: () => this.onClose() }, h('span', { class: 'meta' }, 'Close'), glyph('cancel')),
       ),
       h('div', { class: 'panel__body archive__body' }, this.index, this.list, this.detail),
     );
@@ -58,6 +59,17 @@ export class ArchiveView {
 
   close() {
     setOn(this.el, false);
+  }
+
+  /** LB / RB: the previous or next section. */
+  cycleTab(d: -1 | 1) {
+    const ids: Tab[] = [...CATEGORIES.map((c) => c.id as Tab), 'photographs'];
+    const i = ids.indexOf(this.tab);
+    this.tab = ids[(i + d + ids.length) % ids.length];
+    this.selected = null;
+    this.onTick();
+    this.render();
+    (this.index.querySelector('.is-active') as HTMLElement | null)?.focus({ preventScroll: true });
   }
 
   private render() {

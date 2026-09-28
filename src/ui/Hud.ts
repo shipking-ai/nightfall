@@ -1,5 +1,20 @@
 import { h, setOn, wait } from './dom';
 import type { Entry } from '../data/archive';
+import type { Action } from '../input/actions';
+import { glyph, hintRow } from '../input/glyphs';
+
+/** What the player is doing, for the controls strip: only what applies is shown. */
+export type ControlContext = 'foot' | 'armed' | 'car' | 'taxi' | 'boat' | 'swim' | 'afterhours';
+
+const CONTROL_SETS: Record<ControlContext, [Action | 'moveStick' | 'lookStick', string][]> = {
+  foot: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['jump', 'Jump'], ['interact', 'Interact'], ['emote', 'Emotes'], ['map', 'Map'], ['pause', 'Pause']],
+  afterhours: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['interact', 'Interact'], ['photo', 'Photo mode'], ['emote', 'Emotes'], ['map', 'Map'], ['pause', 'Pause']],
+  armed: [['aim', 'Aim'], ['attack', 'Fire'], ['reload', 'Reload'], ['nextWeapon', 'Switch weapon']],
+  car: [['throttle', 'Accelerate'], ['brake', 'Brake · reverse'], ['moveStick', 'Steer'], ['handbrake', 'Handbrake'], ['horn', 'Horn'], ['radioNext', 'Radio'], ['exitVehicle', 'Get out']],
+  taxi: [['lookStick', 'Look around'], ['radioNext', 'Radio'], ['exitVehicle', 'Ask to stop']],
+  boat: [['throttle', 'Throttle'], ['brake', 'Reverse'], ['moveStick', 'Steer'], ['handbrake', 'Slow down'], ['exitVehicle', 'Step off']],
+  swim: [['moveStick', 'Swim'], ['sprint', 'Swim harder'], ['jump', 'Climb out at the quay']],
+};
 
 /**
  * Almost nothing: a place name when you arrive somewhere, a prompt when
@@ -34,6 +49,9 @@ export class Hud {
   private hint: HTMLElement;
   private controls: HTMLElement;
   private disc: HTMLElement;
+  private promptGlyph: HTMLElement;
+  private controlsCtx: ControlContext | null = null;
+  private controlsT = 0;
   private locTimer = 0;
   private capTimer = 0;
   private discQueue: Entry[] = [];
@@ -46,7 +64,8 @@ export class Hud {
     this.loc = h('div', { class: 'hud__location', 'aria-live': 'polite' }, this.locCode, this.locName);
     this.promptName = h('span', { class: 'meta meta--paper' });
     this.promptVerb = h('span', { class: 'meta' });
-    this.prompt = h('div', { class: 'hud__prompt' }, this.promptName, h('div', { class: 'hud__prompt-row' }, h('span', { class: 'key' }, 'E'), this.promptVerb));
+    this.promptGlyph = glyph('interact');
+    this.prompt = h('div', { class: 'hud__prompt' }, this.promptName, h('div', { class: 'hud__prompt-row' }, this.promptGlyph, this.promptVerb));
     this.caption = h('div', { class: 'hud__caption', 'aria-live': 'polite' });
     this.hint = h('div', { class: 'hud__hint' });
     this.barkEl = h('div', { class: 'hud__bark', 'aria-live': 'polite' });
@@ -61,16 +80,7 @@ export class Hud {
     this.weapon = h('div', { class: 'hud__weapon' });
     this.hurtEl = h('div', { class: 'hud__hurt', 'aria-hidden': 'true' });
     this.toastEl = h('div', { class: 'hud__toast', role: 'status' });
-    this.controls = h(
-      'div',
-      { class: 'hud__controls' },
-      row(['W', 'A', 'S', 'D'], 'Move'),
-      row(['Shift'], 'Run'),
-      row(['Space'], 'Jump'),
-      row(['M'], 'Map'),
-      row(['J'], 'Archive'),
-      row(['Esc'], 'Pause'),
-    );
+    this.controls = h('div', { class: 'hud__controls' });
     this.disc = h('div', { class: 'discovery', role: 'status' });
     this.el = h('section', { class: 'layer is-passive hud' }, this.hurtEl, this.loc, this.quest, this.stars, this.cross, this.health, this.weapon, this.toastEl, this.disc, this.barkEl, this.caption, this.prompt, this.hint, this.controls);
     root.append(this.el);
@@ -93,10 +103,15 @@ export class Hud {
     return this.prompt.classList.contains('is-on') ? this.promptVerb.textContent : null;
   }
 
-  setPrompt(name: string | null, verb = 'Inspect') {
+  setPrompt(name: string | null, verb = 'Inspect', action: Action = 'interact') {
     if (name) {
       this.promptName.textContent = name;
       this.promptVerb.textContent = verb;
+      if (this.promptGlyph.dataset.glyph !== action) {
+        const g = glyph(action);
+        this.promptGlyph.replaceWith(g);
+        this.promptGlyph = g;
+      }
     }
     setOn(this.prompt, !!name);
   }
@@ -186,14 +201,36 @@ export class Hud {
   }
 
   setHint(text: string | null) {
-    // touch screens don't click to look around
-    if (text && document.body.classList.contains('is-touch') && /^Click/.test(text)) text = null;
+    // touch screens and controllers don't click to look around
+    if (text && (document.body.classList.contains('is-touch') || document.body.classList.contains('input-pad')) && /^Click/.test(text)) text = null;
     if (text) this.hint.replaceChildren(h('span', { class: 'meta meta--paper' }, text));
     setOn(this.hint, !!text);
   }
 
+  /** A hint made of prompts (glyphs follow the device). */
+  setHintRows(rows: [Action | 'moveStick' | 'lookStick', string][] | null) {
+    if (rows) this.hint.replaceChildren(h('div', { class: 'hud__hintrows' }, ...rows.map(([a, t]) => hintRow(a, t))));
+    setOn(this.hint, !!rows);
+  }
+
+  /**
+   * The controls strip for what you're doing right now. It shows for a few
+   * seconds when the situation changes (into a car, into the water), and
+   * never lists buttons that don't do anything here.
+   */
+  controlsFor(ctx: ControlContext | null, show = true, ms = 6500) {
+    if (ctx === this.controlsCtx && !show) return;
+    this.controlsCtx = ctx;
+    clearTimeout(this.controlsT);
+    if (!ctx || !show) return setOn(this.controls, false);
+    this.controls.replaceChildren(...CONTROL_SETS[ctx].map(([a, t]) => hintRow(a, t)));
+    setOn(this.controls, true);
+    this.controlsT = window.setTimeout(() => setOn(this.controls, false), ms);
+  }
+
   showControls(on: boolean) {
-    setOn(this.controls, on);
+    if (on) this.controlsFor(this.controlsCtx ?? 'foot', true, 9000);
+    else setOn(this.controls, false);
   }
 
   discovery(e: Entry) {
@@ -225,8 +262,4 @@ export class Hud {
     await wait(500);
     this.nextDiscovery();
   }
-}
-
-function row(keys: string[], label: string) {
-  return h('div', {}, ...keys.map((k) => h('span', { class: 'key' }, k)), h('span', { class: 'meta' }, label));
 }

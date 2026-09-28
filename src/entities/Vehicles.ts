@@ -98,25 +98,25 @@ export class Vehicles {
   drive(car: DrivableCar, dt: number, input: Input | null, col: Collision, obstacles: Circle[]) {
     let throttle = 0, steer = 0, handbrake = false;
     if (input && !car.leaving) {
-      if (input.isDown('KeyW') || input.isDown('ArrowUp')) throttle += 1;
-      if (input.isDown('KeyS') || input.isDown('ArrowDown')) throttle -= 1;
-      if (input.isDown('KeyA') || input.isDown('ArrowLeft')) steer += 1;
-      if (input.isDown('KeyD') || input.isDown('ArrowRight')) steer -= 1;
-      handbrake = input.isDown('Space');
+      // analog triggers and stick on a pad; W/S and A/D on a keyboard
+      throttle = input.value('throttle') - input.value('brake');
+      steer = -input.steer();
+      handbrake = input.held('handbrake');
     }
     if (car.leaving) handbrake = true;
-    car.braking = (throttle < 0 && car.v > 0.2) || (throttle > 0 && car.v < -0.2) || (handbrake && Math.abs(car.v) > 0.1);
+    car.braking = (throttle < -0.04 && car.v > 0.2) || (throttle > 0.04 && car.v < -0.2) || (handbrake && Math.abs(car.v) > 0.1);
 
     // longitudinal
-    if (throttle > 0) car.v += (car.v < -0.2 ? BRAKE : ACCEL * (1 - Math.max(0, car.v) / VMAX)) * dt;
-    else if (throttle < 0) car.v -= (car.v > 0.2 ? BRAKE : REVERSE * (1 - Math.max(0, -car.v) / VREV)) * dt;
+    const tp = Math.abs(throttle);
+    if (throttle > 0.04) car.v += (car.v < -0.2 ? BRAKE * tp : ACCEL * tp * (1 - Math.max(0, car.v) / VMAX)) * dt;
+    else if (throttle < -0.04) car.v -= (car.v > 0.2 ? BRAKE * tp : REVERSE * tp * (1 - Math.max(0, -car.v) / VREV)) * dt;
     else car.v -= Math.sign(car.v) * Math.min(Math.abs(car.v), DRAG * dt);
     if (handbrake) car.v -= Math.sign(car.v) * Math.min(Math.abs(car.v), 12 * dt);
     car.v = THREE.MathUtils.clamp(car.v, -VREV, VMAX);
 
     // steering: full lock at a crawl, gentle at speed, wheels self-centre
     const lock = 0.62 / (1 + Math.abs(car.v) * 0.07);
-    car.steer += (steer * lock - car.steer) * Math.min(1, dt * (steer ? 5 : 8));
+    car.steer += (steer * lock - car.steer) * Math.min(1, dt * (Math.abs(steer) > 0.05 ? 5 : 8));
     car.yaw = wrap(car.yaw + (car.v * Math.tan(car.steer) / WHEELBASE) * dt);
 
     const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);

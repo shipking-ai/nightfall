@@ -1,4 +1,5 @@
 import { h, setOn, svg } from './dom';
+import { glyph } from '../input/glyphs';
 import { BLOCKS, DISTRICTS, ROADS, PADS, YARD, STATION, GARDEN, BRIDGE, type Rect } from '../world/layout';
 import { ENTRIES, PLACE_BY_DISTRICT } from '../data/archive';
 import type { InteractSpot } from '../world/WorldContext';
@@ -21,7 +22,7 @@ export class MapView {
 
   constructor(root: HTMLElement, private onClose: () => void, private spots: InteractSpot[]) {
     this.svgEl = svg('svg', { role: 'img', 'aria-label': 'Survey map of District 03', preserveAspectRatio: 'xMidYMid meet' });
-    this.sheet = h('div', { class: 'map__sheet' }, this.svgEl, h('span', { class: 'meta map__hint' }, 'Drag to pan · Scroll to zoom · Double-click to reset'));
+    this.sheet = h('div', { class: 'map__sheet' }, this.svgEl, h('span', { class: 'meta map__hint' }, h('span', { class: 'hint-kbm' }, 'Drag to pan · Scroll to zoom · Double-click to reset'), h('span', { class: 'hint-pad' }, glyph('moveStick'), ' Pan  ', glyph('aim'), glyph('attack'), ' Zoom  ', glyph('jump'), ' Reset  ', glyph('tabNext'), ' Archive')));
     this.side = h('aside', { class: 'map__side' });
     this.el = h(
       'section',
@@ -30,7 +31,7 @@ export class MapView {
         'header',
         { class: 'panel__head' },
         h('div', {}, h('span', { class: 'meta' }, 'Survey sheet · District 03'), h('h2', { class: 'panel__title' }, 'The District')),
-        h('button', { class: 'panel__close', onclick: () => this.onClose() }, h('span', { class: 'meta' }, 'Close'), h('span', { class: 'key' }, 'M')),
+        h('button', { class: 'panel__close', onclick: () => this.onClose() }, h('span', { class: 'meta' }, 'Close'), glyph('map')),
       ),
       h('div', { class: 'panel__body map__body' }, this.sheet, this.side),
     );
@@ -85,6 +86,28 @@ export class MapView {
       this.view = { ...FULL };
       this.applyView();
     });
+  }
+
+  /** Controller: left stick pans, triggers zoom (units: fractions of the view per second). */
+  pad(dt: number, x: number, y: number, zoom: number, reset: boolean) {
+    if (reset) {
+      this.view = { ...FULL };
+      return this.applyView();
+    }
+    if (!x && !y && !zoom) return;
+    const v = this.view;
+    v.x += x * v.w * 0.9 * dt;
+    v.y += y * v.h * 0.9 * dt;
+    if (zoom) {
+      const k = Math.exp(-zoom * 1.6 * dt);
+      const nw = Math.min(FULL.w * 1.2, Math.max(60, v.w * k));
+      const scale = nw / v.w;
+      v.x += (v.w - nw) / 2;
+      v.y += (v.h - v.h * scale) / 2;
+      v.w = nw;
+      v.h *= scale;
+    }
+    this.applyView();
   }
 
   private focus(x: number, z: number) {
