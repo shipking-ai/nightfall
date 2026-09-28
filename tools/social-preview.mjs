@@ -27,7 +27,7 @@ await page.evaluate(() => {
       <div class="og__rule"></div>
       <p class="og__modes"><span>City</span><i>·</i><span>After Hours</span><i>·</i><span>Warzone</span><i>·</i><span>Fight</span></p>
     </div>
-    <div class="og__foot"><span>Play free in your browser</span><b>nightfall-sand.vercel.app</b><span class="og__pad">Controller ready</span></div>`;
+    <div class="og__foot"><span>Play free in your browser</span><b>nightfall-sand.vercel.app</b></div>`;
   card.className = 'og';
   const css = document.createElement('style');
   css.textContent = `
@@ -44,7 +44,7 @@ await page.evaluate(() => {
     .og__modes i { font-style: normal; color: #7c705c; }
     .og__foot { position: absolute; left: 64px; right: 64px; bottom: 44px; display: flex; gap: 22px; align-items: baseline; font: 400 14px 'IBM Plex Mono', monospace; letter-spacing: .14em; color: #a4a6a4; }
     .og__foot b { font-weight: 500; color: #efe9dd; }
-    .og__pad { margin-left: auto; padding: 5px 10px; border: 1px solid rgba(233,229,220,.35); color: #efe9dd; }`;
+`;
   document.head.append(css);
   document.body.append(card);
 });
