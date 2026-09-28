@@ -13,7 +13,11 @@ const until = async (fn, secs = 60) => {
 };
 await waitState('landing');
 await t.wait(5000);
-for (const [id, title] of [['warzone', 'Warzone'], ['fight', 'Fight'], ['city', 'City'], ['afterhours', 'After Hours']]) {
+const ALL = [['warzone', 'Warzone'], ['fight', 'Fight'], ['city', 'City'], ['afterhours', 'After Hours']];
+const only = process.env.MODES?.split(',');
+// the heavier scenes draw slowly in a software renderer: give each D-pad tap time to land
+const gap = Number(process.env.GAP ?? 500);
+for (const [id, title] of ALL.filter(([m]) => !only || only.includes(m))) {
   // the title: Enter (the first thing focused)
   await until(async () => (await focused()).includes('Enter'), 20);
   await tap('A');
@@ -38,8 +42,8 @@ for (const [id, title] of [['warzone', 'Warzone'], ['fight', 'Fight'], ['city', 
   await tap('Menu');
   await t.wait(2500);
   for (let i = 0; i < 12 && !(await focused()).includes('Leave'); i++) {
-    await tap('Down');
-    await t.wait(500);
+    await tap('Down', 250 + gap / 2);
+    await t.wait(gap);
   }
   const leaving = await focused();
   await tap('A');
