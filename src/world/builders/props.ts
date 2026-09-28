@@ -182,8 +182,22 @@ export interface CarPart {
   m: THREE.Matrix4;
   mat: (ctx: WorldContext) => THREE.Material;
   color?: number;
-  kind: 'paint' | 'glass' | 'dark' | 'head' | 'tail';
+  kind: 'paint' | 'glass' | 'dark' | 'head' | 'tail' | 'seat';
 }
+
+/**
+ * Windows on the cars people drive and ride in: dark, but you can see who's
+ * at the wheel. (Parked scenery cars keep opaque glass: nobody's inside.)
+ */
+export const CAR_GLASS = new THREE.MeshStandardMaterial({ color: 0x0a0c10, roughness: 0.05, metalness: 0.55, transparent: true, opacity: 0.5, depthWrite: false });
+
+/** Where people sit, in car space (facing +z, the car's right is +x). */
+export const SEATS = {
+  driver: new THREE.Vector3(-0.4, 0.2, -0.05),
+  front: new THREE.Vector3(0.4, 0.2, -0.05),
+  back: new THREE.Vector3(0.38, 0.2, -1.05),
+  wheel: new THREE.Vector3(-0.4, 0.95, 0.42),
+};
 
 /** Car made of a few boxes, facing +z, origin at ground centre. */
 export function carParts(color: number, van = false): CarPart[] {
@@ -199,6 +213,12 @@ export function carParts(color: number, van = false): CarPart[] {
     { kind: 'tail', geo: G.box, m: M(0.68, 0.72, -L / 2, 0.3, 0.1, 0.05), mat: (c) => c.mats.lampRed },
   ];
   for (const sx of [-0.82, 0.82]) for (const sz of [-L / 2 + 0.85, L / 2 - 0.85]) parts.push({ kind: 'dark', geo: G.wheel, m: M(sx, 0.33, sz, 0.18, 0.33, 0.33), mat: (c) => c.mats.rubber });
+  if (!van) {
+    // seats and a wheel, seen through the glass
+    for (const x of [-0.4, 0.4]) parts.push({ kind: 'seat', geo: G.box, m: M(x, 0.62, -0.42, 0.5, 0.62, 0.12, 0, -0.18), mat: (c) => c.mats.rubber });
+    parts.push({ kind: 'seat', geo: G.box, m: M(0, 0.62, -1.42, 1.4, 0.55, 0.12, 0, -0.12), mat: (c) => c.mats.rubber });
+    parts.push({ kind: 'seat', geo: G.cyl, m: M(SEATS.wheel.x, SEATS.wheel.y - 0.02, SEATS.wheel.z, 0.19, 0.03, 0.19, 0, -1.1), mat: (c) => c.mats.rubber });
+  }
   return parts;
 }
 

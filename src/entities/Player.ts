@@ -1,10 +1,13 @@
 import * as THREE from 'three';
-import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Outfit } from './Humanoid';
+import { newMotion, newRig, solve, stepPhase, visibleParts, type ArmMode, type Body, type Outfit } from './Humanoid';
 import { FigureBatch } from './FigureBatch';
 import type { Collision } from '../world/Collision';
 import type { Input } from '../core/Input';
 import { bodyFromLook, outfitFromLook, type Look } from './Look';
 import { WATER_Y, RIVER_Z0, RIVER_Z1, QUAY_Z, inRiver } from './Boats';
+import { Animator } from '../anim/Animator';
+import '../anim/clips';
+import type { Emote } from '../data/emotes';
 
 const WALK = 3.1;
 const SPRINT = 6.4;
@@ -18,7 +21,10 @@ const STEP = 0.46;
 
 /**
  * Third-person walker. Responsive rather than realistic: quick acceleration,
- * forgiving steps, a jump that clears a platform edge.
+ * forgiving steps, a jump that clears a platform edge. The same rig and the
+ * same animation library as everyone in the city, so the player moves like
+ * a person: weight into starts and stops, a landing in the knees, emotes and
+ * actions that play over walking.
  */
 export class Player {
   group = new THREE.Group();
@@ -30,29 +36,42 @@ export class Player {
   sprinting = false;
   /** WARZONE: low behind cover */
   crouching = false;
+  /** crouching is allowed (WARZONE) */
+  canCrouch = false;
   /** an animation that holds the body (an emote you can't walk out of yet, a door) */
   busy = false;
+  anim = new Animator();
+  /** the emote playing, if any */
+  emote: Emote | null = null;
   private motion = newMotion();
-  private rig = newRig();
+  rig = newRig();
   private batch = new FigureBatch(1);
   private root = new THREE.Matrix4();
-  private body: Body = { height: 1.0, girth: 1.02, shoulders: 1.04, hips: 0.98, head: 1 };
+  body: Body = { height: 1.0, girth: 1.02, shoulders: 1.04, hips: 0.98, head: 1 };
   /** a long charcoal coat and a turned-up scarf: the one silhouette you learn to recognise */
-  private outfit: Outfit = {
+  outfit: Outfit = {
     garment: 'coat', top: 0x2a2c30, legs: 0x16171a, shoes: 0x0e0e0f, skin: 0xb8876a, hair: 'swept', hairColor: 0x1a1512,
     accent: 0x6a5a48, hem: true, skirt: false, hoodDown: false, scarf: true, bag: false, umbrella: false, bulk: 1.1,
   };
   private parts = visibleParts(this.outfit, 0);
   private sitBlend = 0;
+  private lastSpeed = 0;
   /** combat: face this way (strafing) instead of the direction of travel */
   aimYaw: number | null = null;
-  /** combat: the right arm's pose while armed/punching */
-  armPose: 'aim' | 'punch' | 'guard' | null = null;
+  /** combat: the arms' pose while armed/punching */
+  armPose: ArmMode | null = null;
+  /** the left arm's pose, when a weapon needs both hands */
+  armPoseL: ArmMode | null = null;
   /** admin: walk faster/slower; fly through everything */
   speedMul = 1;
   fly = false;
   /** in the river: floating at the surface, slow; Space by the quay wall climbs out */
   swimming = false;
+  /**
+   * In a vehicle: sat in a seat (world matrix of the seat), hands on the wheel
+   * if driving. The figure is drawn there; `pos` still follows the car.
+   */
+  seat: { m: THREE.Matrix4; drive: boolean; steer: number } | null = null;
   /** a pistol in the right hand, shown while armed */
   gun = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.2, 0.11).translate(0, -0.13, 0.03), new THREE.MeshStandardMaterial({ color: 0x151618, roughness: 0.4, metalness: 0.6 }));
   onStep: ((intensity: number) => void) | null = null;
@@ -60,7 +79,7 @@ export class Player {
 
   constructor() {
     this.group.add(this.batch.group);
-    this.batch.dress(0, this.outfit);
+    this.batch.dress(0, this.outfit, 0x9fc4ff, this.body);
     this.gun.matrixAutoUpdate = false;
     this.gun.visible = false;
     this.gun.castShadow = true;
@@ -76,6 +95,7 @@ export class Player {
     this.facing = yaw;
     this.sitting = false;
     this.sitBlend = 0;
+    this.stopEmote();
   }
 
   sitAt(p: THREE.Vector3, yaw: number) {
@@ -83,16 +103,66 @@ export class Player {
     this.pos.copy(p);
     this.vel.set(0, 0, 0);
     this.facing = yaw;
+    this.stopEmote();
+    this.anim.play('act.sitDown', { group: 'act', fadeIn: 0.2 });
+  }
+
+  /** An emote from the wheel. Upper-body ones play while you walk; full-body ones stop you. */
+  playEmote(e: Emote) {
+    this.stopEmote(0.15);
+    this.emote = e;
+    this.busy = !!e.full;
+    this.anim.play(e.clip, {
+      group: 'emote',
+      fadeIn: 0.28,
+      fadeOut: 0.35,
+      stay: !!e.hold && !e.then,
+      onEnd: () => {
+        if (this.emote === e && !e.hold) {
+          this.emote = null;
+          this.busy = false;
+        }
+      },
+    });
+    if (e.then) {
+      const first = e.clip;
+      setTimeout(() => {
+        if (this.emote === e && this.anim.playing(first)) this.anim.play(e.then!, { group: 'emote', loop: true, fadeIn: 0.2 });
+      }, 1000 * 1.1);
+    }
+  }
+
+  stopEmote(fade = 0.35) {
+    if (!this.emote) return;
+    this.anim.stop('emote', fade);
+    this.emote = null;
+    this.busy = false;
+  }
+
+  /** A short action over whatever else is happening (a door, a button, answering a phone). */
+  act(clip: string, opts: { hold?: boolean; loop?: boolean } = {}) {
+    this.anim.play(clip, { group: 'act', fadeIn: 0.18, fadeOut: 0.3, loop: opts.loop });
+    if (opts.hold) this.busy = true;
+    if (opts.hold) setTimeout(() => (this.busy = false), 900);
   }
 
   update(dt: number, input: Input | null, camYaw: number, col: Collision, obstacles: { x: number; z: number; r: number }[]) {
-    // intent in camera space
+    this.anim.update(dt);
+    const m = this.motion;
+    if (this.seat) return this.updateSeated(dt);
+
     // analog on a stick (a gentle push walks slowly), full speed from the keys
-    const mv = input ? input.move() : { x: 0, y: 0, mag: 0 };
+    const mv = input && !this.busy ? input.move() : { x: 0, y: 0, mag: 0 };
     const ix = -mv.x, iz = mv.y;
     const moving = mv.mag > 0.02;
-    if (this.sitting && moving) this.sitting = false;
+    if (this.sitting && moving) {
+      this.sitting = false;
+      this.anim.play('act.standUp', { group: 'act', fadeIn: 0.15 });
+    }
+    // held emotes end when you walk off; the rest play on over the walk
+    if (moving && this.emote?.hold) this.stopEmote(0.3);
 
+    this.crouching = this.canCrouch && !!input && input.state('crouch') && !this.swimming;
     this.sprinting = !!input && moving && input.state('sprint', !moving) && mv.mag > 0.5 && !this.crouching;
     this.swimming = !this.fly && inRiver(this.pos.x, this.pos.z, this.pos.y);
     const push = Math.min(1, mv.mag * 1.15);
@@ -106,13 +176,13 @@ export class Player {
       wx /= len;
       wz /= len;
     }
-    const tx = wx * speed, tz = wz * speed;
+    const tx = moving ? wx * speed : 0, tz = moving ? wz * speed : 0;
     const rate = (moving ? ACCEL : DECEL) * (this.grounded ? 1 : 0.35);
     this.vel.x += clampAbs(tx - this.vel.x, rate * dt);
     this.vel.z += clampAbs(tz - this.vel.z, rate * dt);
 
     if (this.swimming) {
-      // float with your head out; the quay wall has iron rungs: Space to climb out beside it
+      // float with your head out; the quay wall has iron rungs: jump to climb out beside it
       const surface = WATER_Y - 1.32;
       this.vel.y = 0;
       this.pos.x += this.vel.x * dt;
@@ -124,9 +194,10 @@ export class Player {
         this.vel.set(0, 0, 0);
         this.grounded = true;
         this.swimming = false;
+        this.anim.play('act.climb', { group: 'act', fadeIn: 0.05 });
       }
     } else if (this.fly) {
-      // noclip: straight through walls, up with Space, down with C
+      // noclip: straight through walls, up with jump, down with crouch
       const up = input ? (input.held('jump') ? 1 : 0) - (input.held('crouch') ? 1 : 0) : 0;
       this.vel.y = up * speed;
       this.pos.x += this.vel.x * dt;
@@ -136,6 +207,7 @@ export class Player {
     } else if (input && this.grounded && !this.sitting && !this.busy && input.pressed('jump')) {
       this.vel.y = JUMP_V;
       this.grounded = false;
+      this.stopEmote(0.1);
     }
     if (!this.fly && !this.swimming) this.vel.y -= GRAVITY * dt;
 
@@ -154,7 +226,10 @@ export class Player {
       }
       const g = col.groundAt(this.pos.x, this.pos.z, this.pos.y, this.grounded ? STEP : 0.05, RADIUS);
       if (this.pos.y <= g + 0.001) {
-        if (!this.grounded && this.vel.y < -4) this.onLand?.(-this.vel.y);
+        if (!this.grounded && this.vel.y < -4) {
+          this.onLand?.(-this.vel.y);
+          m.land = Math.min(1, -this.vel.y / 9);
+        }
         // step up smoothly rather than snapping
         this.pos.y = this.grounded ? THREE.MathUtils.lerp(this.pos.y, g, Math.min(1, dt * 18)) : g;
         if (Math.abs(this.pos.y - g) < 0.01) this.pos.y = g;
@@ -169,7 +244,7 @@ export class Player {
       }
     }
 
-    // face the direction of travel
+    // face the direction of travel (or the aim, strafing)
     const hs = Math.hypot(this.vel.x, this.vel.z);
     if (this.aimYaw != null && !this.sitting) this.facing += wrap(this.aimYaw - this.facing) * Math.min(1, dt * 18);
     else if (hs > 0.25 && !this.sitting) {
@@ -177,20 +252,28 @@ export class Player {
       this.facing += wrap(want - this.facing) * Math.min(1, dt * 11);
     }
 
-    // animation — the same rig everyone in the city uses
-    const m = this.motion;
+    // animation: the same rig everyone in the city uses
     this.sitBlend += ((this.sitting ? 1 : 0) - this.sitBlend) * Math.min(1, dt * 5);
     m.sit = this.sitBlend;
     m.speed = this.grounded || this.swimming ? hs : Math.max(hs, 2.5);
+    m.crouch += ((this.crouching ? 1 : 0) - m.crouch) * Math.min(1, dt * 9);
+    m.air += ((!this.grounded && !this.swimming && !this.fly ? 1 : 0) - m.air) * Math.min(1, dt * 10);
+    // leaning into starts, back from stops
+    const acc = (hs - this.lastSpeed) / Math.max(dt, 1e-3);
+    this.lastSpeed = hs;
+    m.accel += (THREE.MathUtils.clamp(acc, -12, 12) - m.accel) * Math.min(1, dt * 8);
+    // strafing and backing up while aiming: legs step the way you're going
+    m.moveDir = hs > 0.3 && this.aimYaw != null ? wrap(Math.atan2(this.vel.x, this.vel.z) - this.facing) : m.moveDir * (1 - Math.min(1, dt * 6));
     m.armL = m.armR = this.sitting ? 'rest' : 'free';
     if (this.armPose && !this.sitting) {
       m.armR = this.armPose;
-      if (this.armPose === 'guard') m.armL = 'guard';
+      if (this.armPoseL) m.armL = this.armPoseL;
+      else if (this.armPose === 'guard') m.armL = 'guard';
     }
     m.lookYaw *= 0.9;
     const turnRate = hs > 0.25 ? wrap(Math.atan2(this.vel.x, this.vel.z) - this.facing) * 11 : 0;
     m.turn += (turnRate - m.turn) * Math.min(1, dt * 8);
-    if (stepPhase(m, dt) && this.grounded) this.onStep?.(this.sprinting ? 1 : 0.6);
+    if (stepPhase(m, dt) && this.grounded) this.onStep?.(this.sprinting ? 1 : this.crouching ? 0.35 : 0.6);
     if (!this.grounded && !this.swimming) m.phase += dt * 1.5; // legs keep moving through a jump
     if (this.swimming) {
       // a slow breaststroke: arms reach and sweep, the body low in the water
@@ -198,12 +281,32 @@ export class Player {
       m.armL = m.armR = Math.sin(m.phase * 2) > 0 ? 'punch' : 'guard';
     }
     m.weight = Math.sin(performance.now() * 0.00021);
+    m.steer = 0;
 
     this.root.compose(this.pos, _q.setFromAxisAngle(_up, this.facing), _one.setScalar(this.body.height));
-    solve(this.rig, this.root, this.body, this.outfit, m, performance.now() / 1000);
+    this.draw();
+  }
+
+  /** Sat in a car: legs to the pedals, hands on the wheel (or resting), the head looking about. */
+  private updateSeated(dt: number) {
+    const s = this.seat!;
+    const m = this.motion;
+    m.speed = 0;
+    m.sit = 1;
+    m.crouch = m.air = m.land = 0;
+    m.armL = m.armR = s.drive ? 'wheel' : 'rest';
+    m.steer += (s.steer - m.steer) * Math.min(1, dt * 8);
+    m.lookYaw = m.steer * 0.25;
+    m.breath += dt * 1.2;
+    this.root.copy(s.m).multiply(_s.makeScale(this.body.height, this.body.height, this.body.height));
+    this.draw();
+  }
+
+  private draw() {
+    solve(this.rig, this.root, this.body, this.outfit, this.motion, performance.now() / 1000, this.anim);
     this.batch.write(0, this.rig, this.parts, false);
     this.batch.flush();
-    if (this.gun.visible) this.gun.matrix.copy((this.rig as unknown as Record<string, THREE.Matrix4>).handR);
+    if (this.gun.visible) this.gun.matrix.copy(this.rig.handR);
   }
 
   /** Wear a look (Wardrobe); the same one the other players see. */
@@ -211,10 +314,18 @@ export class Player {
     this.outfit = outfitFromLook(l);
     this.body = bodyFromLook(l);
     this.parts = visibleParts(this.outfit, 0);
-    this.batch.dress(0, this.outfit);
+    this.batch.dress(0, this.outfit, 0x9fc4ff, this.body);
   }
 
-  /** in a car: the figure is not drawn, but position still drives the world */
+  /** Wear a whole outfit and body (WARZONE fatigues, a FIGHT kit). */
+  wear(o: Outfit, b: Body) {
+    this.outfit = o;
+    this.body = b;
+    this.parts = visibleParts(o, 0);
+    this.batch.dress(0, o, 0x9fc4ff, b);
+  }
+
+  /** in a car with no windows to see through: the figure is not drawn, but position still drives the world */
   set hidden(v: boolean) {
     this.batch.group.visible = !v;
   }
@@ -227,6 +338,7 @@ export class Player {
 const _q = new THREE.Quaternion();
 const _up = new THREE.Vector3(0, 1, 0);
 const _one = new THREE.Vector3(1, 1, 1);
+const _s = new THREE.Matrix4();
 
 function clampAbs(v: number, m: number) {
   return v > m ? m : v < -m ? -m : v;

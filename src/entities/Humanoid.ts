@@ -1,173 +1,25 @@
 import * as THREE from 'three';
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { ANATOMY, EYE, HEAD, type FacialHair, type Grip, type HairCut, type HatStyle } from './anatomy';
+import { C, newPose, type Pose } from '../anim/pose';
+import type { Animator } from '../anim/Animator';
 
 /**
  * Humanoid — the people of NIGHTFALL.
  *
- * A small articulated rig (pelvis → spine → neck → head, shoulders → upper arm
- * → forearm → hand, hips → thigh → shin → foot) solved procedurally every frame,
- * rendered from a shared library of part geometries. Nothing here allocates per
- * frame, and nothing here knows whether it is drawn instanced (Crowd) or as
- * plain meshes (Player).
+ * A figure is a body (proportions, build, the small asymmetries that make
+ * someone themselves), an outfit (what they wear, their hair, their face),
+ * and a motion state (how fast they're going, where they're looking).
+ *
+ * Every frame: procedural locomotion writes a pose (walk, run, idle weight
+ * shift, crouch, sit, jump), authored clips blend over it (Animator), then
+ * look-at, breathing and blinking go on top, and the rig turns the pose into
+ * part matrices. Nothing here allocates per frame, and nothing here knows
+ * whether it's drawn instanced (Crowd) or for one figure (Player).
  *
  * Units: metres, feet on the origin, facing +z. A body of height 1 is ~1.76 m.
  */
 
-/* ─────────────────────────── geometry library ─────────────────────────── */
-
-function merge(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
-  const parts = geos.map((g) => (g.index ? g.toNonIndexed() : g));
-  let count = 0;
-  for (const g of parts) count += g.attributes.position.count;
-  const pos = new Float32Array(count * 3);
-  const nor = new Float32Array(count * 3);
-  let o = 0;
-  for (const g of parts) {
-    pos.set(g.attributes.position.array as Float32Array, o * 3);
-    nor.set(g.attributes.normal.array as Float32Array, o * 3);
-    o += g.attributes.position.count;
-  }
-  const out = new THREE.BufferGeometry();
-  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-  out.computeBoundingSphere();
-  return out;
-}
-
-const lathe = (profile: [number, number][], seg = 14, depth = 0.7) => {
-  // LatheGeometry faces outward only when the profile runs bottom → top
-  const pts = profile[0][1] > profile[profile.length - 1][1] ? [...profile].reverse() : profile;
-  const g = new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), seg);
-  // LatheGeometry already has seam-aware normals; scale() transforms them correctly.
-  // (Recomputing here would split the seam into a visible hard edge.)
-  g.scale(1, 1, depth);
-  return g;
-};
-
-/**
- * A limb segment hanging from its joint (origin) down to -len, shaped by a
- * radius profile (fractions along the length → radius) so thighs taper and
- * calves swell instead of reading as tubes. Ends are rounded so joints blend.
- */
-const limb = (profile: [number, number][], len: number, depth = 0.9, seg = 12) => {
-  const pts: [number, number][] = profile.map(([f, r]) => [r, -f * len]);
-  const top = pts[0][0], bot = pts[pts.length - 1][0];
-  const body = lathe([[0, top * 0.55], [top * 0.8, top * 0.45], ...pts, [bot * 0.75, -len - bot * 0.5], [0, -len - bot * 0.62]], seg, depth);
-  body.rotateY(Math.PI);
-  return body;
-};
-
-function sculptHead(detail: boolean): THREE.BufferGeometry {
-  const g = new THREE.SphereGeometry(0.1, detail ? 24 : 12, detail ? 18 : 9);
-  const p = g.attributes.position as THREE.BufferAttribute;
-  for (let i = 0; i < p.count; i++) {
-    let x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-    y *= 1.16;
-    // jaw narrows towards the chin, the back of the skull stays full
-    if (y < 0) {
-      const k = Math.min(1, -y / 0.116);
-      x *= 1 - 0.28 * k;
-      if (z > 0) z *= 1 - 0.12 * k;
-    }
-    if (z < 0) z *= 1.08;
-    // flatter face plane, a soft brow
-    if (z > 0.06) z = 0.06 + (z - 0.06) * 0.6;
-    if (z > 0.05 && y > 0.018 && y < 0.04) z += 0.006;
-    p.setXYZ(i, x * 0.92, y, z);
-  }
-  g.deleteAttribute('normal');
-  g.deleteAttribute('uv');
-  const welded = mergeVertices(g, 1e-5); // smooth across the sphere seam
-  welded.computeVertexNormals();
-  g.copy(welded);
-  if (!detail) return g.translate(0, 0.135, 0);
-  const nose = new THREE.ConeGeometry(0.014, 0.045, 5).rotateX(Math.PI * 0.62).translate(0, 0.0, 0.074);
-  const earL = new THREE.SphereGeometry(0.024, 8, 6).scale(0.45, 1.25, 0.9).translate(-0.088, 0.008, -0.005);
-  const earR = earL.clone().translate(0.176, 0, 0);
-  const lips = new THREE.BoxGeometry(0.036, 0.008, 0.012).translate(0, -0.046, 0.066);
-  return merge([g, nose, earL, earR, lips]).translate(0, 0.135, 0);
-}
-
-const eyes = (() => {
-  const l = new THREE.SphereGeometry(0.011, 8, 6).scale(1.2, 0.8, 0.6).translate(-0.031, 0.157, 0.078);
-  const r = l.clone().translate(0.062, 0, 0);
-  const browL = new THREE.BoxGeometry(0.03, 0.006, 0.01).rotateZ(0.08).translate(-0.031, 0.176, 0.081);
-  const browR = new THREE.BoxGeometry(0.03, 0.006, 0.01).rotateZ(-0.08).translate(0.031, 0.176, 0.081);
-  return merge([l, r, browL, browR]);
-})();
-
-const hairCap = (r: number, open = 0.56) =>
-  // tilted back: the hairline sits high on the forehead, the back covers the nape
-  new THREE.SphereGeometry(r, 18, 10, 0, Math.PI * 2, 0, Math.PI * open).scale(0.95, 1.1, 1.06).rotateX(-0.42);
-
-const HAIR = {
-  short: merge([hairCap(0.106, 0.5).translate(0, 0.148, -0.006)]),
-  swept: merge([hairCap(0.109, 0.52).translate(0, 0.152, -0.006), new THREE.SphereGeometry(0.06, 10, 6).scale(1.5, 0.45, 1).rotateX(-0.25).translate(0.02, 0.248, 0.03)]),
-  long: merge([
-    hairCap(0.11, 0.56).translate(0, 0.148, -0.01),
-    lathe([[0.0, 0.0], [0.09, 0.0], [0.1, -0.1], [0.085, -0.2], [0.0, -0.2]], 12, 0.6).translate(0, 0.15, -0.03),
-  ]),
-  bun: merge([hairCap(0.107, 0.5).translate(0, 0.148, -0.006), new THREE.SphereGeometry(0.04, 10, 8).translate(0, 0.21, -0.08)]),
-  beanie: merge([hairCap(0.114, 0.52).translate(0, 0.152, -0.004), new THREE.TorusGeometry(0.1, 0.014, 6, 18).rotateX(Math.PI / 2).translate(0, 0.16, -0.004)]),
-  cap: merge([
-    hairCap(0.111, 0.48).translate(0, 0.155, 0),
-    new THREE.CylinderGeometry(0.075, 0.075, 0.008, 14, 1, false, -Math.PI / 2, Math.PI).scale(1, 1, 1.1).translate(0, 0.19, 0.06),
-  ]),
-  hood: merge([
-    new THREE.SphereGeometry(0.135, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.62).scale(0.95, 1.08, 1.05).rotateX(-0.25).translate(0, 0.14, -0.018),
-  ]),
-};
-export type HairStyle = keyof typeof HAIR | 'none';
-
-export const PARTS = {
-  pelvis: lathe([[0.0, -0.1], [0.1, -0.1], [0.138, -0.04], [0.14, 0.04], [0.132, 0.1], [0.0, 0.1]], 14, 0.7),
-  torso: merge([
-    lathe([[0.0, 0.0], [0.138, 0.0], [0.142, 0.1], [0.165, 0.22], [0.186, 0.31], [0.19, 0.36], [0.165, 0.415], [0.07, 0.448], [0.0, 0.448]], 18, 0.66),
-    // deltoids and a trapezius slope into the neck
-    new THREE.SphereGeometry(0.06, 12, 8).scale(1.1, 0.85, 1).translate(-0.168, 0.378, 0),
-    new THREE.SphereGeometry(0.06, 12, 8).scale(1.1, 0.85, 1).translate(0.168, 0.378, 0),
-    new THREE.SphereGeometry(0.07, 12, 8).scale(1.7, 0.55, 0.8).translate(0, 0.43, -0.01),
-    new THREE.CylinderGeometry(0.045, 0.052, 0.12, 10).translate(0, 0.49, 0.005),
-  ]),
-  head: sculptHead(true),
-  headFar: sculptHead(false),
-  eyes,
-  upperArm: limb([[0, 0.058], [0.3, 0.056], [0.7, 0.046], [1, 0.041]], 0.28),
-  forearm: limb([[0, 0.043], [0.22, 0.046], [0.65, 0.036], [1, 0.029]], 0.25),
-  // a palm, four fingers curled a little, and a thumb
-  hand: merge([
-    new THREE.CapsuleGeometry(0.028, 0.04, 3, 8).scale(1.15, 1, 0.55).translate(0, -0.042, 0),
-    ...[-0.021, -0.007, 0.007, 0.021].map((x, i) =>
-      new THREE.CapsuleGeometry(0.0085, [0.034, 0.042, 0.04, 0.032][i], 2, 5).rotateX(0.35).translate(x, -0.1 + (i === 0 || i === 3 ? 0.006 : 0), 0.008),
-    ),
-    new THREE.CapsuleGeometry(0.01, 0.03, 2, 5).rotateZ(0.7).rotateX(0.3).translate(0.034, -0.045, 0.014),
-  ]),
-  thigh: limb([[0, 0.09], [0.2, 0.088], [0.6, 0.071], [1, 0.054]], 0.43, 0.95),
-  shin: limb([[0, 0.054], [0.28, 0.062], [0.6, 0.049], [1, 0.036]], 0.42, 0.95),
-  /** coat / jacket collar, turned up */
-  collar: merge([lathe([[0.07, 0.39], [0.082, 0.43], [0.102, 0.455]], 14, 0.9).translate(0, 0, 0.004), new THREE.BoxGeometry(0.05, 0.16, 0.012).rotateZ(0.35).rotateX(-0.12).translate(-0.045, 0.34, 0.104), new THREE.BoxGeometry(0.05, 0.16, 0.012).rotateZ(-0.35).rotateX(-0.12).translate(0.045, 0.34, 0.104)]),
-  /** crew neck on a knit or a hoodie */
-  crew: new THREE.TorusGeometry(0.066, 0.016, 6, 16).rotateX(Math.PI / 2).translate(0, 0.435, 0.004),
-  /** shirt front showing under a jacket */
-  shirt: (() => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute([-0.05, 0.43, 0.1, 0.05, 0.43, 0.1, 0, 0.25, 0.108], 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0.2, 1, 0, 0.2, 1, 0, 0.2, 1], 3));
-    return g;
-  })(),
-  foot: merge([new THREE.CapsuleGeometry(0.042, 0.17, 4, 10).rotateX(Math.PI / 2).scale(1, 0.85, 1).translate(0, -0.042, 0.06), new THREE.BoxGeometry(0.08, 0.02, 0.24).translate(0, -0.075, 0.06)]),
-  /** long coat skirt from the waist to below the knee */
-  hem: lathe([[0.15, 0.02], [0.17, -0.12], [0.205, -0.35], [0.235, -0.62]], 16, 0.78),
-  /** short skirt */
-  skirt: lathe([[0.145, 0.02], [0.17, -0.12], [0.215, -0.4]], 16, 0.8),
-  /** a hood lying down at the back of the neck, or a scarf */
-  hoodDown: merge([new THREE.TorusGeometry(0.09, 0.035, 8, 16, Math.PI * 1.4).rotateX(Math.PI / 2).rotateY(Math.PI * 0.8).scale(1, 1, 1.15).translate(0, 0.44, -0.035)]),
-  scarf: merge([new THREE.TorusGeometry(0.068, 0.03, 8, 16).rotateX(Math.PI / 2).translate(0, 0.45, 0.005), new THREE.BoxGeometry(0.06, 0.2, 0.02).translate(0.03, 0.34, 0.1)]),
-  bag: merge([new THREE.BoxGeometry(0.07, 0.22, 0.28).translate(0.2, -0.08, 0.02), new THREE.BoxGeometry(0.02, 0.62, 0.03).rotateZ(-0.62).translate(0.03, 0.2, 0.095)]),
-  umbrella: merge([new THREE.ConeGeometry(0.56, 0.24, 14, 1, true).translate(0, 0.94, 0), new THREE.CylinderGeometry(0.008, 0.008, 0.95, 5).translate(0, 0.46, 0)]),
-  glow: new THREE.BoxGeometry(0.055, 0.09, 0.008),
-  ...Object.fromEntries(Object.entries(HAIR).map(([k, v]) => [`hair_${k}`, v])),
-} as Record<string, THREE.BufferGeometry>;
+export const PARTS = ANATOMY;
 
 /* ─────────────────────────── body + outfit ─────────────────────────── */
 
@@ -177,9 +29,36 @@ export interface Body {
   shoulders: number;
   hips: number;
   head: number;
+  /** — everything below is optional; defaults are an average person — */
+  /** torso morphs, 0..1 */
+  bust?: number;
+  belly?: number;
+  broad?: number;
+  slim?: number;
+  /** relative lengths */
+  legLen?: number;
+  armLen?: number;
+  torsoLen?: number;
+  neckLen?: number;
+  /** head width and depth (on top of `head`) */
+  headW?: number;
+  headD?: number;
+  /** small asymmetries: one shoulder carried lower, a tilt of the head, feet turned out */
+  shDrop?: number;
+  tilt?: number;
+  toeOut?: number;
+  /** 0 young … 1 old: posture, cadence, face */
+  age?: number;
+  /** face shapes (anatomy.FACE_SHAPES order), 0..1 each */
+  face?: number[];
 }
 
-export type Garment = 'coat' | 'raincoat' | 'hoodie' | 'jacket' | 'suit' | 'skirt' | 'workwear' | 'knit';
+export type Garment =
+  | 'coat' | 'raincoat' | 'hoodie' | 'jacket' | 'suit' | 'skirt' | 'workwear' | 'knit'
+  | 'shirt' | 'tee' | 'puffer' | 'uniform' | 'scrubs';
+
+/** Kept for saved looks and the network: the old single "hair" field (cuts and headwear). */
+export type HairStyle = 'short' | 'swept' | 'long' | 'bun' | 'beanie' | 'cap' | 'hood' | 'none' | HairCut | HatStyle;
 
 export interface Outfit {
   garment: Garment;
@@ -189,7 +68,7 @@ export interface Outfit {
   skin: number;
   hair: HairStyle;
   hairColor: number;
-  accent: number; // scarf / hood / bag / beanie
+  accent: number; // scarf / hood / bag / hat
   hem: boolean;
   skirt: boolean;
   hoodDown: boolean;
@@ -198,11 +77,46 @@ export interface Outfit {
   umbrella: boolean;
   /** sleeves and torso read bulkier in coats */
   bulk: number;
+  /** — optional detail — */
+  hat?: HatStyle | 'none';
+  hatColor?: number;
+  shoeKind?: 'shoe' | 'sneaker' | 'boot';
+  soleColor?: number;
+  sleeves?: 'long' | 'short';
+  jacketHem?: boolean;
+  lapels?: boolean;
+  tie?: number | null;
+  shirt?: number | null;
+  pocket?: boolean;
+  apron?: number | null;
+  vest?: number | null;
+  vestBand?: number;
+  dutyBelt?: boolean;
+  belt?: boolean;
+  radio?: boolean;
+  backpack?: number | null;
+  gloves?: number | null;
+  facialHair?: FacialHair;
+  glasses?: boolean;
+  eyeColor?: number;
+  /** eyebrow thickness 0.6..1.6 */
+  brows?: number;
+}
+
+const CUTS = ['buzz', 'short', 'swept', 'messy', 'curly', 'long', 'bob', 'ponytail', 'bun'];
+const HATS = ['hood', 'beanie', 'cap', 'flatcap', 'peaked', 'trilby'];
+
+/** Split the saved `hair` value into a cut and a hat. */
+export function hairParts(o: Outfit): { cut: HairCut | 'none'; hat: HatStyle | 'none' } {
+  const h = o.hair;
+  const hat: HatStyle | 'none' = o.hat && o.hat !== 'none' ? o.hat : HATS.includes(h) ? (h as HatStyle) : 'none';
+  const cut: HairCut | 'none' = h === 'none' ? 'none' : CUTS.includes(h) ? (h as HairCut) : 'short';
+  return { cut, hat };
 }
 
 /* ─────────────────────────── motion state ─────────────────────────── */
 
-export type ArmMode = 'free' | 'pockets' | 'phone' | 'umbrella' | 'smoke' | 'watch' | 'gesture' | 'rest' | 'aim' | 'punch' | 'guard' | 'hands';
+export type ArmMode = 'free' | 'pockets' | 'phone' | 'umbrella' | 'smoke' | 'watch' | 'gesture' | 'rest' | 'aim' | 'punch' | 'guard' | 'hands' | 'rifle' | 'rifleAim' | 'wheel' | 'cross';
 
 export interface Motion {
   speed: number; // m/s along the ground
@@ -222,6 +136,25 @@ export interface Motion {
   turn: number; // angular velocity (rad/s) — the upper body leans into turns
   glitch: number; // 0..1 something is wrong
   glitchKind: number;
+  /** direction of travel relative to facing (0 forward, ±π/2 sideways, π backwards) */
+  moveDir: number;
+  /** 0..1 crouched */
+  crouch: number;
+  /** 0..1 off the ground */
+  air: number;
+  /** a landing's knee dip, decaying */
+  land: number;
+  /** smoothed acceleration along the ground (m/s²): lean into starts, back into stops */
+  accel: number;
+  /** cadence multiplier (energetic people step quicker) */
+  cadence: number;
+  /** blinking */
+  blinkT: number;
+  blink: number;
+  /** steering, for hands on a wheel (-1..1) */
+  steer: number;
+  /** hunched against the cold / rain, 0..1 */
+  cold: number;
 }
 
 export const newMotion = (): Motion => ({
@@ -242,22 +175,41 @@ export const newMotion = (): Motion => ({
   turn: 0,
   glitch: 0,
   glitchKind: 0,
+  moveDir: 0,
+  crouch: 0,
+  air: 0,
+  land: 0,
+  accel: 0,
+  cadence: 1,
+  blinkT: Math.random() * 4,
+  blink: 0,
+  steer: 0,
+  cold: 0,
 });
 
-/* ─────────────────────────── the solver ─────────────────────────── */
+/* ─────────────────────────── the rig ─────────────────────────── */
 
 export const PART_KEYS = [
-  'pelvis', 'torso', 'head', 'headFar', 'eyes', 'hair',
+  'pelvis', 'torso', 'neck', 'head', 'headFar', 'eyes', 'irises', 'brows', 'facial', 'glasses', 'hair', 'hat',
   'upperArmL', 'upperArmR', 'forearmL', 'forearmR', 'handL', 'handR',
-  'thighL', 'thighR', 'shinL', 'shinR', 'footL', 'footR',
-  'hem', 'skirt', 'hoodDown', 'scarf', 'bag', 'umbrella', 'glow', 'collar', 'crew', 'shirt',
+  'thighL', 'thighR', 'shinL', 'shinR', 'footL', 'footR', 'soleL', 'soleR', 'shaftL', 'shaftR',
+  'hem', 'jacketHem', 'skirt', 'lapels', 'tie', 'shirt', 'collar', 'crew', 'hoodDown', 'pocket', 'scarf', 'bag', 'backpack',
+  'apronTop', 'apronSkirt', 'vest', 'vestBand', 'dutyBelt', 'belt', 'radio', 'umbrella', 'glow',
 ] as const;
 export type PartKey = (typeof PART_KEYS)[number];
-export type Rig = Record<PartKey, THREE.Matrix4>;
+export type Rig = Record<PartKey, THREE.Matrix4> & { gripL: Grip; gripR: Grip; pose: Pose };
 
-export const newRig = (): Rig => Object.fromEntries(PART_KEYS.map((k) => [k, new THREE.Matrix4()])) as Rig;
+export const newRig = (): Rig => {
+  const r = Object.fromEntries(PART_KEYS.map((k) => [k, new THREE.Matrix4()])) as unknown as Rig;
+  r.gripL = 'relaxed';
+  r.gripR = 'relaxed';
+  r.pose = newPose();
+  return r;
+};
 
-const J = {
+/** World-space joints of the last figure solved (a weapon in the hand, the camera at the eyes). */
+export const J = {
+  root: new THREE.Matrix4(),
   pelvis: new THREE.Matrix4(),
   chest: new THREE.Matrix4(),
   neck: new THREE.Matrix4(),
@@ -275,12 +227,14 @@ const J = {
   anR: new THREE.Matrix4(),
 };
 const _m = new THREE.Matrix4();
+const _m2 = new THREE.Matrix4();
 const _s = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _e = new THREE.Euler();
 const _v = new THREE.Vector3();
 const _one = new THREE.Vector3(1, 1, 1);
 const _sc = new THREE.Vector3();
+const _qTilt = new THREE.Quaternion();
 
 function joint(out: THREE.Matrix4, parent: THREE.Matrix4, x: number, y: number, z: number, rx: number, ry: number, rz: number) {
   _e.set(rx, ry, rz, 'YXZ');
@@ -292,129 +246,181 @@ function part(out: THREE.Matrix4, j: THREE.Matrix4, sx: number, sy: number, sz: 
   _s.makeScale(sx, sy, sz);
   out.multiplyMatrices(j, _s);
 }
+/** scale about a local point (closing the eyes about their centre line) */
+function partAbout(out: THREE.Matrix4, j: THREE.Matrix4, px: number, py: number, pz: number, sx: number, sy: number, sz: number) {
+  _m2.makeTranslation(px, py, pz);
+  _s.makeScale(sx, sy, sz);
+  _m2.multiply(_s);
+  _s.makeTranslation(-px, -py, -pz);
+  _m2.multiply(_s);
+  out.multiplyMatrices(j, _m2);
+}
 
 const THIGH = 0.43, SHIN = 0.42, ANKLE = 0.08, UPPER = 0.28, FORE = 0.25;
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const GRIPS: Grip[] = ['relaxed', 'fist', 'point', 'thumb', 'open'];
+
+/* ─────────────────────────── 1. the procedural base pose ─────────────────────────── */
 
 /**
- * Solve every part matrix for one figure.
- * `root` places the feet (position + yaw + height scale); the solver adds
- * gait, posture, breathing, gestures and sitting.
+ * Locomotion and posture: walking and running (forwards, sideways,
+ * backwards), idle weight shifts, turning, crouching, sitting, jumping and
+ * landing, plus the arm modes the crowd uses for what it's holding.
  */
-export function solve(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, m: Motion, t: number) {
+export function basePose(p: Pose, b: Body, o: Outfit, m: Motion, t: number) {
+  p.fill(0);
+  const age = b.age ?? 0;
   const run = clamp01((m.speed - 2.6) / 2.4);
   const walk = clamp01(m.speed / 1.1);
   const moving = walk > 0.02;
   const sit = m.sit;
+  const crouch = m.crouch;
+  const air = m.air;
+  const fwdK = Math.cos(m.moveDir), sideK = Math.sin(m.moveDir);
 
-  // gait amplitudes
-  const legAmp = (0.38 * walk * (1 - run) + 0.68 * run) * m.stride;
+  // gait amplitudes (older people take shorter steps)
+  const stride = m.stride * (1 - 0.18 * age);
+  const legAmp = (0.38 * walk * (1 - run) + 0.68 * run) * stride;
   const kneeAmp = 0.62 * (1 - run) + 1.45 * run;
-  const armAmp = (0.34 * walk * (1 - run) + 0.62 * run) * m.armSwing;
+  const armAmp = (0.34 * walk * (1 - run) + 0.62 * run) * m.armSwing * (1 - 0.3 * crouch);
   const phL = m.phase, phR = m.phase + Math.PI;
 
-  // per leg: forward thigh angle and knee bend
   const leg = (ph: number) => {
-    const f = legAmp * Math.sin(ph);
+    const s = Math.sin(ph);
     const swing = Math.max(0, Math.cos(ph));
     const k = moving ? 0.06 + kneeAmp * Math.pow(swing, 1.3) * walk : 0;
-    return { f, k };
+    return { f: legAmp * s * fwdK, ab: legAmp * 0.5 * s * sideK, k };
   };
-  let L = leg(phL), R = leg(phR);
+  const L = leg(phL), R = leg(phR);
 
   // idle: weight onto one leg, the other knee softens
   const idle = 1 - walk;
   const shift = m.weight * idle;
   if (idle > 0) {
-    L = { f: L.f + 0.03 * Math.max(0, -shift) * idle, k: L.k + 0.14 * Math.max(0, -shift) };
-    R = { f: R.f + 0.03 * Math.max(0, shift) * idle, k: R.k + 0.14 * Math.max(0, shift) };
+    L.f += 0.03 * Math.max(0, -shift) * idle;
+    L.k += 0.14 * Math.max(0, -shift);
+    R.f += 0.03 * Math.max(0, shift) * idle;
+    R.k += 0.14 * Math.max(0, shift);
   }
-
-  // pelvis height from the stance leg so feet stay on the ground
-  const stance = Math.cos(phL) <= 0 ? L : R;
-  // hip joint sits 2 cm under the pelvis origin; the sole is ANKLE below the ankle joint
-  const legH = (l: { f: number; k: number }) => 0.02 + THIGH * Math.cos(l.f) + SHIN * Math.cos(l.f - l.k) + ANKLE;
-  let pelvisY = Math.max(legH(L), legH(R));
-  if (run > 0) pelvisY += run * 0.02 * Math.abs(Math.sin(m.phase)); // a moment in the air each stride
-  void stance;
-  const breathe = Math.sin(m.breath) * 0.006 * (1 - run);
-
+  // crouch: hips back, knees forward
+  if (crouch > 0) {
+    L.f += 0.62 * crouch;
+    R.f += 0.52 * crouch;
+    L.k += 1.2 * crouch;
+    R.k += 1.05 * crouch;
+  }
+  // in the air: legs tuck
+  if (air > 0) {
+    L.f += 0.35 * air;
+    L.k += 0.75 * air;
+    R.f += 0.1 * air;
+    R.k += 0.35 * air;
+  }
+  // a landing: both knees take it
+  if (m.land > 0) {
+    L.k += 0.5 * m.land;
+    R.k += 0.5 * m.land;
+    L.f += 0.25 * m.land;
+    R.f += 0.25 * m.land;
+  }
   // sitting overrides the legs
   const sitF = 1.5, sitK = 1.45;
-  L = { f: L.f * (1 - sit) + sitF * sit, k: L.k * (1 - sit) + sitK * sit };
-  R = { f: R.f * (1 - sit) + sitF * sit, k: R.k * (1 - sit) + sitK * sit };
-  pelvisY = pelvisY * (1 - sit) + 0.47 * sit;
+  L.f = L.f * (1 - sit) + sitF * sit;
+  L.k = L.k * (1 - sit) + sitK * sit;
+  R.f = R.f * (1 - sit) + sitF * sit;
+  R.k = R.k * (1 - sit) + sitK * sit;
 
-  const sway = moving ? 0.022 * Math.sin(m.phase) * (1 - run) : 0.018 * shift;
-  const twist = moving ? 0.1 * Math.sin(m.phase) * walk : 0;
-  const lean = m.slouch + 0.2 * run + 0.04 * walk * (1 - run) - 0.08 * sit;
-  const bank = -m.turn * 0.04;
-
-  // ── spine
-  joint(J.pelvis, root, sway, pelvisY, 0, 0, twist, bank + shift * 0.03);
-  const chestBend = lean + breathe * 2;
-  joint(J.chest, J.pelvis, 0, 0.08, 0, chestBend, -twist * 1.8, -bank * 0.5 - shift * 0.04);
-  part(out.pelvis, J.pelvis, b.hips * b.girth, 1, b.girth);
-  part(out.torso, J.chest, b.shoulders * b.girth * o.bulk, 1 + breathe, b.girth * o.bulk);
-
-  // ── head: looks, then — if something is wrong — keeps turning
-  let hy = m.lookYaw, hp = m.lookPitch - lean * 0.6;
-  if (m.glitch > 0) {
-    if (m.glitchKind === 0) hy += 1.7 * m.glitch; // turns past where a neck should stop
-    else if (m.glitchKind === 1) hp -= 0.9 * m.glitch; // head drops back
-    else hy += Math.sin(t * 60) * 0.08 * m.glitch; // a tremor
+  p[C.hipLf] = L.f;
+  p[C.hipLab] = -L.ab;
+  p[C.knL] = L.k;
+  p[C.hipRf] = R.f;
+  p[C.hipRab] = R.ab;
+  p[C.knR] = R.k;
+  // feet turned out a little, per person; stance a touch wider when crouched
+  const toe = b.toeOut ?? 0.08;
+  p[C.hipLtw] = toe;
+  p[C.hipRtw] = toe;
+  p[C.hipLab] += 0.03 * crouch;
+  p[C.hipRab] += 0.03 * crouch;
+  // roll through the step
+  if (moving) {
+    p[C.anL] = -0.25 * Math.sin(phL) * walk * (1 - sit);
+    p[C.anR] = -0.25 * Math.sin(phR) * walk * (1 - sit);
   }
-  joint(J.neck, J.chest, 0, 0.44, 0.005, hp, hy, 0);
-  part(out.head, J.neck, b.head, b.head, b.head);
-  out.headFar.copy(out.head);
-  out.eyes.copy(out.head);
-  out.hair.copy(out.head);
 
-  // ── arms
-  const shoulderX = 0.186 * b.shoulders * b.girth * o.bulk;
-  const arm = (side: -1 | 1, mode: ArmMode, sh: THREE.Matrix4, el: THREE.Matrix4, wr: THREE.Matrix4, ph: number) => {
-    // forward angle, abduction, elbow bend, wrist
-    let f = -armAmp * Math.sin(ph) * (1 - sit);
-    let ab = 0.12 + 0.06 * o.bulk + 0.04 * run;
-    let bend = 0.3 + 0.3 * Math.max(0, -Math.sin(ph)) * walk + 1.25 * run;
-    let tw = side * 0.35;
+  // pelvis: a bounce when running, lower when sitting
+  p[C.pelY] = run * 0.02 * Math.abs(Math.sin(m.phase)) - 0.08 * sit;
+  p[C.pelZ] = -0.06 * crouch;
+  const breathe = Math.sin(m.breath) * 0.006 * (1 - run);
+
+  const sway = moving ? 0.022 * Math.sin(m.phase) * (1 - run) * (1 + Math.abs(sideK)) : 0.018 * shift;
+  const twist = moving ? 0.1 * Math.sin(m.phase) * walk * fwdK : 0;
+  // posture: slouch, age, running forward lean, leaning into acceleration
+  const accLean = Math.max(-0.1, Math.min(0.14, m.accel * 0.022));
+  const lean = m.slouch + 0.07 * age + 0.2 * run * Math.max(0, fwdK) + 0.04 * walk * (1 - run) - 0.08 * sit + 0.28 * crouch + 0.12 * m.land + accLean + 0.06 * air;
+  const bank = -m.turn * 0.04;
+  p[C.pelX] = sway;
+  p[C.pelRy] = twist;
+  p[C.pelRz] = bank + shift * 0.03;
+  p[C.spRx] = lean + breathe * 2;
+  p[C.spRy] = -twist * 1.8;
+  p[C.spRz] = -bank * 0.5 - shift * 0.04;
+
+  // head: where they're looking, holding the eyes level against the lean
+  p[C.nkRx] = m.lookPitch - lean * 0.6 + 0.06 * age;
+  p[C.nkRy] = m.lookYaw;
+  p[C.nkRz] = b.tilt ?? 0;
+
+  // arms
+  const arm = (side: -1 | 1, mode: ArmMode, ph: number) => {
+    let f = -armAmp * Math.sin(ph) * (1 - sit) * (fwdK >= 0 ? 1 : 0.7);
+    // arms hang close, a little in front of the thighs (not a mannequin's A)
+    let ab = 0.08 + 0.07 * (o.bulk - 1) + 0.05 * run + 0.18 * air + 0.1 * crouch;
+    let bend = 0.24 + 0.3 * Math.max(0, -Math.sin(ph)) * walk + 1.25 * run + 0.35 * crouch;
+    let tw = -0.35;
+    let wr = 0.08;
+    let grip = 0;
+    let up = 0;
     switch (mode) {
       case 'pockets':
         f = 0.12 * Math.sin(ph) * walk - 0.08;
         ab = 0.16 + 0.05 * o.bulk;
         bend = 0.55;
-        tw = side * 0.25;
+        tw = -0.25;
         break;
       case 'phone':
         f = 0.42;
         ab = 0.08;
         bend = 1.75;
-        tw = -side * 0.35;
+        tw = 0.35;
+        wr = -0.2;
         break;
       case 'umbrella':
         f = 0.5;
         ab = -0.05;
         bend = 1.5;
+        grip = 1;
         break;
       case 'smoke': {
         const k = m.smokeT;
         f = 0.15 + 0.45 * k;
         ab = 0.1 - 0.25 * k;
         bend = 0.4 + 1.95 * k;
-        tw = -side * 0.5 * k;
+        tw = 0.5 * k;
         break;
       }
       case 'watch':
         f = 0.55;
         ab = 0.05;
         bend = 1.7;
-        tw = side * 0.8;
+        tw = -0.8;
         break;
       case 'gesture':
         f = 0.35 + 0.15 * Math.sin(t * 3.1);
         ab = 0.14;
         bend = 1.1 + 0.25 * Math.sin(t * 2.3 + side);
-        tw = -side * 0.4;
+        tw = 0.4;
+        grip = 4;
         break;
       case 'rest':
         f = 0.55;
@@ -423,99 +429,278 @@ export function solve(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, m: Moti
         break;
       case 'aim': // arm out straight, level with the eye line
         f = 1.5;
-        ab = -0.12 * side;
+        ab = -0.12;
         bend = 0.06;
+        tw = 0;
+        grip = 1;
         break;
       case 'punch':
         f = 1.45;
         ab = -0.05;
         bend = 0.12;
+        grip = 1;
         break;
       case 'guard': // fists up
         f = 0.75;
         ab = 0.1;
         bend = 2.0;
-        tw = -side * 0.3;
+        tw = 0.3;
+        grip = 1;
         break;
       case 'hands': // hands up, don't shoot
         f = 0.2;
         ab = 1.35;
         bend = 1.6;
+        grip = 4;
+        break;
+      case 'cross':
+        f = 0.42;
+        ab = 0.3;
+        bend = 1.95;
+        tw = 1.2;
+        up = 0.15;
+        break;
+      case 'wheel': {
+        // hands on a steering wheel in front of the chest: turning moves them round it
+        const s = m.steer * side;
+        f = 0.95 + 0.14 * s;
+        ab = 0.18 - 0.05 * s;
+        bend = 0.95 - 0.12 * s;
+        tw = 0.15;
+        wr = 0.1;
+        grip = 1;
+        break;
+      }
+      case 'rifle':
+        // a long gun held low across the body
+        if (side > 0) (f = 0.35), (ab = 0.25), (bend = 1.25), (tw = 0.35), (grip = 1);
+        else (f = 0.75), (ab = 0.15), (bend = 1.15), (tw = 0.75), (grip = 1);
+        break;
+      case 'rifleAim':
+        // shouldered: the right hand at the grip under the cheek, the left out on the foregrip
+        if (side > 0) (f = 1.05), (ab = 0.55), (bend = 1.75), (tw = 0.55), (wr = -0.1), (grip = 1);
+        else (f = 1.38), (ab = -0.05), (bend = 0.55), (tw = 0.62), (grip = 1);
         break;
     }
     if (sit > 0 && mode === 'free') {
       f = f * (1 - sit) + 0.5 * sit;
       bend = bend * (1 - sit) + 0.75 * sit;
     }
-    joint(sh, J.chest, side * shoulderX, 0.375, 0, -f, 0, side * ab);
-    joint(el, sh, 0, -UPPER, 0, -bend, tw, 0);
-    joint(wr, el, 0, -FORE, 0, mode === 'phone' ? -0.2 : 0.08, 0, 0);
+    const Ls = side < 0;
+    p[Ls ? C.shLf : C.shRf] = f;
+    p[Ls ? C.shLab : C.shRab] = ab;
+    p[Ls ? C.elL : C.elR] = bend;
+    p[Ls ? C.elLtw : C.elRtw] = tw;
+    p[Ls ? C.wrL : C.wrR] = wr;
+    p[Ls ? C.gripL : C.gripR] = grip;
+    p[Ls ? C.shLup : C.shRup] = up;
   };
-  arm(-1, m.armL, J.shL, J.elL, J.wrL, phL);
-  arm(1, m.armR, J.shR, J.elR, J.wrR, phR);
-  const ag = b.girth * (0.85 + 0.25 * o.bulk);
-  part(out.upperArmL, J.shL, ag, 1, ag);
-  part(out.upperArmR, J.shR, ag, 1, ag);
-  part(out.forearmL, J.elL, ag, 1, ag);
-  part(out.forearmR, J.elR, ag, 1, ag);
-  out.handL.copy(J.wrL);
-  out.handR.copy(J.wrR);
+  arm(-1, m.armL, phL);
+  arm(1, m.armR, phR);
+  // one shoulder carried lower than the other
+  const drop = b.shDrop ?? 0;
+  p[C.shLup] += Math.max(0, drop);
+  p[C.shRup] += Math.max(0, -drop);
+  // hunched against the cold
+  if (m.cold > 0) {
+    p[C.shLup] += 0.5 * m.cold;
+    p[C.shRup] += 0.5 * m.cold;
+    p[C.spRx] += 0.08 * m.cold;
+    p[C.nkRx] += 0.1 * m.cold;
+  }
+}
+
+/* ─────────────────────────── 2. on top of the clips ─────────────────────────── */
+
+/** Breathing, blinking, a shiver, and — rarely — something wrong with the neck. */
+export function finishPose(p: Pose, m: Motion, t: number) {
+  // shoulders rise with the breath
+  const br = (Math.sin(m.breath) * 0.5 + 0.5) * clamp01(1 - m.speed / 3);
+  p[C.shLup] += br * 0.06;
+  p[C.shRup] += br * 0.06;
+  if (m.cold > 0) p[C.spRz] += Math.sin(t * 38) * 0.006 * m.cold;
+  p[C.blink] = Math.max(p[C.blink], m.blink);
+  // looking far round: the chest helps the neck
+  const ny = p[C.nkRy];
+  if (Math.abs(ny) > 0.9 && m.glitch === 0) {
+    const extra = (Math.abs(ny) - 0.9) * Math.sign(ny);
+    p[C.spRy] += extra * 0.6;
+    p[C.nkRy] = ny - extra * 0.6;
+  }
+  if (m.glitch > 0) {
+    if (m.glitchKind === 0) p[C.nkRy] += 1.7 * m.glitch; // turns past where a neck should stop
+    else if (m.glitchKind === 1) p[C.nkRx] -= 0.9 * m.glitch; // head drops back
+    else p[C.nkRy] += Math.sin(t * 60) * 0.08 * m.glitch; // a tremor
+  }
+}
+
+/** Advance blinking (call once per frame per figure). */
+export function stepBlink(m: Motion, dt: number) {
+  m.blinkT -= dt;
+  if (m.blinkT < 0) {
+    m.blink = 1;
+    if (m.blinkT < -0.13) {
+      m.blink = 0;
+      m.blinkT = 1.8 + Math.random() * 4.5;
+    }
+  }
+}
+
+/* ─────────────────────────── 3. pose → matrices ─────────────────────────── */
+
+const legH = (f: number, k: number, ab: number, th: number, sh: number) => 0.02 + (th * Math.cos(f) + sh * Math.cos(f - k)) * Math.cos(ab) + ANKLE;
+
+export function buildRig(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, p: Pose) {
+  const legLen = b.legLen ?? 1, armLen = b.armLen ?? 1, torsoLen = b.torsoLen ?? 1;
+  const th = THIGH * legLen, sh = SHIN * legLen;
+
+  // whole-body offset and rotation (about hip height)
+  const pivot = 0.92;
+  _e.set(p[C.rootRx], p[C.rootRy], p[C.rootRz], 'YXZ');
+  _q.setFromEuler(_e);
+  _m.compose(_v.set(p[C.rootX], p[C.rootY] + pivot, p[C.rootZ]), _q, _one);
+  J.root.multiplyMatrices(root, _m);
+  _m.makeTranslation(0, -pivot, 0);
+  J.root.multiply(_m);
+
+  // the pelvis stands on whichever leg is longer (the stance leg)
+  const hL = legH(p[C.hipLf], p[C.knL], p[C.hipLab], th, sh), hR = legH(p[C.hipRf], p[C.knR], p[C.hipRab], th, sh);
+  const pelvisY = Math.max(hL, hR) + p[C.pelY];
+
+  // ── spine
+  joint(J.pelvis, J.root, p[C.pelX], pelvisY, p[C.pelZ], p[C.pelRx], p[C.pelRy], p[C.pelRz]);
+  joint(J.chest, J.pelvis, 0, 0.08 * torsoLen, 0, p[C.spRx], p[C.spRy], p[C.spRz]);
+  part(out.pelvis, J.pelvis, b.hips * b.girth, 1, b.girth);
+  const tb = o.bulk;
+  part(out.torso, J.chest, b.shoulders * b.girth * tb, torsoLen, b.girth * tb);
+
+  // ── head
+  const nl = b.neckLen ?? 1;
+  joint(J.neck, J.chest, 0, 0.44 * torsoLen + 0.012 * (nl - 1), 0.005, p[C.nkRx], p[C.nkRy], p[C.nkRz]);
+  const hs = b.head, hw = hs * (b.headW ?? 1), hd = hs * (b.headD ?? 1);
+  part(out.head, J.neck, hw, hs, hd);
+  out.headFar.copy(out.head);
+  out.facial.copy(out.head);
+  out.glasses.copy(out.head);
+  out.hair.copy(out.head);
+  out.hat.copy(out.head);
+  part(out.neck, J.neck, b.girth * (0.9 + 0.1 * tb), nl, b.girth * (0.9 + 0.1 * tb));
+  // eyes close about their centre line; brows lift
+  const bl = clamp01(p[C.blink]);
+  partAbout(out.eyes, out.head, 0, EYE.y, EYE.z, 1, 1 - 0.88 * bl, 1);
+  out.irises.copy(out.eyes);
+  _m.makeTranslation(0, 0.004 * p[C.browUp] - 0.002 * bl, 0);
+  out.brows.multiplyMatrices(out.head, _m);
+  if (o.brows && o.brows !== 1) {
+    _m.copy(out.brows);
+    partAbout(out.brows, _m, 0, HEAD.cy + 0.035, EYE.z, 1, o.brows, 1);
+  }
+
+  // ── arms
+  const shoulderX = 0.186 * b.shoulders * b.girth * tb;
+  const arm = (side: -1 | 1, sj: THREE.Matrix4, ej: THREE.Matrix4, wj: THREE.Matrix4) => {
+    const Ls = side < 0;
+    const f = p[Ls ? C.shLf : C.shRf], ab = p[Ls ? C.shLab : C.shRab], tw = p[Ls ? C.shLtw : C.shRtw], up = p[Ls ? C.shLup : C.shRup];
+    const bend = p[Ls ? C.elL : C.elR], etw = p[Ls ? C.elLtw : C.elRtw];
+    joint(sj, J.chest, side * shoulderX * (1 - 0.04 * up), 0.375 * torsoLen + 0.028 * up, 0, -f, -side * tw, side * ab);
+    joint(ej, sj, 0, -UPPER * armLen, 0, -bend, -side * etw, 0);
+    joint(wj, ej, 0, -FORE * armLen, 0, p[Ls ? C.wrL : C.wrR], 0, side * p[Ls ? C.wrLz : C.wrRz]);
+  };
+  arm(-1, J.shL, J.elL, J.wrL);
+  arm(1, J.shR, J.elR, J.wrR);
+  const ag = b.girth * (0.85 + 0.25 * tb);
+  part(out.upperArmL, J.shL, ag, armLen, ag);
+  part(out.upperArmR, J.shR, ag, armLen, ag);
+  part(out.forearmL, J.elL, ag, armLen, ag);
+  part(out.forearmR, J.elR, ag, armLen, ag);
+  const hsz = 0.95 + 0.1 * b.girth;
+  part(out.handL, J.wrL, hsz, hsz, hsz);
+  part(out.handR, J.wrR, hsz, hsz, hsz);
+  out.gripL = GRIPS[Math.max(0, Math.min(4, Math.round(p[C.gripL])))];
+  out.gripR = GRIPS[Math.max(0, Math.min(4, Math.round(p[C.gripR])))];
 
   // ── legs
   const hipX = 0.088 * b.hips;
-  const legj = (side: -1 | 1, l: { f: number; k: number }, hip: THREE.Matrix4, kn: THREE.Matrix4, an: THREE.Matrix4) => {
-    joint(hip, J.pelvis, side * hipX, -0.02, 0, -l.f, 0, side * 0.02);
-    joint(kn, hip, 0, -THIGH, 0, l.k, 0, 0);
-    // keep the sole level: undo the thigh and knee, then roll through the step
-    const roll = moving ? 0.25 * Math.sin(l === L ? phL : phR) * walk : 0;
-    joint(an, kn, 0, -SHIN, 0, l.f - l.k - roll * (1 - sit), 0, 0);
+  const legj = (side: -1 | 1, hip: THREE.Matrix4, kn: THREE.Matrix4, an: THREE.Matrix4) => {
+    const Ls = side < 0;
+    const f = p[Ls ? C.hipLf : C.hipRf], ab = p[Ls ? C.hipLab : C.hipRab], tw = p[Ls ? C.hipLtw : C.hipRtw], k = p[Ls ? C.knL : C.knR];
+    joint(hip, J.pelvis, side * hipX, -0.02, 0, -f, side * tw, side * (0.02 + ab));
+    joint(kn, hip, 0, -th, 0, k, 0, 0);
+    // keep the sole level: undo the thigh, the knee and the splay; then the ankle's own angle
+    joint(an, kn, 0, -sh, 0, f - k - p[Ls ? C.anL : C.anR], 0, -side * (0.02 + ab));
   };
-  legj(-1, L, J.hipL, J.knL, J.anL);
-  legj(1, R, J.hipR, J.knR, J.anR);
+  legj(-1, J.hipL, J.knL, J.anL);
+  legj(1, J.hipR, J.knR, J.anR);
   const lg = b.girth;
-  part(out.thighL, J.hipL, lg, 1, lg);
-  part(out.thighR, J.hipR, lg, 1, lg);
-  part(out.shinL, J.knL, lg, 1, lg);
-  part(out.shinR, J.knR, lg, 1, lg);
+  part(out.thighL, J.hipL, lg, legLen, lg);
+  part(out.thighR, J.hipR, lg, legLen, lg);
+  part(out.shinL, J.knL, lg, legLen, lg);
+  part(out.shinR, J.knR, lg, legLen, lg);
+  out.shaftL.copy(out.shinL);
+  out.shaftR.copy(out.shinR);
   out.footL.copy(J.anL);
   out.footR.copy(J.anR);
+  out.soleL.copy(J.anL);
+  out.soleR.copy(J.anR);
 
   // ── garments & accessories
-  const flare = 1 + 0.35 * Math.abs(legAmp * Math.sin(m.phase)) + 0.15 * run;
-  part(out.hem, J.pelvis, b.hips * b.girth * flare, 1 - 0.35 * sit, b.girth * flare * (1 + 0.6 * sit));
+  const legSpread = Math.max(Math.abs(p[C.hipLf] - p[C.hipRf]) * 0.5, Math.abs(p[C.hipLab]) + Math.abs(p[C.hipRab]));
+  const flare = 1 + 0.35 * Math.min(0.8, legSpread) + 0.15 * clamp01(legSpread - 0.4);
+  const sitting = clamp01((Math.min(p[C.hipLf], p[C.hipRf]) - 0.6) / 0.8);
+  part(out.hem, J.pelvis, b.hips * b.girth * flare, 1 - 0.35 * sitting, b.girth * flare * (1 + 0.6 * sitting));
+  part(out.jacketHem, J.pelvis, b.hips * b.girth * (1 + 0.5 * (flare - 1)), 1, b.girth * (1 + 0.5 * (flare - 1)));
   part(out.skirt, J.pelvis, b.hips * b.girth * flare, 1, b.girth * flare);
-  part(out.hoodDown, J.chest, b.shoulders * b.girth * o.bulk, 1, b.girth * o.bulk);
-  part(out.scarf, J.chest, b.girth * o.bulk, 1, b.girth * o.bulk);
-  part(out.bag, J.pelvis, b.hips * b.girth, 1, b.girth);
-  part(out.collar, J.chest, b.shoulders * b.girth * o.bulk, 1, b.girth * o.bulk);
+  part(out.apronSkirt, J.pelvis, b.hips * b.girth * (0.9 + 0.1 * flare), 1 - 0.3 * sitting, b.girth);
+  const cs = b.shoulders * b.girth * tb, cd = b.girth * tb;
+  part(out.hoodDown, J.chest, cs, torsoLen, cd);
+  part(out.scarf, J.chest, b.girth * tb, torsoLen, cd);
+  part(out.collar, J.chest, cs, torsoLen, cd);
   out.crew.copy(out.collar);
   out.shirt.copy(out.collar);
+  out.lapels.copy(out.collar);
+  out.tie.copy(out.collar);
+  out.pocket.copy(out.collar);
+  out.apronTop.copy(out.collar);
+  out.radio.copy(out.collar);
+  out.backpack.copy(out.collar);
+  part(out.vest, J.chest, cs * 1.02, torsoLen, cd * 1.04);
+  out.vestBand.copy(out.vest);
+  part(out.bag, J.pelvis, b.hips * b.girth, 1, b.girth);
+  part(out.belt, J.pelvis, b.hips * b.girth, 1, b.girth);
+  part(out.dutyBelt, J.pelvis, b.hips * b.girth * 1.02, 1, b.girth * 1.04);
 
   // umbrella: follows the right hand but stays upright
   _v.setFromMatrixPosition(J.wrR);
   _sc.setFromMatrixScale(root);
   _q.setFromRotationMatrix(_m.extractRotation(root));
   _e.set(-0.08, 0, 0.05);
-  const qTilt = new THREE.Quaternion().setFromEuler(_e);
-  _q.multiply(qTilt);
-  out.umbrella.compose(_v.add(new THREE.Vector3(0, 0.02, 0)), _q, _sc);
+  _qTilt.setFromEuler(_e);
+  _q.multiply(_qTilt);
+  out.umbrella.compose(_v.setY(_v.y + 0.02), _q, _sc);
 
   // phone screen in the hand, or the ember at the lips
   joint(out.glow, J.wrR, 0, -0.07, 0.03, -0.5, 0, 0);
-  if (m.armR === 'smoke') {
-    _s.makeScale(0.2, 0.12, 1.2);
-    out.glow.multiply(_s);
-  }
+}
+
+/** Everything for one figure, one frame. `anim` blends its clips over the procedural pose. */
+export function solve(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, m: Motion, t: number, anim?: Animator | null) {
+  const p = out.pose;
+  basePose(p, b, o, m, t);
+  anim?.apply(p);
+  finishPose(p, m, t);
+  buildRig(out, root, b, o, p);
 }
 
 /* ─────────────────────────── gait helpers ─────────────────────────── */
 
 /** Advance gait phase from ground speed; stride frequency rises with speed. */
 export function stepPhase(m: Motion, dt: number) {
-  const cadence = m.speed < 0.05 ? 0 : 2.6 + m.speed * 0.95;
+  const cadence = m.speed < 0.05 ? 0 : (2.6 + m.speed * 0.95) * m.cadence;
   const before = Math.sin(m.phase);
   m.phase += dt * cadence * (1 / Math.max(0.75, m.stride));
   m.breath += dt * (1.2 + Math.min(1.5, m.speed * 0.3));
+  stepBlink(m, dt);
+  if (m.land > 0) m.land = Math.max(0, m.land - dt * 3.2);
   return Math.sign(before) !== Math.sign(Math.sin(m.phase)) && m.speed > 0.6; // footfall
 }
 
@@ -524,118 +709,48 @@ export const LOD = { near: 34, mid: 80 };
 
 /** Which rig parts a given outfit and distance actually shows. */
 export function visibleParts(o: Outfit, dist: number): Set<PartKey> {
-  const s = new Set<PartKey>(['pelvis', 'torso', 'upperArmL', 'upperArmR', 'forearmL', 'forearmR', 'thighL', 'thighR', 'shinL', 'shinR', 'footL', 'footR']);
+  const s = new Set<PartKey>(['pelvis', 'torso', 'neck', 'upperArmL', 'upperArmR', 'forearmL', 'forearmR', 'thighL', 'thighR', 'shinL', 'shinR', 'footL', 'footR']);
   const near = dist < LOD.near;
-  if (near) s.add('head').add('eyes').add('handL').add('handR');
-  else s.add('headFar');
+  const close = dist < LOD.near * 0.55;
+  const { cut, hat } = hairParts(o);
+  if (near) {
+    s.add('head').add('eyes').add('handL').add('handR').add('brows');
+    if (close) s.add('irises');
+    if (o.facialHair && o.facialHair !== 'none' && (o.facialHair !== 'stubble' || close)) s.add('facial');
+    if (o.glasses) s.add('glasses');
+  } else s.add('headFar');
   if (dist < LOD.mid) {
-    if (o.hair !== 'none') s.add('hair');
+    if (cut !== 'none') s.add('hair');
+    if (hat !== 'none') s.add('hat');
     if (o.hem) s.add('hem');
     if (o.skirt) s.add('skirt');
-    if (o.hoodDown) s.add('hoodDown');
+    if (o.jacketHem && !o.hem) s.add('jacketHem');
+    if (o.hoodDown && hat !== 'hood') s.add('hoodDown');
     if (o.scarf) s.add('scarf');
-    if (o.bag && near) s.add('bag');
-    if (['coat', 'raincoat', 'jacket', 'suit', 'workwear'].includes(o.garment) && !o.scarf && !o.hoodDown) s.add('collar');
-    if (o.garment === 'knit' && !o.scarf) s.add('crew');
-    if ((o.garment === 'suit' || o.garment === 'jacket') && near) s.add('shirt');
+    if (o.vest != null) s.add('vest').add('vestBand');
+    if (o.apron != null) s.add('apronTop').add('apronSkirt');
+    if (o.backpack != null) s.add('backpack');
+    if (near) {
+      if (o.bag) s.add('bag');
+      if (['coat', 'raincoat', 'jacket', 'suit', 'workwear', 'uniform', 'puffer'].includes(o.garment) && !o.scarf && !o.hoodDown && hat !== 'hood') s.add('collar');
+      if ((o.garment === 'knit' || o.garment === 'tee' || o.garment === 'hoodie' || o.garment === 'scrubs') && !o.scarf) s.add('crew');
+      if (o.shirt != null) s.add('shirt');
+      if (o.lapels) s.add('lapels');
+      if (o.tie != null) s.add('tie');
+      if (o.pocket) s.add('pocket');
+      if (o.belt) s.add('belt');
+      if (o.dutyBelt) s.add('dutyBelt');
+      if (o.radio) s.add('radio');
+      if (o.shoeKind === 'sneaker') s.add('soleL').add('soleR');
+      if (o.shoeKind === 'boot') s.add('shaftL').add('shaftR');
+    }
   } else {
+    if (hat !== 'none') s.add('hat');
+    else if (cut === 'long' || cut === 'curly' || cut === 'bob') s.add('hair');
     if (o.hem) s.add('hem');
     if (o.skirt) s.add('skirt');
+    if (o.backpack != null) s.add('backpack');
   }
   if (o.umbrella) s.add('umbrella');
   return s;
-}
-
-/* ─────────────────────────── wardrobe ─────────────────────────── */
-
-type Rnd = { next(): number; range(a: number, b: number): number; pick<T>(a: readonly T[]): T; chance(p: number): boolean };
-
-const SKIN = [0xe0bfa6, 0xc99a7c, 0xa8765a, 0x8a5c43, 0x6a4331, 0x4a2e22, 0xd1ae94, 0xb8876a];
-const HAIRC = [0x0f0c0a, 0x1d1511, 0x2e2118, 0x4a3522, 0x6b5a48, 0x8f8a82, 0x2a2624, 0x5a3a24];
-const DARK = [0x1a1b1d, 0x22262b, 0x2b2824, 0x1d2228, 0x2e2e2c];
-const WOOL = [0x4a4034, 0x5c5446, 0x3b3226, 0x6a6258, 0x39302a, 0x4b4f52];
-const MUTED = [0x2f3a44, 0x3d4a3c, 0x4a2c28, 0x55504a, 0x3a3f4a, 0x5a4a3a, 0x3c3440];
-const RAIN = [0x6a6a3a, 0x2e3e4c, 0x3e4a3a, 0x7a6a50, 0x2a2e32, 0x5a2e2a];
-const DENIM = [0x2b3444, 0x3a4658, 0x232a36, 0x4a5262];
-const ACCENT = [0x7a3a30, 0x3a5060, 0x8a7a5a, 0x5a5a60, 0x6a5040, 0x2e4a3e, 0x9a8a70];
-
-export function randomBody(r: Rnd): Body {
-  const broad = r.range(-1, 1);
-  return {
-    height: r.range(0.9, 1.08),
-    girth: r.range(0.88, 1.2),
-    shoulders: 1 + broad * 0.09 + r.range(-0.03, 0.03),
-    hips: 1 - broad * 0.07 + r.range(-0.03, 0.05),
-    head: r.range(0.95, 1.04),
-  };
-}
-
-export function randomOutfit(r: Rnd, bias?: Garment): Outfit {
-  const garment: Garment = bias ?? r.pick(['coat', 'coat', 'raincoat', 'hoodie', 'jacket', 'suit', 'skirt', 'knit'] as const);
-  const o: Outfit = {
-    garment,
-    top: r.pick(MUTED),
-    legs: r.pick(DARK),
-    shoes: r.pick([0x0e0e0f, 0x1a1512, 0x241c16, 0x151719]),
-    skin: r.pick(SKIN),
-    hair: r.pick(['short', 'short', 'swept', 'long', 'bun', 'beanie', 'cap', 'none'] as const),
-    hairColor: r.pick(HAIRC),
-    accent: r.pick(ACCENT),
-    hem: false,
-    skirt: false,
-    hoodDown: false,
-    scarf: r.chance(0.25),
-    bag: r.chance(0.3),
-    umbrella: false,
-    bulk: 1,
-  };
-  switch (garment) {
-    case 'coat':
-      o.top = r.pick(WOOL.concat(DARK));
-      o.hem = true;
-      o.bulk = 1.12;
-      break;
-    case 'raincoat':
-      o.top = r.pick(RAIN);
-      o.hem = true;
-      o.bulk = 1.1;
-      if (r.chance(0.5)) o.hair = 'hood';
-      break;
-    case 'hoodie':
-      o.top = r.pick(MUTED.concat([0x5a5a5e, 0x2a2a2e]));
-      o.legs = r.pick(DENIM);
-      o.bulk = 1.06;
-      if (r.chance(0.6)) o.hoodDown = true;
-      else o.hair = 'hood';
-      o.accent = o.top;
-      break;
-    case 'jacket':
-      o.top = r.pick([0x2a2420, 0x1c1e22, 0x4a3a2a, 0x3a3e44]);
-      o.legs = r.pick(DENIM.concat(DARK));
-      break;
-    case 'suit':
-      o.top = r.pick([0x1b1d22, 0x25272c, 0x2e2c2a, 0x1f2430]);
-      o.legs = o.top;
-      o.scarf = false;
-      break;
-    case 'skirt':
-      o.top = r.pick(WOOL.concat(MUTED));
-      o.legs = r.pick([0x141416, 0x2a2224, 0x3a3432]);
-      o.skirt = true;
-      if (o.hair === 'short' && r.chance(0.6)) o.hair = r.pick(['long', 'bun'] as const);
-      break;
-    case 'knit':
-      o.top = r.pick([0x3e4a3a, 0x2e3440, 0x4a2a2a, 0x3a3a3e, 0x5a6066, 0x2a3a3a]);
-      o.bulk = 1.05;
-      break;
-    case 'workwear':
-      o.top = r.pick([0x6a4a2a, 0x5a5236, 0x3e4a52]);
-      o.legs = r.pick([0x2a2e32, 0x3a3a36]);
-      o.hair = r.pick(['beanie', 'cap', 'short'] as const);
-      o.bulk = 1.1;
-      break;
-  }
-  if (o.hair === 'beanie' || o.hair === 'cap') o.hairColor = o.accent;
-  if (o.hair === 'hood') o.hairColor = o.top;
-  return o;
 }

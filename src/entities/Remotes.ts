@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { FigureBatch } from './FigureBatch';
 import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from './Humanoid';
+import { Animator } from '../anim/Animator';
+import '../anim/clips';
+import { EMOTES } from '../data/emotes';
 import { carParts } from '../world/builders/props';
 import { TAXI_COLOR } from './Traffic';
 import { bodyFromLook, outfitFromLook } from './Look';
@@ -23,6 +26,9 @@ interface Slot {
   body: Body;
   /** which look is on (so we only re-dress on change) */
   dressed: string;
+  anim: Animator;
+  /** the emote code last seen, so each new one plays once */
+  emoteKey: string;
 }
 
 const BODY: Body = { height: 1.0, girth: 1.0, shoulders: 1.02, hips: 1.0, head: 1 };
@@ -53,7 +59,7 @@ export class Remotes {
       this.labels.append(label);
       this.slots.push({
         peer: null, motion: newMotion(), rig: newRig(), outfit: outfitFor(0x333333), car: null, carLook: '', label,
-        state: { x: 0, y: 0, z: 0, yaw: 0, speed: 0, mode: 'walk' }, visible: false, body: { ...BODY }, dressed: '',
+        state: { x: 0, y: 0, z: 0, yaw: 0, speed: 0, mode: 'walk' }, visible: false, body: { ...BODY }, dressed: '', anim: new Animator(), emoteKey: '',
       });
       this.batch.hide(i);
     }
@@ -158,7 +164,7 @@ export class Remotes {
         s.dressed = key;
         s.outfit = p.look ? outfitFromLook(p.look) : outfitFor(p.coat);
         s.body = p.look ? bodyFromLook(p.look) : { ...BODY };
-        this.batch.dress(i, s.outfit);
+        this.batch.dress(i, s.outfit, 0x9fc4ff, s.body);
       }
       const st = s.state;
       const inCar = !!st.car;
@@ -177,8 +183,17 @@ export class Remotes {
         m.armL = m.armR = st.mode === 'sit' ? 'rest' : 'free';
         m.breath += dt * 1.2;
         stepPhase(m, dt);
+        // their emotes, as they play them
+        const key = `${st.emote ?? 0}:${st.eseq ?? 0}`;
+        if (key !== s.emoteKey) {
+          s.emoteKey = key;
+          const e = st.emote ? EMOTES[st.emote - 1] : null;
+          if (e) s.anim.play(e.clip, { group: 'emote', fadeIn: 0.25, stay: !!e.hold && !e.then });
+          else s.anim.stop('emote');
+        }
+        s.anim.update(dt);
         this.root.compose(this.v.set(st.x, st.y, st.z), this.q.setFromAxisAngle(this.up, st.yaw), this.one.setScalar(s.body.height));
-        solve(s.rig, this.root, s.body, s.outfit, m, t);
+        solve(s.rig, this.root, s.body, s.outfit, m, t, s.anim);
         const d = camera.position.distanceTo(this.v);
         this.batch.write(i, s.rig, visibleParts(s.outfit, d), false);
       }

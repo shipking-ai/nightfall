@@ -21,7 +21,10 @@ if (!supportsWebGL2()) {
   ui.append(box);
 } else {
   const app = new App();
-  if (import.meta.env.DEV) (window as unknown as { nf: App }).nf = app;
+  if (import.meta.env.DEV) {
+    (window as unknown as { nf: App }).nf = app;
+    import('./dev/lineup').then((m) => ((window as unknown as { nfLineup: unknown }).nfLineup = m.makeLineup));
+  }
   app.boot().catch((err) => {
     console.error(err);
   });

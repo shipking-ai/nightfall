@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CAR_ROUTES } from '../world/layout';
-import { carParts, CAR_COLORS } from '../world/builders/props';
+import { carParts, CAR_COLORS, CAR_GLASS } from '../world/builders/props';
 import type { Lamp, WorldContext } from '../world/WorldContext';
 import { mulberry32 } from '../world/rng';
 
@@ -100,7 +100,7 @@ export class Traffic {
       const g = new THREE.Group();
       const tailMat = (ctx.mats.lampRed as THREE.MeshStandardMaterial).clone();
       for (const part of carParts(color)) {
-        const mat = part.kind === 'paint' ? new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.3 }) : part.kind === 'tail' ? tailMat : part.mat(ctx);
+        const mat = part.kind === 'paint' ? new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.3 }) : part.kind === 'tail' ? tailMat : part.kind === 'glass' ? CAR_GLASS : part.mat(ctx);
         const mesh = new THREE.Mesh(part.geo, mat);
         mesh.applyMatrix4(part.m);
         mesh.castShadow = part.kind === 'paint';

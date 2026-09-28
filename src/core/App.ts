@@ -188,6 +188,11 @@ export class App {
   private photoOn = false;
   private controlSeen = new Map<ControlContext, number>();
 
+  /** dev: a fixed camera (character reviews) */
+  debugCam: { pos: THREE.Vector3; look: THREE.Vector3 } | null = null;
+  /** dev: extra per-frame work (a line-up of people) */
+  debugTick: ((dt: number, t: number) => void) | null = null;
+
   private state: State = 'boot';
   private overlay: Overlay = null;
   private overlayReturn: 'pause' | 'landing' | 'playing' = 'playing';
@@ -1947,6 +1952,11 @@ export class App {
         this.camera.lookAt(this.player.pos.x, this.player.pos.y + 1.4, this.player.pos.z);
       }
     }
+    if (this.debugCam) {
+      this.camera.position.copy(this.debugCam.pos);
+      this.camera.lookAt(this.debugCam.look);
+    }
+    this.debugTick?.(dt, t);
     this.camera.updateMatrixWorld();
 
     // menus: a controller (or the arrow keys) moves the focus in whatever's open
@@ -2053,6 +2063,7 @@ export class App {
       this.police.update(dt, t, inWorld && !this.dying ? this.player.pos : null, stars, !!this.inside, this.camera.getWorldDirection(this.tmpDir));
       this.audio.heli(this.police.heli.present && !this.inside ? this.police.heli.pos : null);
     }
+    this.crowd.rain = this.weather.intensity;
     this.crowd.update(dt, t, playerPos, this.camera);
     this.tracers.update(dt, this.camera);
     if (inWorld) this.outskirts.update(this.player.pos);

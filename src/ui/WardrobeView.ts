@@ -1,5 +1,5 @@
 import { h, setOn } from './dom';
-import { ACCENTS, GARMENTS, HAIRS, HAIR_COLORS, LEGS, SKINS, TOPS, cleanLook, randomLook, type Look } from '../entities/Look';
+import { ACCENTS, BEARDS, GARMENTS, HAIRS, HATS, HAIR_COLORS, LEGS, SHOES, SKINS, TOPS, cleanLook, randomLook, type Look } from '../entities/Look';
 
 /**
  * The Wardrobe: change what you wear and how you're built. Every change is
@@ -61,7 +61,7 @@ export class WardrobeView {
 
   private render() {
     const l = this.look;
-    const chips = <K extends 'garment' | 'hair'>(key: K, opts: [Look[K], string][]) =>
+    const chips = <K extends 'garment' | 'hair' | 'hat' | 'beard' | 'shoes'>(key: K, opts: [Look[K], string][]) =>
       h(
         'div',
         { class: 'chips', role: 'group' },
@@ -81,7 +81,7 @@ export class WardrobeView {
           return b;
         }),
       );
-    const toggle = (key: 'scarf' | 'bag', label: string) => {
+    const toggle = (key: 'scarf' | 'bag' | 'glasses', label: string) => {
       const b = h('button', { 'aria-pressed': String(l[key]) }, label);
       b.addEventListener('click', () => this.patch({ [key]: !l[key] } as Partial<Look>));
       return b;
@@ -94,12 +94,18 @@ export class WardrobeView {
       });
       return h('label', { class: 'wardrobe__slider' }, h('span', { class: 'meta' }, label), i);
     };
+    const faceBtn = (label: string, seed: number) => {
+      const b = h('button', { 'aria-pressed': String(seed === 0 && l.face === 0) }, label);
+      b.addEventListener('click', () => this.patch({ face: seed }));
+      return b;
+    };
     const group = (title: string, ...kids: (HTMLElement | null)[]) => h('div', { class: 'wardrobe__group' }, h('span', { class: 'meta' }, title), ...kids);
     this.body.replaceChildren(
       group('Clothes', chips('garment', GARMENTS), swatches('top', TOPS, 'Colour'), swatches('legs', LEGS, 'Trousers')),
       group('Hair', chips('hair', HAIRS), swatches('hairColor', HAIR_COLORS, 'Hair colour')),
-      group('Skin', swatches('skin', SKINS, 'Skin tone')),
-      group('Extras', h('div', { class: 'chips' }, toggle('scarf', 'Scarf'), toggle('bag', 'Bag')), swatches('accent', ACCENTS, 'Scarf, hat and bag colour')),
+      group('Face', h('div', { class: 'chips' }, faceBtn('Another face', 1 + Math.floor(Math.random() * 99999)), faceBtn('Original', 0), toggle('glasses', 'Glasses')), chips('beard', BEARDS), swatches('skin', SKINS, 'Skin tone')),
+      group('Headwear', chips('hat', HATS)),
+      group('Extras', h('div', { class: 'chips' }, toggle('scarf', 'Scarf'), toggle('bag', 'Bag')), chips('shoes', SHOES), swatches('accent', ACCENTS, 'Scarf, hat and bag colour')),
       group('Build', slider('height', 'Height', 0.9, 1.1), slider('build', 'Build', 0.88, 1.14), slider('shoulders', 'Shoulders', 0.94, 1.12)),
     );
   }

@@ -24,6 +24,9 @@ export interface PeerState {
   mode: Mode;
   /** in a car: its paint, whether it's electric / a van, braking */
   car?: { color: number; screen: boolean; van: boolean; brake: boolean; v: number; idx: number };
+  /** the emote playing (index in data/emotes + 1, 0 for none) and a toggle that flips each time one starts */
+  emote?: number;
+  eseq?: number;
 }
 
 export interface Peer {
@@ -466,7 +469,9 @@ export class Multiplayer {
 
 function encode(s: PeerState): WireState {
   const r = (v: number, k = 100) => Math.round(v * k) / k;
-  const w: WireState = [r(s.x), r(s.y), r(s.z), r(s.yaw), r(s.speed, 10), MODES.indexOf(s.mode)];
+  // the emote rides in the mode field (older clients read mode % 8 as before... and ignore the rest)
+  const e = s.emote ? Math.min(63, s.emote) * 2 + ((s.eseq ?? 0) & 1) : 0;
+  const w: WireState = [r(s.x), r(s.y), r(s.z), r(s.yaw), r(s.speed, 10), MODES.indexOf(s.mode) + 8 * e];
   if (s.car) w.push(s.car.color, (s.car.screen ? 1 : 0) | (s.car.van ? 2 : 0) | (s.car.brake ? 4 : 0), r(s.car.v, 10), s.car.idx);
   return w;
 }
@@ -477,8 +482,10 @@ function decode(w: WireState): PeerState | null {
   const [x, y, z, yaw, speed, m, color, flags, v, idx] = w;
   if (![x, y, z, yaw, speed].every((n) => Number.isFinite(n))) return null;
   if (Math.abs(x) > 2000 || Math.abs(z) > 2000 || Math.abs(y) > 200) return null;
-  const mode = MODES[m] ?? 'walk';
-  const s: PeerState = { x, y, z, yaw, speed: Math.min(40, Math.abs(speed)), mode };
+  const mi = Number.isInteger(m) && m >= 0 ? m : 0;
+  const mode = MODES[mi % 8] ?? 'walk';
+  const code = Math.floor(mi / 8);
+  const s: PeerState = { x, y, z, yaw, speed: Math.min(40, Math.abs(speed)), mode, emote: Math.min(63, code >> 1), eseq: code & 1 };
   if ((mode === 'drive' || mode === 'ride') && Number.isFinite(color) && Number.isFinite(flags)) {
     s.car = { color: (color as number) & 0xffffff, screen: !!((flags as number) & 1), van: !!((flags as number) & 2), brake: !!((flags as number) & 4), v: Number(v) || 0, idx: Number.isInteger(idx) ? (idx as number) : -1 };
   }

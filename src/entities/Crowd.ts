@@ -1,6 +1,10 @@
 import * as THREE from 'three';
-import { LOD, newMotion, newRig, randomBody, randomOutfit, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
+import { LOD, newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
 import { FigureBatch } from './FigureBatch';
+import { Animator } from '../anim/Animator';
+import '../anim/clips';
+import { IdleDirector } from '../anim/IdleDirector';
+import { archetypeFor, makePerson, type ArchetypeId, type Persona } from '../data/people';
 import { ROUTES, type Route } from '../world/layout';
 import type { Lamp, NpcSpot } from '../world/WorldContext';
 import { mulberry32 } from '../world/rng';
@@ -71,6 +75,19 @@ export interface Npc {
   crook?: { state: CrookState; victim: Npc | null; t: number; ax: number; az: number };
   /** kept off the streets by the population setting */
   culled?: boolean;
+  /** who they are, and how they carry themselves */
+  arche: ArchetypeId;
+  persona: Persona;
+  anim: Animator;
+  idle: IdleDirector;
+  /** a partner in conversation (talk spots come in pairs) */
+  friend: Npc | null;
+  speaking: boolean;
+  talkT: number;
+  /** something quietly wrong with them right now */
+  horror: { kind: 'stare' | 'backwards' | 'repeat' | 'nothing'; t: number; x: number; z: number; n: number } | null;
+  /** last frame's speed, for the lean into starts and stops */
+  lastV: number;
   /** multiplayer: the host's latest word on this person (followers only) */
   net?: { a: number; b: number; c: number; v: number; flags: number; wrong: number; at: number };
 }
@@ -122,20 +139,21 @@ export class Crowd {
     for (const route of ROUTES) {
       const r = prepRoute(route);
       for (let i = 0; i < (plan[route.id] ?? 0); i++) {
-        const n = this.make('walk', new THREE.Vector3(), 0, route.id === 'yard' ? 'workwear' : undefined);
+        const n = this.make('walk', new THREE.Vector3(), 0, archetypeFor(rng, route.id));
         n.route = r;
         n.s = rng.range(0, r.total);
         n.dir = rng.chance(0.5) ? 1 : -1;
-        n.speed = rng.range(1.0, 1.6);
+        // brisk or slow, by who they are
+        n.speed = (1.0 + 0.6 * n.persona.energy) * (1 - 0.25 * n.persona.age) * rng.range(0.9, 1.1);
         n.lateral = rng.range(-0.45, 0.45);
-        n.outfit.umbrella = rng.chance(0.4);
+        n.outfit.umbrella = n.outfit.umbrella || (n.arche !== 'courier' && n.outfit.hat !== 'hood' && rng.chance(0.3));
         n.motion.armR = n.outfit.umbrella ? 'umbrella' : rng.chance(0.4) ? 'pockets' : 'free';
         n.motion.armL = n.motion.armR === 'pockets' || rng.chance(0.3) ? 'pockets' : 'free';
         this.npcs.push(n);
       }
     }
     for (const s of spots) {
-      const n = this.make(s.mode, s.pos.clone(), s.yaw);
+      const n = this.make(s.mode, s.pos.clone(), s.yaw, s.mode === 'stare' ? 'clerk' : archetypeFor(rng, s.mode));
       if (s.mode === 'phone') n.motion.armR = 'phone';
       if (s.mode === 'smoke') n.motion.armR = 'smoke';
       if (s.mode === 'wait') {
@@ -147,22 +165,32 @@ export class Crowd {
       this.npcs.push(n);
     }
 
+    // conversations: each talker faces the nearest other talker
+    for (const n of this.npcs) {
+      if (n.mode !== 'talk' || n.friend) continue;
+      let best: Npc | null = null, bd = 3;
+      for (const o of this.npcs) {
+        if (o === n || o.mode !== 'talk' || o.friend) continue;
+        const d = o.pos.distanceTo(n.pos);
+        if (d < bd) (best = o), (bd = d);
+      }
+      if (best) {
+        n.friend = best;
+        best.friend = n;
+        n.speaking = true;
+        n.talkT = rng.range(2, 5);
+        best.talkT = n.talkT;
+      }
+    }
+
     // the one who is always somewhere they shouldn't be
-    this.watcher = this.make('watcher', new THREE.Vector3(), 0, 'raincoat');
-    this.watcher.outfit.top = 0x8a8e8c;
-    this.watcher.outfit.hair = 'hood';
-    this.watcher.outfit.hairColor = 0x8a8e8c;
-    this.watcher.outfit.scarf = false;
-    this.watcher.outfit.bag = false;
-    this.watcher.body.height = 1.08;
-    this.watcher.body.girth = 0.9;
+    this.watcher = this.make('watcher', new THREE.Vector3(), 0, 'watcher');
     this.watcher.visible = false;
     this.npcs.push(this.watcher);
     this.citizens = this.npcs.length;
     // the police, off duty until someone gives them a reason
     for (let i = 0; i < COPS; i++) {
-      const c = this.make('cop', new THREE.Vector3(0, -50, 0), 0, 'jacket');
-      Object.assign(c.outfit, { top: 0x18213a, legs: 0x12141c, shoes: 0x0b0b0c, accent: 0x2a3550, hair: 'cap', hairColor: 0x10131c, scarf: false, bag: false, umbrella: false, hem: false, skirt: false });
+      const c = this.make('cop', new THREE.Vector3(0, -50, 0), 0, 'police');
       c.visible = false;
       c.hp = 60;
       this.npcs.push(c);
@@ -170,8 +198,7 @@ export class Crowd {
     this.crooksFrom = this.npcs.length;
     // and the people the police are really for
     for (let i = 0; i < CROOKS; i++) {
-      const c = this.make('crook', new THREE.Vector3(0, -50, 0), 0, 'hoodie');
-      Object.assign(c.outfit, { top: [0x1a1a1c, 0x2a2420, 0x1c2228, 0x3a1414][i], legs: 0x15161a, accent: 0x7a1c16, hair: 'hood', hairColor: [0x1a1a1c, 0x2a2420, 0x1c2228, 0x3a1414][i], hoodDown: false, scarf: false, bag: false, umbrella: false, hem: false, skirt: false });
+      const c = this.make('crook', new THREE.Vector3(0, -50, 0), 0, 'crook');
       c.visible = false;
       c.hp = 70;
       c.crook = { state: 'idle', victim: null, t: 0, ax: 0, az: 0 };
@@ -182,23 +209,41 @@ export class Crowd {
     this.batch = new FigureBatch(this.npcs.length);
     this.group.add(this.batch.group);
     this.npcs.forEach((n, i) => {
-      this.batch.dress(i, n.outfit, n.motion.armR === 'smoke' ? 0xff7a30 : 0xbfd4ff);
+      this.batch.dress(i, n.outfit, n.motion.armR === 'smoke' ? 0xff7a30 : 0xbfd4ff, n.body);
       n.parts = visibleParts(n.outfit, 0);
+      n.idle.onEvent = (e) => this.idleEvent(i, e);
     });
   }
 
-  private make(mode: Mode, pos: THREE.Vector3, yaw: number, garment?: Outfit['garment']): Npc {
+  /** An idle asked for something in the world to change (the hood going up). */
+  private idleEvent(i: number, e: string) {
+    const n = this.npcs[i];
+    if (e === 'hood' && n.outfit.hoodDown) {
+      n.outfit.hoodDown = false;
+      n.outfit.hat = 'hood';
+      n.outfit.hatColor = n.outfit.top;
+      this.batch.dress(i, n.outfit, 0xbfd4ff, n.body);
+      n.lod = -1;
+    }
+  }
+
+  private make(mode: Mode, pos: THREE.Vector3, yaw: number, arche?: ArchetypeId): Npc {
     const rng = this.rng;
-    const body = randomBody(rng);
-    const outfit = randomOutfit(rng, garment);
+    const person = makePerson(rng, arche);
+    const { body, outfit, persona } = person;
     const motion = newMotion();
-    motion.slouch = rng.range(-0.04, 0.1);
-    motion.stride = rng.range(0.85, 1.15);
-    motion.armSwing = rng.range(0.6, 1.25);
+    // posture and gait from who they are
+    motion.slouch = rng.range(-0.03, 0.05) + 0.08 * persona.tired - 0.05 * persona.confidence + 0.06 * persona.age;
+    motion.stride = rng.range(0.9, 1.1) * (0.9 + 0.2 * persona.energy);
+    motion.armSwing = rng.range(0.7, 1.1) * (0.7 + 0.5 * persona.confidence) * (1 - 0.3 * persona.age);
+    motion.cadence = 0.9 + 0.25 * persona.energy - 0.12 * persona.age;
     motion.phase = rng.range(0, 10);
     motion.breath = rng.range(0, 10);
     motion.weight = rng.range(-1, 1);
+    motion.cold = outfit.garment === 'tee' || outfit.garment === 'scrubs' ? 0.25 : persona.age > 0.7 ? 0.15 : 0;
+    const irng = mulberry32(Math.floor(rng.next() * 1e9));
     return {
+      arche: person.arche, persona, anim: new Animator(), idle: new IdleDirector(persona, irng.next), friend: null, speaking: false, talkT: 0, horror: null, lastV: 0,
       mode, pos, yaw, body, outfit, motion, rig: newRig(), lod: -1, parts: new Set(),
       timer: rng.range(2, 8), s: 0, dir: 1, lateral: 0, speed: 0, v: 0, paused: 0, hidden: 0,
       lookT: rng.range(2, 6), lookTarget: 0, visible: true, frozen: 0, wrongYaw: 0, glitchT: 0, glowOn: false,
@@ -233,6 +278,14 @@ export class Crowd {
       const fresh = n.alarm < 2.6;
       if (fresh) n.alarm = 4 + Math.random() * 1.5;
       if (fresh && byPlayer && d < 8 && speed > 5) this.say(n, 'nearMiss');
+      // close and fast: a jump back; otherwise a flinch and a look
+      if (fresh && n.mode !== 'sit') {
+        n.idle.interrupt(n.anim);
+        if (d < 4.5 && speed > 6) n.anim.play('react.startle', { group: 'react', fadeIn: 0.05 });
+        else if (inPath) n.anim.play('react.flinch', { group: 'flinch', fadeIn: 0.05 });
+        // and after it's gone, what they think of the driver
+        if (byPlayer && speed > 8 && d < 6) setTimeout(() => n.alarm > 0 && n.anim.play(Math.random() < 0.6 ? 'emote.angry' : 'emote.shake', { group: 'gesture', fadeIn: 0.25 }), 900);
+      }
       n.alarmX = x;
       n.alarmZ = z;
       // step sideways out of its line, away from the side it's on
@@ -258,7 +311,10 @@ export class Crowd {
       if (d < nd) (near = n), (nd = d);
     }
     // one of them answers back, not the whole street
-    if (byPlayer && near && Math.random() < 0.6) this.say(near, 'honked');
+    if (byPlayer && near && Math.random() < 0.6) {
+      this.say(near, 'honked');
+      near.anim.play(Math.random() < 0.5 ? 'emote.angry' : 'emote.shoo', { group: 'gesture', fadeIn: 0.3 });
+    }
   }
 
   /** Something loud and bad happened at (x,z): whoever's closest says so. */
@@ -271,9 +327,14 @@ export class Crowd {
       n.alarm = Math.max(n.alarm, 4);
       n.alarmX = x;
       n.alarmZ = z;
+      n.idle.interrupt(n.anim);
+      n.anim.play(d < 8 && n.mode !== 'sit' ? 'react.startle' : 'react.flinch', { group: 'react', fadeIn: 0.05 });
       if (d < nd) (near = n), (nd = d);
     }
-    if (near) this.say(near, 'crash');
+    if (near) {
+      this.say(near, 'crash');
+      setTimeout(() => near!.anim.play('emote.confused', { group: 'gesture', fadeIn: 0.3 }), 1400);
+    }
   }
 
   /* ── voices ─────────────────────────────────────────────── */
@@ -364,6 +425,9 @@ export class Crowd {
           n.recoil = 0.3;
           n.recoilX = dx / Math.max(d, 1e-3);
           n.recoilZ = dz / Math.max(d, 1e-3);
+          n.idle.interrupt(n.anim);
+          n.anim.play('react.stumble', { group: 'react', fadeIn: 0.05, mirror: (dx * Math.cos(n.yaw) - dz * Math.sin(n.yaw)) < 0 });
+          if (n.persona.confidence > 0.45 || Math.random() < 0.4) setTimeout(() => n.anim.play(n.persona.confidence > 0.6 ? 'emote.angry' : 'emote.shrug', { group: 'gesture', fadeIn: 0.3 }), 1000);
         }
         this.say(n, 'bump');
       }
@@ -457,17 +521,25 @@ export class Crowd {
     if (!n || n.dead >= 0) return false;
     n.hp -= dmg;
     this.scatter(n.pos.x, n.pos.z, 26, from);
+    const dx = n.pos.x - from.x, dz = n.pos.z - from.z, d = Math.hypot(dx, dz) || 1;
+    // where the hit came from, in their own frame: front, back, left, right
+    const fx = Math.sin(n.yaw), fz = Math.cos(n.yaw);
+    const along = -(dx * fx + dz * fz) / d, side = -(dx * fz - dz * fx) / d;
+    n.idle.interrupt(n.anim);
     if (n.hp > 0) {
       n.recoil = 0.25;
-      const dx = n.pos.x - from.x, dz = n.pos.z - from.z, d = Math.hypot(dx, dz) || 1;
       n.recoilX = dx / d;
       n.recoilZ = dz / d;
+      const clip = Math.abs(along) > Math.abs(side) ? (along > 0 ? 'react.hitFront' : 'react.hitBack') : side > 0 ? 'react.hitLeft' : 'react.hitRight';
+      n.anim.play(clip, { group: 'hit', fadeIn: 0.03, fadeOut: 0.2 });
       this.say(n, 'hurt', true);
       return false;
     }
     n.dead = 0;
     n.frozen = 0;
     n.motion.speed = 0;
+    n.anim.stop();
+    n.anim.play(along >= 0 ? 'react.deathBack' : 'react.deathForward', { group: 'death', fadeIn: 0.06, stay: true });
     return true;
   }
 
@@ -478,7 +550,12 @@ export class Crowd {
       if (!this.canReact(n)) continue;
       const d = Math.hypot(n.pos.x - x, n.pos.z - z);
       if (d > radius) continue;
-      if (n.panic <= 0) n.baseArms = [n.motion.armL, n.motion.armR];
+      if (n.panic <= 0) {
+        n.baseArms = [n.motion.armL, n.motion.armR];
+        n.idle.interrupt(n.anim);
+        if (n.mode !== 'walk' && n.mode !== 'sit') n.anim.play('react.duck', { group: 'react', fadeIn: 0.08 });
+        else if (n.mode === 'walk') n.anim.play('react.flinch', { group: 'flinch', fadeIn: 0.05 });
+      }
       n.panic = 9 + Math.random() * 5;
       n.panicX = from.x;
       n.panicZ = from.z;
@@ -687,6 +764,7 @@ export class Crowd {
     n.alarm = 0;
     if (n.dead > 45 && (!player || player.distanceTo(n.pos) > 30)) {
       n.dead = -1;
+      n.anim.clear();
       n.hp = n.mode === 'cop' ? 60 : 100;
       n.panic = 0;
       if (n.mode === 'cop' || n.mode === 'crook') n.visible = false;
@@ -802,6 +880,8 @@ export class Crowd {
 
   /** muggings and gangs (CITY only) */
   crimeOn = true;
+  /** how hard it's raining (App sets it every frame) */
+  rain = 0;
   /** how often the quiet unsettling moments come (1 = normal, 0 = never) */
   uneaseRate = 1;
 
@@ -855,6 +935,7 @@ export class Crowd {
       if (n.dead >= 0) this.down(n, dt, player);
       else if (n.mode === 'cop' || n.mode === 'crook') {
         /* policeUpdate / crooksUpdate moved them */
+        if (n.visible && n.mode === 'cop') n.idle.update(dt, n.anim, { still: n.v < 0.2 && n.motion.armR !== 'aim', raining: false, cold: false, waiting: false, hands: '', hoodable: false, police: true, wall: false });
       } else if (this.puppet && n.net) {
         this.follow(n, dt);
         if (n.mode !== 'walk' && n.mode !== 'watcher' && n.visible) this.stand(n, dt, t, player); // idle animation only
@@ -863,12 +944,22 @@ export class Crowd {
       else this.stand(n, dt, t, player);
       if (n.dead < 0) this.react(n, dt);
       if (n.dead < 0) this.panicUpdate(n, dt);
+      if (n.horror && n.dead < 0) this.horrorUpdate(n, dt, player);
       if (!n.visible) {
         this.batch.hide(i);
         n.lod = -1;
         return;
       }
       const d = n.pos.distanceTo(camPos);
+      // lean into starts and stops
+      const acc = (n.v - n.lastV) / Math.max(dt, 1e-3);
+      n.lastV = n.v;
+      n.motion.accel += (acc - n.motion.accel) * Math.min(1, dt * 6);
+      // rain: those without an umbrella hunch and hurry
+      if (n.mode === 'walk' && !n.outfit.umbrella) n.motion.cold = Math.max(n.motion.cold * 0.99, this.rain > 0.35 ? 0.35 : 0);
+      // animation (people too far to read a gesture only get the procedural pose)
+      const animate = n.lod <= 1 || d < LOD.mid;
+      if (animate) n.anim.update(dt);
       // far standing figures don't need a new pose every frame
       if (d > 150 && n.mode !== 'walk' && n.lod === 2 && (i + Math.floor(t * 10)) % 6 !== 0) return;
       const lod = d < LOD.near ? 0 : d < LOD.mid ? 1 : 2;
@@ -885,15 +976,10 @@ export class Crowd {
 
       this.q.setFromAxisAngle(this.up, n.yaw + n.wrongYaw);
       this.scl.setScalar(n.body.height);
-      if (n.dead >= 0) {
-        // on their back, where they fell
-        const k = Math.min(1, n.dead * 3);
-        this.q.multiply(this.qDown.setFromAxisAngle(this.side, -Math.PI / 2 * k));
-        this.tmpDown.copy(n.pos).setY(n.pos.y + 0.14 * k);
-        this.root.compose(this.tmpDown, this.q, this.scl);
-      } else this.root.compose(n.pos, this.q, this.scl);
-      solve(n.rig, this.root, n.body, n.outfit, n.motion, t);
-      this.batch.write(i, n.rig, n.parts, n.glowOn);
+      this.root.compose(n.pos, this.q, this.scl);
+      solve(n.rig, this.root, n.body, n.outfit, n.motion, t, animate ? n.anim : null);
+      const prop = n.anim.hasProp('ember') || n.anim.hasProp('phone');
+      this.batch.write(i, n.rig, n.parts, n.glowOn || prop);
     });
     this.batch.flush();
   }
@@ -928,8 +1014,9 @@ export class Crowd {
         n.lookT = rng.range(0.8, 2.2);
         n.lookTarget = rng.range(-1.0, 1.0);
       }
-    } else if (rng.next() < dt * 0.018) {
-      n.paused = rng.range(2, 5); // stop, look around, carry on
+    } else if (rng.next() < dt * 0.018 * (0.6 + n.persona.nervous)) {
+      n.paused = rng.range(2.5, 5); // stop, look around, carry on
+      n.anim.play(rng.chance(0.5) ? 'idle.crosswalk' : rng.chance(0.5) ? 'idle.lookAround' : 'idle.checkPhone', { group: 'idle', fadeIn: 0.5, speed: 0.9 + 0.2 * n.persona.energy });
     }
     if (player) {
       const dx = player.x - n.pos.x, dz = player.z - n.pos.z;
@@ -948,10 +1035,16 @@ export class Crowd {
     m.lookPitch = n.outfit.umbrella ? 0.08 : m.armR === 'pockets' ? 0.1 : 0;
 
     if (n.panic > 0) target = 5;
-    n.v += (target - n.v) * Math.min(1, dt * 2.5);
+    else if (this.rain > 0.35 && !n.outfit.umbrella && target > 0) target *= 1.18; // hurrying through it
+    // quietly wrong: walking backwards, still facing the way they came
+    const back = n.horror?.kind === 'backwards';
+    n.motion.moveDir += ((back ? Math.PI : 0) - n.motion.moveDir) * Math.min(1, dt * 6);
+    // start and stop with a little inertia (the heavier and older, the more)
+    n.v += (target - n.v) * Math.min(1, dt * (2.8 - 0.8 * n.persona.age));
     m.speed = n.v;
     stepPhase(m, dt);
-    n.s += n.v * dt * n.dir;
+    n.s += n.v * dt * n.dir * (back ? -0.6 : 1);
+    this.greet(n);
     if (r.loop) n.s = ((n.s % r.total) + r.total) % r.total;
     else if (n.s < 0 || n.s > r.total) {
       n.s = THREE.MathUtils.clamp(n.s, 0, r.total);
@@ -973,6 +1066,21 @@ export class Crowd {
     n.yaw += dy;
   }
 
+  /** Two people who know each other pass in the street: a wave. */
+  private greet(n: Npc) {
+    if (n.anim.playing('gesture') || this.rng.next() > 0.0008) return;
+    for (const o of this.npcs) {
+      if (o === n || !o.visible || o.dead >= 0 || o.mode === 'watcher' || o.mode === 'stare' || o.mode === 'cop' || o.mode === 'crook') continue;
+      const d = o.pos.distanceTo(n.pos);
+      if (d > 4 || d < 1) continue;
+      for (const [a, b] of [[n, o], [o, n]]) {
+        a.lookTarget = wrap(Math.atan2(b.pos.x - a.pos.x, b.pos.z - a.pos.z) - a.yaw);
+        a.anim.play('emote.greet', { group: 'gesture', fadeIn: 0.25, mirror: a.persona.leftHanded });
+      }
+      return;
+    }
+  }
+
   private stand(n: Npc, dt: number, t: number, player: THREE.Vector3 | null) {
     const m = n.motion;
     const rng = this.rng;
@@ -982,65 +1090,96 @@ export class Crowd {
     if (n.frozen > 0) {
       n.frozen -= dt;
       if (n.frozen <= 0) n.wrongYaw = 0;
+      n.anim.stop(undefined, 0.6);
+      m.blinkT = 9; // not even blinking
       return; // nothing moves. not the chest, not the head.
     }
     m.breath += dt * 1.2;
     // weight moves from one leg to the other every few seconds
     m.weight += (Math.sin(t * 0.13 + n.timer * 0.1 + n.pos.x) - m.weight) * dt * 0.4;
+    // a slow wandering gaze under whatever idle is playing
+    if (n.timer < 0) {
+      n.timer = rng.range(2.5, 7) * (1.2 - 0.5 * n.persona.nervous);
+      n.lookTarget = rng.range(-0.7, 0.7) * (0.6 + n.persona.nervous);
+    }
+    const hands = n.motion.armR === 'phone' ? 'phone' : n.motion.armR === 'umbrella' ? 'umbrella' : n.mode === 'smoke' ? 'smoke' : n.motion.armR;
     switch (n.mode) {
       case 'phone':
         m.lookPitch = 0.5;
         m.lookYaw = Math.sin(t * 0.3 + n.pos.z) * 0.08;
         n.glowOn = true;
         break;
-      case 'smoke': {
-        if (n.timer < 0) n.timer = rng.range(6, 11);
-        const k = n.timer < 2.2 ? Math.sin(((2.2 - n.timer) / 2.2) * Math.PI) : 0;
-        m.smokeT = Math.min(1, k * 1.4);
-        n.glowOn = m.smokeT > 0.35; // the ember only shows at the lips
-        m.lookYaw = Math.sin(t * 0.2 + n.pos.x) * 0.5;
-        m.lookPitch = -0.05 * m.smokeT;
-        break;
-      }
-      case 'look':
-        if (n.timer < 0) {
-          n.timer = rng.range(2.5, 6);
-          n.lookTarget = rng.range(-1.1, 1.1);
-        }
-        m.lookYaw += (n.lookTarget - m.lookYaw) * Math.min(1, dt * 2);
-        m.lookPitch = Math.sin(t * 0.15 + n.pos.x) * 0.1 - 0.04;
-        break;
-      case 'wait':
-        if (n.timer < 0) n.timer = rng.range(5, 10);
-        m.armL = n.timer < 1.4 ? 'watch' : 'pockets';
-        m.lookPitch = n.timer < 1.4 ? 0.55 : 0;
-        m.lookYaw += ((n.timer > 6 ? 0.6 : 0) - m.lookYaw) * dt; // down the street, for the bus
+      case 'smoke':
+        m.smokeT = 0;
+        m.lookYaw += (n.lookTarget * 0.7 - m.lookYaw) * Math.min(1, dt * 1.5);
+        m.lookPitch = 0;
         break;
       case 'talk':
-        if (n.timer < 0) n.timer = rng.range(1.5, 4);
-        m.armL = n.timer < 1.2 ? 'gesture' : 'free';
-        m.lookPitch = Math.sin(t * 2.1 + n.pos.x) * 0.05;
-        m.lookYaw = Math.sin(t * 0.5 + n.pos.z) * 0.15;
+        this.converse(n, dt, t);
         break;
       case 'sit':
         m.sit = 1;
         m.lookPitch = 0.05;
-        m.lookYaw = Math.sin(t * 0.1 + n.pos.x) * 0.3;
+        m.lookYaw += (n.lookTarget * 0.5 - m.lookYaw) * Math.min(1, dt * 1.2);
         break;
       case 'stare':
         m.lookPitch = -0.1;
         m.lookYaw = 0;
         m.breath -= dt * 1.2; // too still
-        break;
+        m.blinkT = Math.max(m.blinkT, 6);
+        return;
+      default:
+        m.lookYaw += (n.lookTarget - m.lookYaw) * Math.min(1, dt * 1.6);
+        m.lookPitch += (Math.sin(t * 0.15 + n.pos.x) * 0.08 - 0.03 - m.lookPitch) * Math.min(1, dt);
+    }
+    if (n.mode !== 'talk' && n.dead < 0 && n.panic <= 0 && n.alarm <= 0) {
+      n.idle.update(dt, n.anim, {
+        still: true,
+        raining: this.rain > 0.3 && !n.outfit.umbrella,
+        cold: m.cold > 0.1 || this.rain > 0.6,
+        waiting: n.mode === 'wait',
+        hands,
+        hoodable: n.outfit.hoodDown && n.outfit.garment === 'hoodie',
+        police: false,
+        wall: false,
+      });
     }
     // people notice you when you're close — except the ones who never look away
-    if (player && n.mode !== 'stare' && n.mode !== 'sit') {
+    if (player && n.mode !== 'sit') {
       const dx = player.x - n.pos.x, dz = player.z - n.pos.z;
-      if (dx * dx + dz * dz < 3.4 * 3.4) {
+      const d2 = dx * dx + dz * dz;
+      if (d2 < 3.4 * 3.4) {
         const want = THREE.MathUtils.clamp(wrap(Math.atan2(dx, dz) - n.yaw), -1.2, 1.2);
         m.lookYaw += (want - m.lookYaw) * Math.min(1, dt * 2.5);
         m.lookPitch *= 0.9;
+        // a friendly nod, once, from the confident ones
+        if (!n.anim.playing('gesture') && n.stareT <= 0 && rng.next() < dt * 0.25 * n.persona.confidence) n.anim.play('emote.nod', { group: 'gesture', fadeIn: 0.2 });
       }
+    }
+  }
+
+  /** Two people talking: one speaks (and gestures), the other listens, nods, laughs; then they swap. */
+  private converse(n: Npc, dt: number, t: number) {
+    const m = n.motion;
+    const f = n.friend;
+    if (f) {
+      const want = THREE.MathUtils.clamp(wrap(Math.atan2(f.pos.x - n.pos.x, f.pos.z - n.pos.z) - n.yaw), -1.1, 1.1);
+      m.lookYaw += (want + Math.sin(t * 0.4 + n.pos.x) * 0.06 - m.lookYaw) * Math.min(1, dt * 3);
+      m.lookPitch = Math.sin(t * 1.3 + n.pos.z) * 0.03;
+    }
+    n.talkT -= dt;
+    if (n.talkT <= 0 && f) {
+      n.talkT = f.talkT = this.rng.range(2.5, 6);
+      n.speaking = !n.speaking;
+      f.speaking = !n.speaking;
+      // now and then a shared laugh
+      if (this.rng.chance(0.18)) for (const who of [n, f]) who.anim.play('emote.laugh', { group: 'social', fadeIn: 0.3 });
+    }
+    if (n.speaking) {
+      if (!n.anim.playing('social')) n.anim.play('emote.talk', { group: 'social', loop: true, fadeIn: 0.5, speed: 0.85 + 0.3 * n.persona.energy, mirror: n.persona.leftHanded });
+    } else {
+      if (n.anim.playing('emote.talk')) n.anim.stop('social', 0.5);
+      if (!n.anim.playing('gesture') && this.rng.next() < dt * 0.35) n.anim.play('emote.nod', { group: 'gesture', fadeIn: 0.2, speed: 0.8 });
     }
   }
 
@@ -1053,9 +1192,89 @@ export class Crowd {
     if (this.unease > 0 || this.watcher.visible) return;
     this.unease = this.rng.range(110, 220);
     const roll = this.rng.next();
-    if (roll < 0.4) this.summonWatcher(player, camPos);
-    else if (roll < 0.7) this.freezeSomeone(player);
-    else this.glitchSomeone(player, camPos);
+    if (roll < 0.3) this.summonWatcher(player, camPos);
+    else if (roll < 0.48) this.freezeSomeone(player);
+    else if (roll < 0.62) this.glitchSomeone(player, camPos);
+    else if (roll < 0.76) this.haunt('stare', player);
+    else if (roll < 0.86) this.haunt('backwards', player);
+    else if (roll < 0.94) this.haunt('repeat', player);
+    else this.haunt('nothing', player);
+  }
+
+  /**
+   * The quieter wrongnesses. Someone turns their head to you, slowly, and
+   * keeps it there without blinking; someone walks backwards for a few
+   * steps; someone checks their watch the exact same way four times; someone
+   * stops, looks at a patch of dark that's empty, and backs away from it.
+   * Then they're ordinary again.
+   */
+  private haunt(kind: 'stare' | 'backwards' | 'repeat' | 'nothing', player: THREE.Vector3) {
+    const pool = this.npcs.slice(0, this.citizens).filter((n) => {
+      if (!n.visible || n.mode === 'watcher' || n.mode === 'stare' || n.frozen > 0 || n.horror || n.dead >= 0) return false;
+      const d = n.pos.distanceTo(player);
+      if (kind === 'backwards') return n.mode === 'walk' && d > 8 && d < 30;
+      return d > 6 && d < 26 && this.frustum.containsPoint(_tmp.copy(n.pos).setY(1.5));
+    });
+    if (!pool.length) {
+      this.unease = 30;
+      return;
+    }
+    const n = this.rng.pick(pool);
+    n.horror = { kind, t: kind === 'stare' ? 14 : kind === 'backwards' ? 5 : kind === 'repeat' ? 12 : 9, x: 0, z: 0, n: 0 };
+    if (kind === 'nothing') {
+      // a point in the dark, a few metres off to their side
+      const a = n.yaw + (this.rng.chance(0.5) ? 1 : -1) * this.rng.range(1.2, 2.2);
+      n.horror.x = n.pos.x + Math.sin(a) * 6;
+      n.horror.z = n.pos.z + Math.cos(a) * 6;
+    }
+  }
+
+  private horrorUpdate(n: Npc, dt: number, player: THREE.Vector3 | null) {
+    const h = n.horror!;
+    const m = n.motion;
+    h.t -= dt;
+    if (h.t <= 0 || !player) {
+      n.horror = null;
+      return;
+    }
+    switch (h.kind) {
+      case 'stare': {
+        // the head comes round too slowly, then stays; no blinking, no breath
+        const want = wrap(Math.atan2(player.x - n.pos.x, player.z - n.pos.z) - n.yaw);
+        const lim = THREE.MathUtils.clamp(want, -1.45, 1.45);
+        m.lookYaw += Math.sign(lim - m.lookYaw) * Math.min(Math.abs(lim - m.lookYaw), dt * 0.35);
+        m.lookPitch = 0;
+        m.blinkT = Math.max(m.blinkT, 2);
+        m.breath -= dt;
+        n.anim.stop('idle', 0.8);
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        break;
+      }
+      case 'repeat':
+        // the same small movement, identical each time
+        if (!n.anim.playing('idle') && h.n < 4) {
+          h.n++;
+          n.anim.play('idle.checkWatch', { group: 'idle', fadeIn: 0.05, fadeOut: 0.05, speed: 1 });
+        }
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        break;
+      case 'nothing': {
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        const want = wrap(Math.atan2(h.x - n.pos.x, h.z - n.pos.z) - n.yaw);
+        m.lookYaw += (THREE.MathUtils.clamp(want, -1.3, 1.3) - m.lookYaw) * Math.min(1, dt * 2);
+        n.lookTarget = m.lookYaw;
+        if (h.n === 0 && h.t < 8) {
+          h.n = 1;
+          n.anim.play('react.uneasy', { group: 'idle', fadeIn: 0.4 });
+        } else if (h.n === 1 && h.t < 3.5 && n.mode !== 'sit') {
+          h.n = 2;
+          n.anim.play('react.backAway', { group: 'react', fadeIn: 0.3 });
+        }
+        break;
+      }
+      case 'backwards':
+        break; // walk() handles it
+    }
   }
 
   private summonWatcher(player: THREE.Vector3, camPos: THREE.Vector3) {
