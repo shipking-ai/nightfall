@@ -1,9 +1,11 @@
 // The social preview (Open Graph / Twitter card, and GitHub's repository preview): a real frame of the
 // city from the title camera, with the title set over it in the game's own type. 1200 × 630.
 // Needs the dev server: `npm run dev`, then `node tools/social-preview.mjs`.
+// Writes public/og.jpg (1200 × 630, link previews) and docs/media/social-preview.jpg (1280 × 640,
+// GitHub's repository preview: Settings → General → Social preview).
 import { launch } from './playtest/lib.mjs';
-import { copyFileSync } from 'node:fs';
-const t = await launch({ pad: null, w: 1200, h: 630 });
+for (const [w, h, out] of [[1200, 630, 'public/og.jpg'], [1280, 640, 'docs/media/social-preview.jpg']]) {
+const t = await launch({ pad: null, w, h });
 const { page, waitState, step } = t;
 await waitState('landing');
 await t.wait(4000);
@@ -50,7 +52,7 @@ await page.evaluate(() => {
 });
 await page.evaluate(() => document.fonts.ready);
 await t.wait(800);
-await page.screenshot({ path: 'public/og.jpg', type: 'jpeg', quality: 88, timeout: 240000 });
-copyFileSync('public/og.jpg', 'docs/media/social-preview.jpg');
-console.log('written public/og.jpg and docs/media/social-preview.jpg', t.errors);
+await page.screenshot({ path: out, type: 'jpeg', quality: 88, timeout: 240000 });
+console.log('written', out, w, h, t.errors);
 await t.browser.close();
+}
