@@ -61,3 +61,18 @@ export async function listPhotos(): Promise<Photo[]> {
     }
   });
 }
+
+export async function deletePhoto(id: string): Promise<boolean> {
+  const db = await open();
+  if (!db) return false;
+  return new Promise((res) => {
+    try {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).delete(id);
+      tx.oncomplete = () => res(true);
+      tx.onerror = () => res(false);
+    } catch {
+      res(false);
+    }
+  });
+}

@@ -1,5 +1,5 @@
 import { h, setOn } from './dom';
-import { EMOTE_PAGES, type Emote } from '../data/emotes';
+import { EMOTE_PAGES, PAGE_NAMES, type Emote } from '../data/emotes';
 import { glyph } from '../input/glyphs';
 import type { Input } from '../core/Input';
 
@@ -96,6 +96,6 @@ export class EmoteWheel {
       (s.lastChild as HTMLElement).textContent = e?.label ?? '';
     });
     this.label.textContent = this.sel >= 0 ? list[this.sel]?.label ?? '' : 'Emotes';
-    this.pageEl.textContent = `${this.page + 1} / ${EMOTE_PAGES.length}`;
+    this.pageEl.textContent = `${PAGE_NAMES[this.page] ?? ''} · ${this.page + 1} / ${EMOTE_PAGES.length}`;
   }
 }

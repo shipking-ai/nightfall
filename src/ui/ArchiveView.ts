@@ -1,8 +1,9 @@
 import { glyph } from '../input/glyphs';
 import { h, setOn, svg } from './dom';
 import { CATEGORIES, ENTRIES, type Category, type Entry } from '../data/archive';
+import type { Photo } from '../core/photos';
 
-type Tab = Category | 'photographs';
+type Tab = Category | 'photographs' | 'yours';
 
 export interface ArchiveSource {
   found: Set<string>;
@@ -12,6 +13,9 @@ export interface ArchiveSource {
   markRead(id: string): void;
   /** how many other people have recorded this entry (cloud; absent offline) */
   others?(id: string): number;
+  /** the photographs you took yourself (photo mode), newest first */
+  photos?: Photo[];
+  forget?(id: string): Promise<boolean>;
 }
 
 /**
@@ -63,7 +67,7 @@ export class ArchiveView {
 
   /** LB / RB: the previous or next section. */
   cycleTab(d: -1 | 1) {
-    const ids: Tab[] = [...CATEGORIES.map((c) => c.id as Tab), 'photographs'];
+    const ids: Tab[] = [...CATEGORIES.map((c) => c.id as Tab), 'photographs', 'yours'];
     const i = ids.indexOf(this.tab);
     this.tab = ids[(i + d + ids.length) % ids.length];
     this.selected = null;
@@ -87,6 +91,7 @@ export class ArchiveView {
       return { id: c.id, label: c.label, count: `${all.filter((e) => found.has(e.id)).length}/${all.length}` };
     });
     tabs.push({ id: 'photographs', label: 'Photographs', count: String(Object.keys(this.src.plates).length).padStart(2, '0') });
+    tabs.push({ id: 'yours', label: 'Your photographs', count: String(this.src.photos?.length ?? 0).padStart(2, '0') });
     this.index.replaceChildren(
       ...tabs.map((t) =>
         h(
@@ -115,6 +120,7 @@ export class ArchiveView {
   }
 
   private renderList() {
+    if (this.tab === 'yours') return this.renderPhotoList();
     const list = this.entries();
     if (!this.selected) this.selected = list.find((e) => this.src.found.has(e.id))?.id ?? null;
     if (this.tab === 'photographs') {
@@ -151,7 +157,71 @@ export class ArchiveView {
     );
   }
 
+  /** Your own photographs: a list by where and when, the picture beside it. */
+  private renderPhotoList() {
+    const ps = this.src.photos ?? [];
+    if (!this.selected || !ps.some((p) => p.id === this.selected)) this.selected = ps[0]?.id ?? null;
+    if (!ps.length) {
+      this.list.replaceChildren(h('p', { class: 'meta', style: 'padding: 18px 28px' }, 'None yet. Photo mode is in After Hours and the City (D-pad up, or P).'));
+      return;
+    }
+    this.list.replaceChildren(
+      ...ps.map((p, i) =>
+        h(
+          'button',
+          {
+            class: `archive__row${p.id === this.selected ? ' is-active' : ''}`,
+            role: 'listitem',
+            onclick: () => {
+              this.selected = p.id;
+              this.onTick();
+              this.renderPhotoList();
+              this.renderDetail();
+            },
+          },
+          h('span', { class: 'meta' }, `PH-${String(ps.length - i).padStart(2, '0')}`),
+          h('span', { class: 'archive__row-title' }, `${p.place} · ${p.time}`),
+        ),
+      ),
+    );
+  }
+
+  private renderPhoto() {
+    const p = this.src.photos?.find((x) => x.id === this.selected);
+    if (!p) {
+      this.detail.replaceChildren(h('div', { class: 'archive__empty' }, h('div', {}, h('span', { class: 'meta' }, 'No photographs yet'), h('p', {}, 'Stop somewhere. Take a picture. It will keep.'))));
+      return;
+    }
+    const when = new Date(p.at);
+    const del = h('button', { class: 'archive__delete' }, h('span', { class: 'meta' }, 'Delete this photograph'));
+    del.addEventListener('click', async () => {
+      if (!this.src.forget || !(await this.src.forget(p.id))) return;
+      this.src.photos = this.src.photos!.filter((x) => x.id !== p.id);
+      this.selected = null;
+      this.onTick();
+      this.render();
+    });
+    this.detail.replaceChildren(
+      h(
+        'div',
+        { class: 'archive__detail-inner' },
+        h('figure', { class: 'plate' }, h('img', { src: p.url, alt: `Your photograph: ${p.place}` }), h('figcaption', {}, h('span', { class: 'meta' }, p.place), h('span', { class: 'meta' }, `Taken ${p.time}`))),
+        h('div', { class: 'meta meta--accent archive__cat-label' }, 'Your photographs'),
+        h('h3', {}, p.place),
+        h(
+          'dl',
+          { class: 'archive__facts' },
+          h('div', {}, h('dt', { class: 'meta' }, 'Local time'), h('dd', {}, p.time)),
+          h('div', {}, h('dt', { class: 'meta' }, 'Taken on'), h('dd', {}, when.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }))),
+        ),
+        del,
+      ),
+    );
+    this.detail.scrollTop = 0;
+  }
+
   private renderDetail() {
+    if (this.tab === 'yours') return this.renderPhoto();
     const e = ENTRIES.find((x) => x.id === this.selected);
     if (!e || !this.src.found.has(e.id)) {
       this.detail.replaceChildren(

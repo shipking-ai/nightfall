@@ -17,7 +17,23 @@ export interface Emote {
   full?: boolean;
   /** a small mark for the wheel */
   mark: string;
+  /** quick chat: said out loud to the others in the room (with the gesture) */
+  say?: string;
+  /** quick chat: open the chat box to type (the on-screen keyboard on a pad) */
+  chat?: boolean;
 }
+
+/** Quick chat: a line for the others, with a gesture to go with it. The last one opens the chat box. */
+export const QUICK_CHAT: Emote[] = [
+  { id: 'q-hello', label: 'Hello', clip: 'emote.wave', mark: '“', say: 'Hello.' },
+  { id: 'q-here', label: 'Over here', clip: 'emote.callOver', mark: '!', say: 'Over here!' },
+  { id: 'q-follow', label: 'Follow me', clip: 'emote.beckon', mark: '→', say: 'Follow me.' },
+  { id: 'q-look', label: 'Look at this', clip: 'emote.point', mark: '◉', say: 'Look at this.' },
+  { id: 'q-wait', label: 'Wait', clip: 'emote.shoo', mark: '‖', say: 'Wait for me.' },
+  { id: 'q-thanks', label: 'Thanks', clip: 'emote.nod', mark: '♡', say: 'Thanks.' },
+  { id: 'q-nice', label: 'Nice', clip: 'emote.thumbsUp', mark: '★', say: 'Nice.' },
+  { id: 'q-type', label: 'Type…', clip: 'emote.talk', mark: '⌨', chat: true },
+];
 
 export const EMOTES: Emote[] = [
   { id: 'wave', label: 'Wave', clip: 'emote.wave', mark: '✋' },
@@ -49,7 +65,10 @@ export const EMOTES: Emote[] = [
 ];
 
 /** eight to a page on the wheel */
-export const EMOTE_PAGES = [EMOTES.slice(0, 8), EMOTES.slice(8, 16), EMOTES.slice(16, 24)];
+export const EMOTE_PAGES = [EMOTES.slice(0, 8), EMOTES.slice(8, 16), EMOTES.slice(16, 24), QUICK_CHAT];
+export const PAGE_NAMES = ['Gestures', 'Feelings', 'Poses', 'Say'];
+/** everything that can be sent to the others, by index + 1 (the emotes first, so old numbers still mean the same) */
+export const WIRE_EMOTES = [...EMOTES, ...QUICK_CHAT];
 
 export function emoteById(id: string): Emote | undefined {
   return EMOTES.find((e) => e.id === id);

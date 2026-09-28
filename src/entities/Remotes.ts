@@ -3,7 +3,7 @@ import { FigureBatch } from './FigureBatch';
 import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from './Humanoid';
 import { Animator } from '../anim/Animator';
 import '../anim/clips';
-import { EMOTES } from '../data/emotes';
+import { WIRE_EMOTES } from '../data/emotes';
 import { carParts } from '../world/builders/props';
 import { TAXI_COLOR } from './Traffic';
 import { bodyFromLook, outfitFromLook } from './Look';
@@ -187,7 +187,7 @@ export class Remotes {
         const key = `${st.emote ?? 0}:${st.eseq ?? 0}`;
         if (key !== s.emoteKey) {
           s.emoteKey = key;
-          const e = st.emote ? EMOTES[st.emote - 1] : null;
+          const e = st.emote ? WIRE_EMOTES[st.emote - 1] : null;
           if (e) s.anim.play(e.clip, { group: 'emote', fadeIn: 0.25, stay: !!e.hold && !e.then });
           else s.anim.stop('emote');
         }

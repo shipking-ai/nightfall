@@ -267,3 +267,47 @@
 .photo__flash { position: absolute; inset: 0; background: #fff; opacity: 0; }
 .photo__flash.is-on { animation: flash 420ms ease-out; }
 @keyframes flash { 0% { opacity: .85; } 100% { opacity: 0; } }
+
+/* the Archive: deleting one of your own photographs */
+.archive__delete {
+  margin-top: 22px;
+  font: inherit;
+  color: var(--paper);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  padding: 10px 16px;
+  cursor: pointer;
+}
+.archive__delete:hover, .archive__delete:focus-visible, .archive__delete.nav-focus { border-color: #d0705a; color: #f0b0a0; outline: none; }
+
+/* pause menu switches (weather, the clock, the microphone): smaller than the main items, with their setting */
+.pause__extras { display: flex; flex-direction: column; margin: 4px 0 6px; }
+.pause__extras:empty { display: none; }
+.pause__item--switch { font-family: var(--f-body); font-size: clamp(15px, 1.5vw, 19px); min-height: 34px; align-items: baseline; }
+.pause__value { margin-left: auto; padding-left: 24px; width: auto !important; color: var(--accent) !important; letter-spacing: 0.14em; text-transform: uppercase; }
+.ui-tv .pause__item.pause__item--switch { font-size: clamp(18px, 1.7vw, 26px); min-height: 40px; }
+/* short screens (and TV size on them): tighten the column so the whole menu fits */
+@media (max-height: 760px) {
+  .pause__item:not(.pause__item--switch), .ui-tv .pause__item:not(.pause__item--switch) { font-size: clamp(24px, 5.4vh, 44px); min-height: 0; padding: 2px 0; }
+  .pause__item.pause__item--switch, .ui-tv .pause__item.pause__item--switch { font-size: clamp(14px, 2.6vh, 22px); min-height: 0; padding: 3px 0; }
+  .pause__menu > .meta { margin-bottom: 10px; }
+  .pause__foot { bottom: 18px; padding-top: 10px; }
+}
+
+/* join a friend by code */
+.join { z-index: 25; background: rgba(6, 7, 8, 0.82); }
+.join__body { display: grid; gap: 16px; max-width: 560px; padding: 24px var(--gutter); }
+.join__body p { margin: 0; color: var(--mute); line-height: 1.5; }
+.join__code {
+  font-family: var(--f-meta);
+  font-size: 26px;
+  letter-spacing: 0.2em;
+  color: var(--paper);
+  background: rgba(18, 20, 22, 0.8);
+  border: 1px solid var(--line-strong);
+  padding: 14px 16px;
+}
+.join__code:focus, .join__code.nav-focus { border-color: var(--accent); outline: none; }
+.join__err { color: #f0a080 !important; min-height: 1em; }
+.join__go { justify-self: start; font: inherit; font-family: var(--f-meta); letter-spacing: 0.16em; text-transform: uppercase; color: var(--paper); background: rgba(200, 160, 100, 0.16); border: 1px solid var(--accent); padding: 12px 18px; cursor: pointer; }
+.join__go:hover, .join__go:focus-visible, .join__go.nav-focus { background: rgba(200, 160, 100, 0.3); outline: none; }

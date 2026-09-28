@@ -6,6 +6,8 @@ export interface LandingHandlers {
   archive(): void;
   settings(): void;
   wardrobe?(): void;
+  /** join a friend's room with a code (multiplayer) */
+  join?(): void;
   toggleSound(): void;
 }
 
@@ -55,6 +57,7 @@ export class Landing {
           h('button', { class: 'navlink', onclick: () => this.on.archive() }, 'Archive'),
           ...(this.on.wardrobe ? [h('button', { class: 'navlink', onclick: () => this.on.wardrobe!() }, 'Wardrobe')] : []),
           h('button', { class: 'navlink', onclick: () => this.on.settings() }, 'Settings'),
+          ...(this.on.join ? [h('button', { class: 'navlink', onclick: () => this.on.join!() }, 'Join a friend')] : []),
         ),
       ),
     );

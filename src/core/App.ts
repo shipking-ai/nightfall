@@ -60,10 +60,11 @@ import { Account } from '../net/Account';
 import { h, wait } from '../ui/dom';
 import { ENTRIES } from '../data/archive';
 import { Nav } from '../ui/Nav';
+import { JoinView, roomCode } from '../ui/JoinView';
 import { EmoteWheel } from '../ui/EmoteWheel';
 import { PhotoMode } from '../ui/PhotoMode';
-import { savePhoto, listPhotos } from '../core/photos';
-import { EMOTES } from '../data/emotes';
+import { savePhoto, listPhotos, deletePhoto, type Photo } from '../core/photos';
+import { WIRE_EMOTES } from '../data/emotes';
 import { SEATS } from '../world/builders/props';
 import { ModeSelect } from '../ui/ModeSelect';
 import { bindGlyphs, refreshGlyphs } from '../input/glyphs';
@@ -117,7 +118,11 @@ export class App {
   private honking = false;
   private radio = new Radio();
   /** the car the radio set lives in (it keeps playing there when you get out) */
-  private radioHost: { car: DrivableCar | TrafficCar; pos: () => THREE.Vector3 } | null = null;
+  private radioHost: { car: DrivableCar | TrafficCar | null; pos: () => THREE.Vector3 } | null = null;
+  /** After Hours on foot: the radio in your ears instead of a car's */
+  private get headphones() {
+    return !!this.radioHost && !this.radioHost.car;
+  }
   private player = new Player();
   private follow: FollowCamera;
   private cine: CinematicCamera;
@@ -198,6 +203,10 @@ export class App {
   private warzone!: Warzone;
   /** photo mode: a free camera and a shutter (After Hours, City) */
   private photo!: PhotoMode;
+  /** your own photographs (IndexedDB), kept in step for the Archive */
+  private myPhotos: Photo[] = [];
+  /** the title screen's Join a friend (a room code) */
+  private joinView!: JoinView;
   private get photoOn() {
     return !!this.photo?.active;
   }
@@ -281,8 +290,14 @@ export class App {
       archive: () => this.openOverlay('archive', 'landing'),
       settings: () => this.openOverlay('settings', 'landing'),
       wardrobe: () => this.openOverlay('wardrobe', 'landing'),
+      join: this.mp.enabled ? () => this.joinView.open() : undefined,
       toggleSound: () => this.toggleSound(),
     });
+    this.joinView = new JoinView(this.ui, () => {
+      this.joinView.close();
+      this.audio.uiTick();
+    });
+    this.nav.scope(this.joinView.el, { back: () => this.joinView.close() });
     this.hud = new Hud(this.ui);
     this.modeSelect = new ModeSelect(this.ui, {
       preview: (id) => this.previewMode(id),
@@ -293,6 +308,10 @@ export class App {
     this.mode = this.settings.data.lastMode;
     this.wheel = new EmoteWheel(this.ui);
     this.photo = new PhotoMode(this.ui, document.getElementById('stage')!);
+    listPhotos().then((l) => {
+      this.myPhotos = l;
+      this.photo.setCount(l.length);
+    });
     this.pause = new PauseMenu(this.ui, {
       resume: () => this.closeOverlay(),
       map: () => this.openOverlay('map', 'pause'),
@@ -764,6 +783,11 @@ export class App {
     if (r.combat !== 'street') this.combat.select(0);
     if (!r.quests) this.hud.objective(null);
     document.body.dataset.mode = r.id;
+    // After Hours' weather and clock switches don't follow you out of it
+    if (r.id !== 'afterhours' && this.time) {
+      this.clockHeld = false;
+      this.time.rainOverride = null;
+    }
     // a little more light on people where the mode is about reading bodies
     charFill.value = r.combat === 'fight' ? 0.075 : r.combat === 'warzone' ? 0.07 : 0.05;
     // and more of the sky's light where you need to see into the dark to play
@@ -866,6 +890,38 @@ export class App {
     await this.toLanding();
   }
 
+  /** After Hours: the hour can be held where it is */
+  private clockHeld = false;
+
+  /** The pause menu's switches for this mode: the weather and the clock in After Hours, the microphone in a room. */
+  private pauseSwitches(): { label: string; value: () => string; act: () => void }[] {
+    const out: { label: string; value: () => string; act: () => void }[] = [];
+    if (this.mode === 'afterhours') {
+      const RAIN: [number | null, string][] = [[null, 'As it comes'], [0.05, 'Dry'], [0.3, 'Drizzle'], [0.65, 'Rain'], [1, 'Downpour']];
+      out.push({
+        label: 'Weather',
+        value: () => RAIN.find(([v]) => v === this.time.rainOverride)?.[1] ?? 'As it comes',
+        act: () => {
+          const i = RAIN.findIndex(([v]) => v === this.time.rainOverride);
+          this.time.rainOverride = RAIN[(i + 1) % RAIN.length][0];
+        },
+      });
+      out.push({
+        label: 'The hour',
+        value: () => (this.clockHeld ? `Held at ${this.time.label}` : 'Passing'),
+        act: () => (this.clockHeld = !this.clockHeld),
+      });
+    }
+    if (this.mp.room) {
+      out.push({
+        label: 'Microphone',
+        value: () => (this.voice.micOn ? 'On' : 'Off'),
+        act: () => void this.toggleMic(),
+      });
+    }
+    return out;
+  }
+
   /**
    * Compile, and draw once, everything under these (hidden parts too), so a
    * match's first shot, first spray of blood or first dropped pack doesn't
@@ -932,8 +988,9 @@ export class App {
       this.pause.setAdmin(this.staff);
       this.pausedAt = performance.now();
       this.persist();
+      this.pause.setMode(this.fight.active || this.warzone.active, this.pauseSwitches());
       this.pause.open({
-        place: this.discovery.districtName,
+        place: this.fight.active ? 'Harbor Lane crossing' : this.warzone.active ? 'Pier 9 Yard' : this.discovery.districtName,
         time: this.time.label,
         rain: this.time.rainLabel.charAt(0) + this.time.rainLabel.slice(1).toLowerCase(),
         records: `${this.save.data.discovered.length} of ${ENTRIES.filter((e) => !e.hidden).length}`,
@@ -956,6 +1013,13 @@ export class App {
         marks: ['mark-quarter', 'mark-yard', 'mark-bridge'].filter((m) => this.save.hasFlag(m)).length,
         markRead: (id) => this.save.markRead(id),
         others: (id) => (this.cloud.counts[id] ?? 1) - 1,
+        photos: this.myPhotos,
+        forget: (id) =>
+          deletePhoto(id).then((ok) => {
+            this.myPhotos = this.myPhotos.filter((p) => p.id !== id);
+            this.photo.setCount(this.myPhotos.length);
+            return ok;
+          }),
       });
       this.cloud.refreshCounts();
     }
@@ -1151,16 +1215,29 @@ export class App {
         this.wheel.update(this.input);
         if (!this.input.held('emote')) {
           const e = this.wheel.close();
-          if (e) {
+          if (e?.chat) {
+            // type a message: the chat box (and on a pad, the on-screen keyboard)
+            this.audio.uiTick();
+            this.chat.open();
+          } else if (e) {
             this.player.playEmote(e);
             this.emoteSeq++;
             this.audio.uiTick();
+            if (e.say) {
+              this.mp.chat(e.say);
+              this.chat.add(this.mp.me.name, e.say, true);
+            }
           }
         }
       }
     } else if (this.wheel.isOpen) this.wheel.close();
-    this.emoteNo = this.player.emote ? EMOTES.indexOf(this.player.emote) + 1 : 0;
+    this.emoteNo = this.player.emote ? WIRE_EMOTES.indexOf(this.player.emote) + 1 : 0;
     if (this.rules.photo && onFoot && !this.photoOn && !this.wheel.isOpen && this.input.pressed('photo')) this.photoMode(true);
+    // After Hours: headphones on foot (no guns to switch, so the D-pad is free)
+    if (this.mode === 'afterhours' && onFoot && !this.photoOn && !this.wheel.isOpen) {
+      if (this.input.pressed('radioNext')) this.tuneRadio(1);
+      else if (this.input.pressed('radioPrev')) this.tuneRadio(-1);
+    }
   }
 
   private photoMode(on: boolean) {
@@ -1292,12 +1369,13 @@ export class App {
   /** Make (or reuse) a room and put its link on the clipboard. */
   private async invite(): Promise<string> {
     const url = await this.mp.invite();
+    // the code is for a friend on a controller (Join a friend, on the title screen); the link for everyone else
+    const code = this.mp.room ? `Code ${roomCode(this.mp.room)}` : 'Room ready';
     try {
       await navigator.clipboard.writeText(url);
-      return 'Link copied';
+      return `${code} · link copied`;
     } catch {
-      prompt('Send this link to whoever should join you:', url);
-      return 'Link ready';
+      return code;
     }
   }
 
@@ -1988,8 +2066,15 @@ export class App {
   private tuneRadio(dir: 1 | -1) {
     const v = this.vehicle;
     const out = this.audio.output;
-    if (!v || !this.audio.ctx || !out) {
+    if (!this.audio.ctx || !out) {
       this.hud.setHint('Turn the sound on to use the radio');
+      return;
+    }
+    if (!v) {
+      // headphones: on foot, the radio goes where you go
+      if (!this.headphones) this.radioHost = { car: null, pos: () => this.player.pos };
+      this.radio.setVolume(this.settings.data.radio);
+      this.radio.next(this.audio.ctx, out, dir);
       return;
     }
     if (this.radioHost?.car !== v.car) {
@@ -2011,7 +2096,7 @@ export class App {
     else if (r.status === 'tuning') text = `${st.name}  ·  tuning…`;
     else text = r.nowPlaying ? `${st.name}  ·  ${r.nowPlaying}` : `${st.name}  ·  ${st.note}`;
     // only speak up while you're in the car it's playing in
-    if (!this.vehicle || this.radioHost?.car !== this.vehicle.car) return;
+    if (!this.headphones && (!this.vehicle || this.radioHost?.car !== this.vehicle.car)) return;
     this.hud.setHint(text);
     clearTimeout(this.radioHintTimer);
     this.radioHintTimer = window.setTimeout(() => this.hud.setHint(null), 6000);
@@ -2335,16 +2420,16 @@ export class App {
     }
     for (const c of this.traffic.cars) if (c.group.visible && c !== (this.vehicle?.car as unknown)) this.crowd.threat(c.group.position.x, c.group.position.z, Math.sin(c.yaw) * c.v * 0.6, Math.cos(c.yaw) * c.v * 0.6);
     // the radio plays from its car; if that car has driven off out of the district, it's gone
-    if (this.radioHost && 'path' in this.radioHost.car && !this.radioHost.car.group.visible) {
+    if (this.radioHost?.car && 'path' in this.radioHost.car && !this.radioHost.car.group.visible) {
       this.radio.off();
       this.radioHost = null;
     }
-    this.radio.update(dt, this.radioHost?.pos() ?? null, !!this.vehicle && this.radioHost?.car === this.vehicle.car, this.camera.position, this.settings.data.master, !!this.overlay);
+    this.radio.update(dt, this.radioHost?.pos() ?? null, this.headphones || (!!this.vehicle && this.radioHost?.car === this.vehicle.car), this.camera.position, this.settings.data.master, !!this.overlay);
     this.radio.setAudible(this.audio.enabled);
     const dv = this.vehicle;
     if (dv && this.driveVoice) this.driveVoice.setPosition(dv.kind === 'drive' ? dv.car.pos : dv.car.group.position, Math.abs(dv.car.v));
     for (const u of this.world.updaters) u(t, dt);
-    this.time.speed = this.player.sitting ? 8 : 1;
+    this.time.speed = this.clockHeld ? 0 : this.player.sitting ? 8 : 1;
     this.time.update(dt, t, this.state !== 'boot');
     const focus = inWorld ? this.player.pos : this.camera.position;
     this.lighting.update(dt, t, focus);
@@ -2437,7 +2522,12 @@ export class App {
       const url = this.photo.capture(this.renderer.canvas);
       this.audio.footstep(1.6, false);
       this.input.rumble('ui');
-      if (url) savePhoto({ id: `p${Date.now()}`, at: Date.now(), place: this.inside?.name ?? this.discovery.districtName, time: this.time.label, url }).then(() => listPhotos().then((l) => this.photo.setCount(l.length)));
+      if (url) savePhoto({ id: `p${Date.now()}`, at: Date.now(), place: this.inside?.name ?? this.discovery.districtName, time: this.time.label, url }).then(() =>
+          listPhotos().then((l) => {
+            this.myPhotos = l;
+            this.photo.setCount(l.length);
+          }),
+        );
     }
   }
 

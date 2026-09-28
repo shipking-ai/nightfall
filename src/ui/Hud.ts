@@ -8,7 +8,7 @@ export type ControlContext = 'foot' | 'armed' | 'car' | 'taxi' | 'boat' | 'swim'
 
 const CONTROL_SETS: Record<ControlContext, [Action | 'moveStick' | 'lookStick', string][]> = {
   foot: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['jump', 'Jump'], ['interact', 'Interact'], ['emote', 'Emotes'], ['map', 'Map'], ['pause', 'Pause']],
-  afterhours: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['interact', 'Interact'], ['photo', 'Photo mode'], ['emote', 'Emotes'], ['map', 'Map'], ['pause', 'Pause']],
+  afterhours: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['interact', 'Interact'], ['photo', 'Photo mode'], ['radioNext', 'Headphones'], ['emote', 'Emotes · say'], ['map', 'Map'], ['pause', 'Pause']],
   armed: [['aim', 'Aim'], ['attack', 'Fire'], ['reload', 'Reload'], ['nextWeapon', 'Switch weapon']],
   car: [['throttle', 'Accelerate'], ['brake', 'Brake · reverse'], ['moveStick', 'Steer'], ['handbrake', 'Handbrake'], ['horn', 'Horn'], ['radioNext', 'Radio'], ['exitVehicle', 'Get out']],
   taxi: [['lookStick', 'Look around'], ['radioNext', 'Radio'], ['exitVehicle', 'Ask to stop']],
