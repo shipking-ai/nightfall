@@ -463,6 +463,28 @@ export class AudioEngine {
     return this.ctx ? this.master : null;
   }
 
+  /** Thunder: a crack if it's close, then a long rolling rumble (distance = how muffled). */
+  thunder(strength: number) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(strength > 0.8 ? 2400 : 500, t);
+    lp.frequency.exponentialRampToValueAtTime(120, t + 3.5);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.9 * strength, t + (strength > 0.8 ? 0.02 : 0.4));
+    g.gain.setTargetAtTime(0.35 * strength, t + 0.4, 0.3);
+    g.gain.setTargetAtTime(0.0001, t + 1.6, 1.4);
+    src.connect(lp).connect(g).connect(this.sfx);
+    g.connect(this.reverbIn);
+    src.start(t, Math.random() * 3);
+    src.stop(t + 7);
+  }
+
   /** A metal-on-metal crunch for a car hitting something. */
   crash(strength: number) {
     if (!this.ctx || !this.enabled) return;

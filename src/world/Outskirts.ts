@@ -37,6 +37,10 @@ export class Outskirts {
   private slices = new Map<number, Slice>();
   /** the city's ground and river planes, moved along under you so they never run out */
   private followers: THREE.Object3D[];
+  /** RPG: the outskirts only run so far before the wider world takes over (slices each side) */
+  limit = Infinity;
+  /** RPG: the ground planes stay put (the terrain carries on past them) */
+  follow = true;
 
   constructor(private mats: Materials, private collision: Collision, root: THREE.Object3D) {
     this.followers = ['ground-north', 'ground-south', 'water'].map((n) => root.getObjectByName(n)).filter((o): o is THREE.Object3D => !!o);
@@ -49,14 +53,14 @@ export class Outskirts {
 
   update(pos: THREE.Vector3) {
     const snap = Math.round(pos.x / 60) * 60;
-    for (const f of this.followers) f.position.x = Math.abs(snap) > 300 ? snap : 0;
+    for (const f of this.followers) f.position.x = this.follow && Math.abs(snap) > 300 ? snap : 0;
     if (Math.abs(pos.z) > 900) return; // inside a building (they're built far off the map)
     const want = new Set<number>();
     const side = Math.sign(pos.x) || 1;
     const k = Math.floor((Math.abs(pos.x) - EDGE) / W);
     for (let d = -KEEP; d <= KEEP; d++) {
       const j = k + d;
-      if (j >= 0) want.add(side * (j + 1));
+      if (j >= 0 && j < this.limit) want.add(side * (j + 1));
     }
     // both edges are close to the middle of the district: keep a slice each side ready
     if (Math.abs(pos.x) < EDGE + W) {

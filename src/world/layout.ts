@@ -22,7 +22,7 @@ export const expand = (a: Rect, d: number): Rect => r(a.x0 - d, a.z0 - d, a.x1 +
 export const BOUNDS = r(-150, -200, 150, 164);
 export const PAD_H = 0.15;
 
-export type Style = 'stone' | 'brick' | 'concrete' | 'glass' | 'plain' | 'metal';
+export type Style = 'stone' | 'brick' | 'concrete' | 'glass' | 'plain' | 'metal' | 'stucco' | 'adobe' | 'timber' | 'panel' | 'siding';
 
 export interface Road {
   name: string;

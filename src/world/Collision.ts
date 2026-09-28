@@ -24,6 +24,11 @@ export class Collision {
   private grid = new Map<number, Box[]>();
   private stamp = 1;
   private scratch: Box[] = [];
+  /**
+   * The ground under the boxes (the RPG's terrain and bridge decks). Unset,
+   * the ground is flat at y = 0, as it is everywhere in District 03.
+   */
+  base: ((x: number, z: number, y: number, step: number) => number) | null = null;
 
   add(minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, cam = true): Box {
     const b: Box = {
@@ -85,7 +90,7 @@ export class Collision {
 
   /** Highest walkable surface under (x,z) that is not above y + step. */
   groundAt(x: number, z: number, y: number, step: number, radius = 0.2): number {
-    let g = 0;
+    let g = this.base ? this.base(x, z, y, step) : 0;
     for (const b of this.query(x - radius, z - radius, x + radius, z + radius)) {
       if (x < b.minX - radius * 0.5 || x > b.maxX + radius * 0.5 || z < b.minZ - radius * 0.5 || z > b.maxZ + radius * 0.5) continue;
       if (b.maxY <= y + step && b.maxY > g) g = b.maxY;
@@ -132,6 +137,15 @@ export class Collision {
       if (!b.cam) continue;
       const t = slab(o, dir, b);
       if (t >= 0 && t < best) best = t;
+    }
+    // hills get in the way too
+    if (this.base) {
+      const steps = Math.min(24, Math.max(4, Math.ceil(best / 2.5)));
+      for (let i = 1; i <= steps; i++) {
+        const t = (best * i) / steps;
+        const x = o.x + dir.x * t, y = o.y + dir.y * t, z = o.z + dir.z * t;
+        if (y < this.base(x, z, -1e9, 0) + 0.25) return Math.max(0, t - best / steps);
+      }
     }
     return best;
   }

@@ -1,0 +1,49 @@
+/* ── NIGHTFALL: RPG ───────────────────────────────────────────
+   The wider world keeps the same voice: Plex Mono for the readouts,
+   Instrument Serif for names, the brass accent, no panels where a line
+   of type will do. */
+
+.modes[data-mode='rpg'] { --mode: #d9b98a; }
+.modes[data-mode='rpg']::after { background: linear-gradient(180deg, rgba(210, 150, 90, .32), rgba(40, 60, 80, .3)); }
+.modes__item--rpg .modes__name { letter-spacing: 0.06em; }
+.m-sun { fill: var(--mode); stroke: none; animation: sunrise 5s var(--ease) infinite alternate; }
+@keyframes sunrise { from { transform: translateY(6px); opacity: .3; } to { transform: translateY(0); opacity: 1; } }
+.m-road { stroke-dasharray: 3 3; }
+
+.rpghud { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity var(--t-med) var(--ease); z-index: 3; }
+.rpghud.is-on { opacity: 1; }
+
+/* compass: a strip of ticks across the top, the heading under a fine needle */
+.rpgc { position: absolute; top: calc(18px + env(safe-area-inset-top, 0px)); left: 50%; width: min(460px, 70vw); height: 24px; transform: translateX(-50%); overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); }
+.rpgc__strip { position: absolute; left: 50%; top: 0; height: 100%; }
+.rpgc__tick { position: absolute; top: 4px; left: -10px; width: 20px; text-align: center; font-family: var(--f-meta); font-size: 9px; color: #d4d6d0; letter-spacing: 0.1em; will-change: transform, opacity; text-shadow: 0 0 2px rgba(0, 0, 0, .9), 0 0 8px rgba(0, 0, 0, .6); }
+.rpgc__tick--label { color: var(--paper); font-size: 11px; top: 2px; }
+.rpgc__needle { position: absolute; left: 50%; bottom: 0; width: 1px; height: 7px; background: var(--accent); }
+
+/* status: the hour and the weather, the place and what kind of place */
+.rpgs { position: absolute; left: var(--gutter); top: calc(20px + env(safe-area-inset-top, 0px)); display: grid; gap: 6px; text-shadow: 0 0 2px rgba(0, 0, 0, .9), 0 1px 10px rgba(0, 0, 0, .7); }
+/* a soft shade behind the corner readout and the compass, so they read against a bright sky or snow */
+.rpghud::before { content: ''; position: absolute; left: 0; top: 0; width: min(720px, 100vw); height: 150px; pointer-events: none;
+  background: radial-gradient(ellipse 60% 70% at 18% 0%, rgba(0, 0, 0, .34), transparent 70%); }
+.rpgs__row { display: flex; align-items: baseline; gap: 12px; }
+.rpgs__clock { font-family: var(--f-meta); font-size: 15px; letter-spacing: 0.1em; color: var(--paper); }
+.rpgs__sky, .rpgs__region { color: #c9cbc6; }
+.rpgs__place { font-family: var(--f-display); font-size: 20px; color: var(--paper); }
+
+/* arriving somewhere */
+.rpgb { position: absolute; left: 50%; top: 24vh; transform: translate(-50%, 8px); display: grid; justify-items: center; gap: 8px; text-align: center; opacity: 0;
+  transition: opacity 1200ms var(--ease), transform 1200ms var(--ease); text-shadow: 0 2px 18px rgba(0, 0, 0, .7); max-width: min(640px, 86vw); }
+.rpgb.is-on { opacity: 1; transform: translate(-50%, 0); }
+.rpgb__name { font-family: var(--f-display); font-size: clamp(34px, 4.6vw, 64px); color: var(--paper); line-height: 1; }
+.rpgb__sub { color: #e2c28e; max-width: 52ch; line-height: 1.6; text-shadow: 0 0 2px rgba(0, 0, 0, .9), 0 1px 12px rgba(0, 0, 0, .8); }
+
+.ui-tv .rpgs__clock { font-size: 19px; }
+.ui-tv .rpgs__place { font-size: 26px; }
+.ui-tv .rpgc__tick { font-size: 11px; }
+.ui-tv .rpgc__tick--label { font-size: 14px; }
+
+@media (max-width: 640px) {
+  .rpgs { top: calc(52px + env(safe-area-inset-top, 0px)); }
+  .rpgs__place { font-size: 17px; }
+}

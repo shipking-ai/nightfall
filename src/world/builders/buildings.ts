@@ -14,6 +14,11 @@ const STYLE_PARAMS: Record<Style, { floorH: number; winW: number }> = {
   glass: { floorH: 3.8, winW: 1.7 },
   plain: { floorH: 4, winW: 3 },
   metal: { floorH: 5, winW: 4 },
+  stucco: { floorH: 3.4, winW: 2.6 },
+  adobe: { floorH: 3.3, winW: 3.2 },
+  timber: { floorH: 3.2, winW: 2.4 },
+  panel: { floorH: 2.9, winW: 3 },
+  siding: { floorH: 3, winW: 2.8 },
 };
 
 export interface FacadeOpts {

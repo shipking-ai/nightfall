@@ -53,7 +53,7 @@ export interface SettingsData {
   drawDistance: 'near' | 'medium' | 'far';
 
   /** the last way of playing you picked */
-  lastMode: 'city' | 'afterhours' | 'warzone' | 'fight';
+  lastMode: 'city' | 'afterhours' | 'warzone' | 'fight' | 'rpg';
 }
 
 const KEY = 'nightfall.settings.v1';

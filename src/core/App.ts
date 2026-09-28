@@ -74,6 +74,7 @@ import type { ControlContext } from '../ui/Hud';
 import { Fight, ARENA } from '../modes/Fight';
 import { Warzone } from '../modes/Warzone';
 import { charFill } from '../entities/FigureBatch';
+import { Rpg, inD03 } from '../rpg/Rpg';
 
 type State = 'boot' | 'landing' | 'entering' | 'playing' | 'overlay' | 'leaving';
 interface NoteRow {
@@ -201,6 +202,8 @@ export class App {
   private fight!: Fight;
   /** WARZONE's match: bots, points, guns (modes/Warzone.ts) */
   private warzone!: Warzone;
+  /** RPG: the wider world past District 03 (rpg/Rpg.ts) */
+  private rpg!: Rpg;
   /** photo mode: a free camera and a shutter (After Hours, City) */
   private photo!: PhotoMode;
   /** your own photographs (IndexedDB), kept in step for the Archive */
@@ -562,6 +565,23 @@ export class App {
     });
     this.scene.add(this.warzone.group);
     this.nav.scope(this.warzone.hud.end, { back: () => undefined });
+    this.rpg = new Rpg({
+      scene: this.scene,
+      camera: this.camera,
+      collision: this.world.collision,
+      mats: this.world.mats,
+      sky: this.sky,
+      fog,
+      lighting: this.lighting,
+      weather: this.weather,
+      player: this.player,
+      follow: this.follow,
+      outskirts: this.outskirts,
+      cityRoot: this.world.root,
+      ui: this.ui,
+      environment: (zenith, horizon, ground) => this.makeEnvironment({ zenith, horizon, ground }),
+      thunder: (delay, k) => setTimeout(() => this.audio.thunder(k), delay * 1000),
+    });
     this.interaction = new Interaction(this.world.interact);
     this.quests = new Quests(this.save, new Map(this.world.interact.map((s) => [s.id, s.pos])));
     this.quests.onEvent = (e) => this.onQuest(e);
@@ -648,14 +668,20 @@ export class App {
     this.toLanding(true);
   }
 
-  private makeEnvironment() {
+  /** The reflections' world: District 03's night (a sodium glow low down), or the RPG's sky of the moment. */
+  private makeEnvironment(sky?: { zenith: THREE.Color; horizon: THREE.Color; ground: THREE.Color }) {
     const envScene = new THREE.Scene();
     const m = new THREE.ShaderMaterial({
       side: THREE.BackSide,
+      uniforms: {
+        uZ: { value: sky?.zenith ?? new THREE.Color(0.03, 0.038, 0.06) },
+        uH: { value: sky?.horizon ?? new THREE.Color(0.13, 0.09, 0.06) },
+        uG: { value: sky?.ground ?? new THREE.Color(0.045, 0.04, 0.036) },
+      },
       vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `varying vec3 vP; void main(){ vec3 d = normalize(vP); float h = d.y;
-        vec3 c = mix(vec3(0.13,0.09,0.06), vec3(0.03,0.038,0.06), smoothstep(-0.05, 0.5, h));
-        c = mix(c, vec3(0.045, 0.04, 0.036), step(h, -0.05));
+      fragmentShader: `uniform vec3 uZ; uniform vec3 uH; uniform vec3 uG; varying vec3 vP; void main(){ vec3 d = normalize(vP); float h = d.y;
+        vec3 c = mix(uH, uZ, smoothstep(-0.05, 0.5, h));
+        c = mix(c, uG, step(h, -0.05));
         gl_FragColor = vec4(c, 1.0); }`,
     });
     envScene.add(new THREE.Mesh(new THREE.SphereGeometry(10, 32, 16), m));
@@ -701,7 +727,7 @@ export class App {
     this.crowd?.setDensity(pop.people);
     this.traffic?.setDensity(pop.traffic);
     const dist = distanceBudget(d.drawDistance);
-    this.camera.far = dist.far;
+    this.camera.far = this.rpg?.active ? Math.max(dist.far, 6000) : dist.far;
     this.camera.updateProjectionMatrix();
     this.crowd?.setLod(dist.lodNear, dist.lodMid);
   }
@@ -811,9 +837,10 @@ export class App {
     await this.fade(true, 700);
 
     // intermission card, set in the world's own terms
-    this.intermission.setFacts(this.save.data.lastPlace ?? 'District 03', this.time.rainLabel.toLowerCase(), this.time.label);
+    const rpgMode = this.mode === 'rpg';
+    this.intermission.setFacts(rpgMode ? 'Merrow' : this.save.data.lastPlace ?? 'District 03', rpgMode ? 'the night is ending' : this.time.rainLabel.toLowerCase(), rpgMode ? '05:29' : this.time.label);
     await this.intermission.show();
-    this.intermission.setProgress(1);
+    this.intermission.setProgress(rpgMode ? 0 : 1);
     this.fade(false, 700);
 
     const p = this.save.data.player;
@@ -827,12 +854,19 @@ export class App {
       // WARZONE: Pier 9 Yard, in fatigues; the match puts you at your spawn
       this.setInside(null);
       this.warzone.start({ outfit: this.player.outfit, body: this.player.body });
+    } else if (rpgMode) {
+      // RPG: the pavement on River Road, as the night runs out
+      this.setInside(null);
+      this.player.place(SPAWN.x, 0.15, SPAWN.z, SPAWN.yaw);
+      await this.rpg.start(this.player.pos, (k) => this.intermission.setProgress(k));
+      this.rpg.hud.show(false);
     } else if (p) this.player.place(p.x, p.y, p.z, p.yaw);
     else this.player.place(SPAWN.x, 0.15, SPAWN.z, SPAWN.yaw);
     if (!fight && !this.warzone.active) this.setInside(interiorAt(this.player.pos.x, this.player.pos.z));
     // behind the intermission card: compile what a match will show later (tracers, blood, pickups), so the first shot doesn't hitch
     if (fight) this.warmUp([this.fight.group]);
     else if (this.warzone.active) this.warmUp([this.warzone.group, this.tracers.group, this.blood.group]);
+    else if (rpgMode) this.warmUp([this.rpg.group]);
     this.player.group.visible = !fight;
     this.cine.endPush();
     if (!this.warzone.active) this.follow.alignBehind(this.player);
@@ -850,6 +884,7 @@ export class App {
     await this.fade(false, 1800);
     if (fight || this.warzone.active) return;
     this.hud.show(true);
+    if (rpgMode) this.rpg.hud.show(true);
     if (this.inside) this.hud.location(this.inside.name, this.inside.code);
     else this.discovery.update(this.player.pos.x, this.player.pos.z);
     if (!this.save.hasProgress) {
@@ -886,6 +921,11 @@ export class App {
       this.warzone.stop();
       this.player.setLook(this.look);
       this.applyRulesFor('city');
+    }
+    if (this.rpg.active) {
+      this.rpg.stop();
+      this.applyRulesFor('city');
+      this.lighting.focusNow(this.camera.position);
     }
     await this.toLanding();
   }
@@ -990,9 +1030,9 @@ export class App {
       this.persist();
       this.pause.setMode(this.fight.active || this.warzone.active, this.pauseSwitches());
       this.pause.open({
-        place: this.fight.active ? 'Harbor Lane crossing' : this.warzone.active ? 'Pier 9 Yard' : this.discovery.districtName,
-        time: this.time.label,
-        rain: this.time.rainLabel.charAt(0) + this.time.rainLabel.slice(1).toLowerCase(),
+        place: this.fight.active ? 'Harbor Lane crossing' : this.warzone.active ? 'Pier 9 Yard' : this.rpg.active ? this.rpg.place.name : this.discovery.districtName,
+        time: this.rpg.active ? this.rpg.atmos.label : this.time.label,
+        rain: this.rpg.active ? this.rpg.atmos.describe() : this.time.rainLabel.charAt(0) + this.time.rainLabel.slice(1).toLowerCase(),
         records: `${this.save.data.discovered.length} of ${ENTRIES.filter((e) => !e.hidden).length}`,
         together: this.mp.room ? (this.mp.peers.size ? [...this.mp.peers.values()].map((p) => p.name).join(', ') : 'Nobody else yet') : undefined,
       });
@@ -1295,7 +1335,7 @@ export class App {
   }
 
   private persist(leaving = false) {
-    const explore = this.rules.combat === 'street' || this.rules.combat === 'none';
+    const explore = (this.rules.combat === 'street' || this.rules.combat === 'none') && this.mode !== 'rpg';
     if (explore && (this.state === 'playing' || this.state === 'overlay' || this.state === 'leaving')) {
       this.save.data.player = { x: this.player.pos.x, y: this.player.pos.y, z: this.player.pos.z, yaw: this.player.facing };
     }
@@ -2429,8 +2469,14 @@ export class App {
     const dv = this.vehicle;
     if (dv && this.driveVoice) this.driveVoice.setPosition(dv.kind === 'drive' ? dv.car.pos : dv.car.group.position, Math.abs(dv.car.v));
     for (const u of this.world.updaters) u(t, dt);
-    this.time.speed = this.clockHeld ? 0 : this.player.sitting ? 8 : 1;
-    this.time.update(dt, t, this.state !== 'boot');
+    if (this.rpg.active) {
+      // the wider world keeps its own day
+      this.rpg.atmos.speed = this.player.sitting ? 8 : 1;
+      this.rpg.update(dt, playing && !this.overlay);
+    } else {
+      this.time.speed = this.clockHeld ? 0 : this.player.sitting ? 8 : 1;
+      this.time.update(dt, t, this.state !== 'boot');
+    }
     const focus = inWorld ? this.player.pos : this.camera.position;
     this.lighting.update(dt, t, focus);
     this.fx.uniforms.uRain.value = this.weather.intensity;
@@ -2496,7 +2542,7 @@ export class App {
       }
       this.serveTime(dt);
       // indoors the rooms sit far off the map; the HUD keeps the room's name
-      if (!this.inside && this.rules.discovery) this.discovery.update(this.player.pos.x, this.player.pos.z);
+      if (!this.inside && this.rules.discovery && (!this.rpg.active || inD03(this.player.pos.x, this.player.pos.z))) this.discovery.update(this.player.pos.x, this.player.pos.z);
       this.updatePhone(dt);
       this.saveTimer -= dt;
       if (this.saveTimer <= 0) {

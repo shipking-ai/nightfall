@@ -69,6 +69,11 @@ export class Player {
   fly = false;
   /** in the river: floating at the surface, slow; Space by the quay wall climbs out */
   swimming = false;
+  /** RPG: open water anywhere (the sea, lakes, rivers); null = District 03's river only */
+  waterAt: ((x: number, z: number) => number | null | undefined) | null = null;
+  /** RPG: the water level where you're swimming */
+  private swimLevel = WATER_Y;
+  private openWater = false;
   /**
    * In a vehicle: sat in a seat (world matrix of the seat), hands on the wheel
    * if driving. The figure is drawn there; `pos` still follows the car.
@@ -166,7 +171,15 @@ export class Player {
 
     this.crouching = this.canCrouch && !!input && input.state('crouch') && !this.swimming;
     this.sprinting = !!input && moving && input.state('sprint', !moving) && mv.mag > 0.5 && !this.crouching;
-    this.swimming = !this.fly && inRiver(this.pos.x, this.pos.z, this.pos.y);
+    // (undefined from waterAt: a handcrafted place with its own water rules — District 03's river)
+    const openW = this.waterAt && !this.fly ? this.waterAt(this.pos.x, this.pos.z) : undefined;
+    this.openWater = openW !== undefined;
+    if (openW !== undefined) {
+      // anywhere: deep enough water, and you're in it rather than on a bridge over it
+      const floor = openW == null ? 0 : col.groundAt(this.pos.x, this.pos.z, this.pos.y, 0.1, 0.1);
+      this.swimming = openW != null && openW - floor > 1.25 && this.pos.y < openW - 0.6;
+      if (openW != null) this.swimLevel = openW;
+    } else this.swimming = !this.fly && inRiver(this.pos.x, this.pos.z, this.pos.y);
     const push = Math.min(1, mv.mag * 1.15);
     const base = this.sprinting ? SPRINT : WALK * (this.crouching ? 0.55 : 1) * (0.35 + 0.65 * push);
     const speed = this.swimming ? (this.sprinting ? 2.9 : 1.8) : (this.sitting ? 0 : base) * this.speedMul * (this.aimYaw != null && !this.fly ? 0.7 : 1);
@@ -183,7 +196,35 @@ export class Player {
     this.vel.x += clampAbs(tx - this.vel.x, rate * dt);
     this.vel.z += clampAbs(tz - this.vel.z, rate * dt);
 
-    if (this.swimming) {
+    if (this.swimming && this.openWater) {
+      // open water: float, and wade out wherever the bottom comes up to meet you
+      const surface = this.swimLevel - 1.32;
+      this.vel.y = 0;
+      const nx = this.pos.x + this.vel.x * dt, nz = this.pos.z + this.vel.z * dt;
+      this.pos.x = nx;
+      this.pos.z = nz;
+      col.resolve(this.pos, RADIUS, HEIGHT, 0.2);
+      this.pos.y += (surface + Math.sin(performance.now() * 0.002) * 0.04 - this.pos.y) * Math.min(1, dt * 4);
+      this.grounded = false;
+      const floor = col.groundAt(this.pos.x, this.pos.z, this.pos.y + 2, 2.4, RADIUS);
+      if (floor > this.pos.y - 0.2) {
+        // shallows: stand up
+        this.pos.y = floor;
+        this.swimming = false;
+        this.grounded = true;
+      } else if (input && input.pressed('jump')) {
+        // a ledge within reach: haul yourself out
+        const ax = this.pos.x + Math.sin(this.facing) * 1.1, az = this.pos.z + Math.cos(this.facing) * 1.1;
+        const ledge = col.groundAt(ax, az, this.swimLevel + 1.6, 3, RADIUS);
+        if (ledge > this.swimLevel - 0.6 && ledge < this.swimLevel + 1.7) {
+          this.pos.set(ax, ledge, az);
+          this.vel.set(0, 0, 0);
+          this.grounded = true;
+          this.swimming = false;
+          this.anim.play('act.climb', { group: 'act', fadeIn: 0.05 });
+        }
+      }
+    } else if (this.swimming) {
       // float with your head out; the quay wall has iron rungs: jump to climb out beside it
       const surface = WATER_Y - 1.32;
       this.vel.y = 0;
