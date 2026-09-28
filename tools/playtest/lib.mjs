@@ -24,7 +24,7 @@ export async function launch({ pad = 'xbox', w = 960, h = 540, url = 'http://loc
     for (let i = 0; i < secs * 2 && (await state()) !== s; i++) await page.waitForTimeout(500);
     return state();
   };
-  const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png` });
+  const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png`, timeout: 240000 });
   const tap = (b, ms, pad) => page.evaluate(([b, ms, pad]) => window.__tap(b, ms, pad), [b, ms ?? 1300, pad ?? 0]);
   const hold = (b, on = true, pad = 0, v = 1) => page.evaluate(([b, on, pad, v]) => window.__hold(b, on, pad, v), [b, on, pad, v]);
   const stick = (which, x, y, pad = 0) => page.evaluate(([w, x, y, p]) => window.__stick(w, x, y, p), [which, x, y, pad]);

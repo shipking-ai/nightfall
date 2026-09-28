@@ -62,6 +62,8 @@ export class Player {
   armPose: ArmMode | null = null;
   /** the left arm's pose, when a weapon needs both hands */
   armPoseL: ArmMode | null = null;
+  /** the head (and a gun with it) tipped up or down to follow the aim */
+  lookPitch = 0;
   /** admin: walk faster/slower; fly through everything */
   speedMul = 1;
   fly = false;
@@ -271,6 +273,7 @@ export class Player {
       else if (this.armPose === 'guard') m.armL = 'guard';
     }
     m.lookYaw *= 0.9;
+    m.lookPitch += (this.lookPitch - m.lookPitch) * Math.min(1, dt * 10);
     const turnRate = hs > 0.25 ? wrap(Math.atan2(this.vel.x, this.vel.z) - this.facing) * 11 : 0;
     m.turn += (turnRate - m.turn) * Math.min(1, dt * 8);
     if (stepPhase(m, dt) && this.grounded) this.onStep?.(this.sprinting ? 1 : this.crouching ? 0.35 : 0.6);

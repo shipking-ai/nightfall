@@ -23,6 +23,8 @@ export class TimeOfDay extends Emitter<{ loop: void; minute: number }> {
   private resetT = -1;
   private rainPhase = Math.random() * 100;
   speed = 1;
+  /** how much sky fill the mode wants on top of the night's own (WARZONE needs to see into the stacks) */
+  fillBoost = 1;
   /** admin: hold the rain at this (0..1) instead of letting it come and go */
   rainOverride: number | null = null;
 
@@ -72,8 +74,8 @@ export class TimeOfDay extends Emitter<{ loop: void; minute: number }> {
     s.uGlow.value.lerpColors(NIGHT.glow, DAWN.glow, dawn);
     s.uTime.value = t;
     this.fog.color.lerpColors(NIGHT.fog, DAWN.fog, dawn);
-    this.lighting.fill.intensity = 0.95 + dawn * 0.5;
-    this.lighting.moon.intensity = 0.6 + dawn * 0.25;
+    this.lighting.fill.intensity = (0.95 + dawn * 0.5) * this.fillBoost;
+    this.lighting.moon.intensity = (0.6 + dawn * 0.25) * (1 + (this.fillBoost - 1) * 0.6);
     worldUniforms.uLitScale.value = 1 - 0.45 * smooth(3.4, 5.4, hours);
 
     // rain comes and goes on a slow cycle

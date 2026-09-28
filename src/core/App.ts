@@ -71,6 +71,7 @@ import type { Action } from '../input/actions';
 import { MODES, type ModeId, type ModeRules } from '../modes/rules';
 import type { ControlContext } from '../ui/Hud';
 import { Fight, ARENA } from '../modes/Fight';
+import { Warzone } from '../modes/Warzone';
 import { charFill } from '../entities/FigureBatch';
 
 type State = 'boot' | 'landing' | 'entering' | 'playing' | 'overlay' | 'leaving';
@@ -193,6 +194,8 @@ export class App {
   private controlCtx: ControlContext | null = null;
   /** FIGHT's match: the arena, the rounds, the camera (modes/Fight.ts) */
   private fight!: Fight;
+  /** WARZONE's match: bots, points, guns (modes/Warzone.ts) */
+  private warzone!: Warzone;
   /** photo mode: a free camera and a shutter (After Hours, City) */
   private photo!: PhotoMode;
   private get photoOn() {
@@ -523,6 +526,23 @@ export class App {
     this.fight.light = this.fitLight;
     this.scene.add(this.fight.group);
     this.nav.scope(this.fight.hud.end, { back: () => undefined });
+    this.warzone = new Warzone({
+      audio: this.audio,
+      input: this.input,
+      collision: this.world.collision,
+      ui: this.ui,
+      camera: this.camera,
+      follow: this.follow,
+      player: this.player,
+      tracers: this.tracers,
+      blood: this.blood,
+      aimAssist: () => this.settings.data.aimAssist,
+      hurtFlash: (k) => this.warzone.hud.hurt(k),
+      onModes: () => this.fightToModes(),
+      onLeave: () => this.leave(),
+    });
+    this.scene.add(this.warzone.group);
+    this.nav.scope(this.warzone.hud.end, { back: () => undefined });
     this.interaction = new Interaction(this.world.interact);
     this.quests = new Quests(this.save, new Map(this.world.interact.map((s) => [s.id, s.pos])));
     this.quests.onEvent = (e) => this.onQuest(e);
@@ -745,7 +765,9 @@ export class App {
     if (!r.quests) this.hud.objective(null);
     document.body.dataset.mode = r.id;
     // a little more light on people where the mode is about reading bodies
-    charFill.value = r.combat === 'fight' ? 0.075 : r.combat === 'warzone' ? 0.065 : 0.045;
+    charFill.value = r.combat === 'fight' ? 0.075 : r.combat === 'warzone' ? 0.07 : 0.05;
+    // and more of the sky's light where you need to see into the dark to play
+    if (this.time) this.time.fillBoost = r.combat === 'warzone' ? 1.9 : r.combat === 'fight' ? 1.35 : 1.12;
   }
 
   private async enter() {
@@ -777,13 +799,20 @@ export class App {
       this.player.place(ARENA.x - 1.9, 0, ARENA.z, Math.PI / 2);
       this.setInside(null);
       this.fight.start({ outfit: this.player.outfit, body: this.player.body });
+    } else if (this.rules.combat === 'warzone') {
+      // WARZONE: Pier 9 Yard, in fatigues; the match puts you at your spawn
+      this.setInside(null);
+      this.warzone.start({ outfit: this.player.outfit, body: this.player.body });
     } else if (p) this.player.place(p.x, p.y, p.z, p.yaw);
     else this.player.place(SPAWN.x, 0.15, SPAWN.z, SPAWN.yaw);
-    if (!fight) this.setInside(interiorAt(this.player.pos.x, this.player.pos.z));
+    if (!fight && !this.warzone.active) this.setInside(interiorAt(this.player.pos.x, this.player.pos.z));
+    // behind the intermission card: compile what a match will show later (tracers, blood, pickups), so the first shot doesn't hitch
+    if (fight) this.warmUp([this.fight.group]);
+    else if (this.warzone.active) this.warmUp([this.warzone.group, this.tracers.group, this.blood.group]);
     this.player.group.visible = !fight;
     this.cine.endPush();
-    this.follow.alignBehind(this.player);
-    this.introT = 0;
+    if (!this.warzone.active) this.follow.alignBehind(this.player);
+    this.introT = this.warzone.active ? 1 : 0;
     this.follow.snap(this.player);
     this.lighting.focusNow(this.player.pos);
     this.letterbox(false);
@@ -795,7 +824,7 @@ export class App {
     this.input.enabled = true;
     this.discovery.reset();
     await this.fade(false, 1800);
-    if (fight) return;
+    if (fight || this.warzone.active) return;
     this.hud.show(true);
     if (this.inside) this.hud.location(this.inside.name, this.inside.code);
     else this.discovery.update(this.player.pos.x, this.player.pos.z);
@@ -829,7 +858,43 @@ export class App {
       this.fitLight.distance = 7;
       this.applyRulesFor('city');
     }
+    if (this.warzone.active) {
+      this.warzone.stop();
+      this.player.setLook(this.look);
+      this.applyRulesFor('city');
+    }
     await this.toLanding();
+  }
+
+  /**
+   * Compile, and draw once, everything under these (hidden parts too), so a
+   * match's first shot, first spray of blood or first dropped pack doesn't
+   * stall the game while the driver builds its shader. Done behind the
+   * intermission card.
+   */
+  private warmUp(objs: THREE.Object3D[]) {
+    const saved: [THREE.Object3D, boolean, boolean][] = [];
+    for (const o of objs)
+      o.traverse((c) => {
+        saved.push([c, c.visible, c.frustumCulled]);
+        c.visible = true;
+        c.frustumCulled = false;
+      });
+    const r = this.renderer.renderer;
+    const prev = r.getRenderTarget();
+    try {
+      // into the same kind of target the scene is really drawn into (a linear HDR buffer, not the screen)
+      r.setRenderTarget(this.renderer.composer.renderTarget1);
+      r.compile(this.scene, this.camera);
+      r.setRenderTarget(prev);
+      this.renderer.render(this.t);
+    } finally {
+      r.setRenderTarget(prev);
+      for (const [c, v, f] of saved) {
+        c.visible = v;
+        c.frustumCulled = f;
+      }
+    }
   }
 
   /** From the end of a match straight to the mode select. */
@@ -2077,13 +2142,15 @@ export class App {
       if (this.fight.active) {
         this.fight.update(dt, t, this.camera, playing && !this.overlay);
         this.player.pos.copy(this.fight.fighters[0].pos);
+      } else if (this.warzone.active && this.warzone.fpActive) {
+        this.warzone.eyeCamera(dt);
       } else if (this.photoOn) {
         if (this.photo.update(dt, this.input, this.camera, this.player.pos, this.world.collision) === 'exit') this.photoMode(false);
       } else if (this.boat) this.follow.updateVehicle(dt, this.boat.group.position, this.boat.yaw, this.boat.v, null);
       else if (v?.kind === 'drive') this.follow.updateVehicle(dt, v.car.pos, v.car.yaw, v.car.v, this.world.collision, this.vehicles.impact);
       else if (v?.kind === 'ride') this.follow.updateVehicle(dt, v.car.group.position, v.car.yaw, v.car.v, this.world.collision);
       else this.follow.update(dt, this.player, this.world.collision, t);
-      if (this.introT < 1 && !v && !this.photoOn && !this.fight.active) {
+      if (this.introT < 1 && !v && !this.photoOn && !this.fight.active && !this.warzone.active) {
         // settle down behind the shoulder as the world fades in
         const k = 1 - easeOut(this.introT);
         this.camera.position.y += k * 2.6;
@@ -2100,7 +2167,7 @@ export class App {
 
     // menus: a controller (or the arrow keys) moves the focus in whatever's open
     const menuUp =
-      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen;
+      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen || this.warzone?.endOpen;
     this.nav.active = menuUp;
     if (menuUp) {
       if (this.overlay === 'settings') this.settingsView.update();
@@ -2176,7 +2243,7 @@ export class App {
         }
         this.police.obstacles(this.obstacles);
         if (this.player.seat) this.player.seat = null;
-        if (!this.fight.active) this.player.update(dt, move && !this.wheel.isOpen ? this.input : null, this.follow.yaw, this.world.collision, this.obstacles);
+        if (!this.fight.active) this.player.update(dt, move && !this.wheel.isOpen && !(this.warzone.active && this.warzone.busy) ? this.input : null, this.follow.yaw, this.world.collision, this.obstacles);
         if (this.boarding) {
           this.boarding.t -= dt;
           if (this.boarding.t <= 0) {
@@ -2225,6 +2292,7 @@ export class App {
       this.police.update(dt, t, inWorld && !this.dying ? this.player.pos : null, stars, !!this.inside, this.camera.getWorldDirection(this.tmpDir));
       this.audio.heli(this.police.heli.present && !this.inside ? this.police.heli.pos : null);
     }
+    if (this.warzone.active) this.warzone.update(dt, t, playing && !this.overlay);
     this.crowd.rain = this.weather.intensity;
     this.crowd.update(dt, t, playerPos, this.camera);
     this.tracers.update(dt, this.camera);
@@ -2285,8 +2353,8 @@ export class App {
     this.weather.update(this.camera.position);
     this.sky.followCamera(this.camera);
 
-    if (playing && this.fight.active) {
-      if (!this.fight.hud.endOpen) this.padGlobals();
+    if (playing && (this.fight.active || this.warzone.active)) {
+      if (!this.fight.hud.endOpen && !this.warzone.endOpen) this.padGlobals();
     } else if (playing) {
       this.padGlobals();
       this.updateControlContext();

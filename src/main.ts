@@ -1,6 +1,7 @@
 import './styles/main.css';
 import './styles/controller.css';
 import './styles/fight.css';
+import './styles/warzone.css';
 import { App } from './core/App';
 
 function supportsWebGL2() {

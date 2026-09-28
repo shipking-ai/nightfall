@@ -16,6 +16,9 @@ export class FollowCamera {
   private dist = 4.2;
   /** aiming a gun: in close over the shoulder */
   aim = false;
+  /** how far you can look down and up (first person looks further) */
+  pitchMin = -0.55;
+  pitchMax = 1.0;
   private shoulder = 0.42;
   private boom = 4.2;
   private pivot = new THREE.Vector3();
@@ -31,7 +34,7 @@ export class FollowCamera {
     const s = 0.0022 * this.sensitivity;
     this.yaw -= dx * s;
     this.pitch += dy * s * (this.invertY ? -1 : 1);
-    this.pitch = THREE.MathUtils.clamp(this.pitch, -0.55, 1.0);
+    this.pitch = THREE.MathUtils.clamp(this.pitch, this.pitchMin, this.pitchMax);
   }
 
   /** Right-stick look, already in radians (Input shapes and scales it). */
@@ -39,7 +42,7 @@ export class FollowCamera {
     if (!yaw && !pitch) return;
     this.sinceLook = 0;
     this.yaw -= yaw;
-    this.pitch = THREE.MathUtils.clamp(this.pitch + pitch, -0.55, 1.0);
+    this.pitch = THREE.MathUtils.clamp(this.pitch + pitch, this.pitchMin, this.pitchMax);
   }
 
   snap(player: Player, col: Collision | null = null) {
@@ -54,7 +57,7 @@ export class FollowCamera {
 
     // pivot at the shoulders, a little to the right
     const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
-    const want = new THREE.Vector3(player.pos.x, player.pos.y + (player.sitting ? 1.25 : 1.58), player.pos.z).addScaledVector(right, -this.shoulder);
+    const want = new THREE.Vector3(player.pos.x, player.pos.y + (player.sitting ? 1.25 : player.crouching ? 1.15 : 1.58), player.pos.z).addScaledVector(right, -this.shoulder);
     if (!this.initialised) this.smoothed.copy(want);
     // vertical smoothing hides kerb steps; horizontal stays tight so input feels immediate
     this.smoothed.x += (want.x - this.smoothed.x) * Math.min(1, dt * 22);

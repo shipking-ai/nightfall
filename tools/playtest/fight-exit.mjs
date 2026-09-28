@@ -19,7 +19,7 @@ console.log('fight active', await page.evaluate(() => window.nf.fight.active), '
 await t.wait(3000);
 await page.evaluate(() => { window.nf.mode = 'city'; window.nf.enter(); });
 console.log('state', await waitState('playing', 200));
-await step(4);
+await step(9);
 const moving = await page.evaluate(() => window.nf.traffic.cars.filter((c) => c.path).length);
 console.log('cars on the road', moving, 'player visible', await page.evaluate(() => window.nf.player.group.visible), 'charFill', await page.evaluate(() => document.body.dataset.mode));
 await shot('fight-17-back-in-city');
