@@ -1,10 +1,58 @@
 # HANDOFF — NIGHTFALL
 
-Last updated: 2026-09-28 (four modes, controllers, people and animation). Read this first, then [README.md](README.md) for architecture and controls.
+Last updated: 2026-09-28 (RPG R1 + realistic RPG people in progress). Read this first, then [README.md](README.md) for architecture and controls.
 
 ## State in one paragraph
 
 The browser game builds and runs: `npm run dev` serves it at http://localhost:5317, and `npm run build` typechecks and bundles it (no external assets). Production is https://nightfall-sand.vercel.app, deployed from the `claude/sharp-shannon-6ogxul` branch after every fix. The title leads to a **mode select**, and there are **four modes on one city**: City, After Hours, Warzone and Fight (see the next section). Everything can be played **with only a controller**; the four-mode run was playtested that way (tools/playtest/). The older sections below still describe the City systems accurately.
+
+## NIGHTFALL: RPG, the fifth mode (in progress, 2026-09-28)
+
+The user's brief is a very large "fifth game" addendum: an endless streamed world, many cities and biomes, full RPG systems, and console-ready architecture. It's being built in stages (R1–R6). **After every "R" stage: commit, deploy to Vercel production, tell the user so they can test.**
+
+### Done: R1, the world (commit 53487c3, deployed)
+- **Mode:** `rpg` in `src/modes/rules.ts` (listed 05 in the mode select). `App.enter()` calls `rpg.start()` behind the intermission card; `App.leave()` calls `rpg.stop()`, which restores District 03's night: fog, sky uniforms, key light, env map, water, skyline.
+- **`src/rpg/Rpg.ts`:** owns the generator, streamer, atmosphere, sea, precipitation, far cities and HUD. Hooks `Collision.base` (terrain and bridge decks) and `Player.waterAt` (open water anywhere; `undefined` inside District 03 keeps its river rules).
+- **`src/rpg/world/WorldGen.ts`:** deterministic plan.
+  - Climate, mountains and dunes.
+  - One node per 3.2 km macro cell: city, town, village, ruin, military base or crossroads.
+  - Graded roads with bridges, the home river continuing from District 03, noise rivers and lakes.
+  - Merrow is the home city at (0, 260). District 03 is the handcrafted footprint `DISTRICT_03`; the interiors are `INTERIOR_BLOCK`.
+- **`biomes.ts`:** ten biomes and ten city archetypes.
+- **`Towns.ts`:** street grid, blocks, buildings (`raise()`), houses, landmarks, parks, lamps, shop POIs.
+- **`Streamer.ts`:** 128 m chunks with a frame budget, 1 km far tiles, flora LOD.
+- **`FarCities.ts`:** horizon silhouettes.
+- **`Roads.ts`:** ribbons, bridges and decks.
+- **`src/rpg/env/Atmosphere.ts`:** 24 h day, sun and moon, stars, drifting weather fronts, thunder, temperature, grip and visibility.
+- **Shared engine changes:**
+  - Facade shader: 5 new styles (stucco, adobe, timber, panel, siding) and `aTop.z` = base height.
+  - `Collision.base` for terrain.
+  - `Lighting.setKeyDirection` and `setExtraLamps`.
+  - `Sky` gains `uDay`, `uSunDir`, `uStars`.
+  - `Outskirts.limit` and `Outskirts.follow`.
+- **Playtest:** `tools/playtest/rpg.mjs` selects RPG with the virtual pad, visits every biome and town type, drives out of District 03, and fails on errors.
+
+### In progress: realistic RPG people (the user's priority: "look totally different, as realistic and epic as possible")
+- **`src/rpg/people/`:** people sculpted as signed distance fields (`sdf.ts`, `anatomy.ts`), meshed by surface nets (`nets.ts`) in a worker (`human.worker.ts`, `build.ts`), and skinned to the shared rig's joints (`bind.ts` A-pose bind; `RealHuman.pose()` copies `J` into the bones after `solve()`).
+- **Detail levels:** three, at about 117k, 40k and 9.5k triangles.
+- **Materials (`materials.ts`):** skin (wrap scattering, pores, flush zones, stubble), fabric (weave, sheen, wear), hair (strands), eyes (wet coat).
+- **`kit.ts`:** makes varied specs per climate and job.
+- **Viewer:** `dev/human.html?shot=full|face|walk` (dev server only); `tools/playtest/people.mjs` photographs it.
+- **Status:** works, but the result is still "clay", not realistic. **Not yet wired into the game** (the RPG player still uses the city figure).
+- **Recommended next step: switch to MakeHuman's bundled assets.**
+  - Licence: CC0 1.0, confirmed in the repo's LICENSE.md section C.
+  - What they give: a realistic base mesh, macro morph targets (sex, age, muscle, weight, ethnicity), face targets, `game_engine.mhskel` with its weights, skins, eyebrows, eyelashes, hair and clothes proxies.
+  - Where: `raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data/...`, which is reachable from the sandbox (base.obj fetched fine).
+  - Needs the repo attached with `add_repo` to list the tree through the API.
+  - Plan: preconvert a curated subset to compact binary and JPEG in `public/rpg/people/`, then map the game_engine bones onto the rig joints (the same `RealHuman` skinning path).
+  - Hook-up point: `Player.draw()` (hide `batch`, call `realHuman.pose()` right after `solve()`), plus RPG NPCs.
+
+### Still to build (the addendum's list)
+- **R2:** traffic, residents with schedules and simulation LOD, more landmarks.
+- **R3:** character creation, attributes, skills, perks, items, inventory, factions, quests with multiple solutions, dialogue, economy, versioned save slots, world memory.
+- **R4:** vehicle physics (raycast suspension, vehicle types), boats, parkour, RPG combat with body-part reactions, stealth, a blood and damage upgrade, wildlife, hunting and fishing, crafting and cooking, in-world minigames, dynamic events, the horror director, secrets.
+- **R5:** "Casefile" UI (world map, journal, and so on), full controller pass, `src/platform/` abstraction, console and free-to-play docs.
+- **R6:** the full playtest checklist and a 60-minute soak.
 
 ## Four modes, controllers, people (2026-09-24 → 2026-09-28)
 
