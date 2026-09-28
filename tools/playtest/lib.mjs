@@ -29,5 +29,14 @@ export async function launch({ pad = 'xbox', w = 960, h = 540, url = 'http://loc
   const hold = (b, on = true, pad = 0, v = 1) => page.evaluate(([b, on, pad, v]) => window.__hold(b, on, pad, v), [b, on, pad, v]);
   const stick = (which, x, y, pad = 0) => page.evaluate(([w, x, y, p]) => window.__stick(w, x, y, p), [which, x, y, pad]);
   const focused = () => page.evaluate(() => { const a = document.activeElement; return a ? `${a.tagName}.${a.className} "${(a.textContent || '').trim().slice(0, 40)}"` : 'none'; });
-  return { browser, page, errors, state, waitState, shot, tap, hold, stick, focused, wait: (ms) => page.waitForTimeout(ms) };
+  /** step the game on game time (seconds at 30 fps), drawing the last frame */
+  const step = (secs) => page.evaluate((n) => window.nf.devStep(n), Math.max(1, Math.round(secs * 30)));
+  /** press a pad button for a few game frames */
+  const press = async (b, secs = 0.15, pad = 0) => {
+    await hold(b, true, pad);
+    await step(secs);
+    await hold(b, false, pad);
+    await step(0.1);
+  };
+  return { browser, page, errors, state, waitState, shot, tap, hold, stick, focused, step, press, wait: (ms) => page.waitForTimeout(ms) };
 }

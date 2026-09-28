@@ -228,3 +228,42 @@
 .ui-tv .navlink { font-size: 14px; min-height: 56px; }
 .ui-tv .admin { width: min(460px, 100vw); font-size: 16px; }
 .ui-tv .admin__btn { padding: 10px 14px; }
+
+/* ── emote wheel ───────────────────────────────────────────── */
+
+.wheel { position: fixed; right: calc(var(--gutter) + 20px); top: 50%; width: 300px; height: 360px; transform: translateY(-50%) scale(0.96); z-index: 45;
+  display: grid; justify-items: center; gap: 14px; opacity: 0; visibility: hidden; transition: opacity 160ms var(--ease), transform 220ms var(--ease), visibility 0s 220ms; pointer-events: none; }
+.wheel.is-on { opacity: 1; visibility: visible; transform: translateY(-50%); transition: opacity 160ms var(--ease), transform 220ms var(--ease); }
+.wheel__ring { position: relative; width: 280px; height: 280px; border-radius: 50%; background: radial-gradient(circle, rgba(8,9,10,.25) 0 30%, rgba(8,9,10,.72) 31% 100%); border: 1px solid var(--line-strong); }
+.wheel__slot { position: absolute; left: calc(50% + var(--x) * 104px); top: calc(50% + var(--y) * 104px); transform: translate(-50%, -50%); display: grid; justify-items: center; gap: 4px;
+  width: 78px; transition: transform 140ms var(--ease); }
+.wheel__slot[hidden] { display: none; }
+.wheel__mark { font-size: 20px; color: var(--mute); line-height: 1; }
+.wheel__name { font-family: var(--f-meta); font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: var(--concrete); text-align: center; }
+.wheel__slot.is-sel { transform: translate(-50%, -50%) scale(1.14); }
+.wheel__slot.is-sel .wheel__mark, .wheel__slot.is-sel .wheel__name { color: var(--accent); }
+.wheel__hub { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 6px; pointer-events: none; }
+.wheel__label { font-family: var(--f-display); font-size: 24px; color: var(--paper); max-width: 120px; line-height: 1.05; }
+.wheel__help { display: flex; gap: 18px; }
+.ui-tv .wheel { width: 380px; height: 460px; }
+.ui-tv .wheel__ring { width: 360px; height: 360px; }
+.ui-tv .wheel__slot { left: calc(50% + var(--x) * 134px); top: calc(50% + var(--y) * 134px); width: 96px; }
+.ui-tv .wheel__mark { font-size: 26px; }
+.ui-tv .wheel__name { font-size: 12px; }
+.ui-tv .wheel__label { font-size: 30px; }
+
+/* ── photo mode ────────────────────────────────────────────── */
+
+.photo { position: fixed; inset: 0; z-index: 44; pointer-events: none; opacity: 0; visibility: hidden; transition: opacity 300ms var(--ease), visibility 0s 300ms; }
+.photo.is-on { opacity: 1; visibility: visible; transition: opacity 300ms var(--ease); }
+.photo__frame i { position: absolute; width: 36px; height: 36px; border: 0 solid rgba(233,229,220,.7); }
+.photo__frame i:nth-child(1) { left: var(--gutter); top: 9vh; border-left-width: 1px; border-top-width: 1px; }
+.photo__frame i:nth-child(2) { right: var(--gutter); top: 9vh; border-right-width: 1px; border-top-width: 1px; }
+.photo__frame i:nth-child(3) { left: var(--gutter); bottom: 12vh; border-left-width: 1px; border-bottom-width: 1px; }
+.photo__frame i:nth-child(4) { right: var(--gutter); bottom: 12vh; border-right-width: 1px; border-bottom-width: 1px; }
+.photo__bar { position: absolute; left: var(--gutter); right: var(--gutter); bottom: 4vh; display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; padding: 12px 16px; background: rgba(8,9,10,.6); }
+.photo__filter { font-family: var(--f-display); font-style: italic; font-size: 18px; color: var(--paper); }
+.photo.is-bare .photo__bar, .photo.is-bare .photo__frame { opacity: 0; }
+.photo__flash { position: absolute; inset: 0; background: #fff; opacity: 0; }
+.photo__flash.is-on { animation: flash 420ms ease-out; }
+@keyframes flash { 0% { opacity: .85; } 100% { opacity: 0; } }

@@ -193,18 +193,25 @@ export const CAR_GLASS = new THREE.MeshStandardMaterial({ color: 0x0a0c10, rough
 
 /** Where people sit, in car space (facing +z, the car's right is +x). */
 export const SEATS = {
-  driver: new THREE.Vector3(-0.4, 0.2, -0.05),
-  front: new THREE.Vector3(0.4, 0.2, -0.05),
-  back: new THREE.Vector3(0.38, 0.2, -1.05),
-  wheel: new THREE.Vector3(-0.4, 0.95, 0.42),
+  driver: new THREE.Vector3(-0.4, 0.42, -0.08),
+  front: new THREE.Vector3(0.4, 0.42, -0.08),
+  back: new THREE.Vector3(0.38, 0.42, -1.1),
+  wheel: new THREE.Vector3(-0.4, 1.12, 0.42),
 };
 
 /** Car made of a few boxes, facing +z, origin at ground centre. */
-export function carParts(color: number, van = false): CarPart[] {
+export function carParts(color: number, van = false, open = false): CarPart[] {
   const L = van ? 5.0 : 4.4;
+  // an open cabin (cars people are seen in): a roof on pillars instead of a solid block
+  const cabin: CarPart[] = open && !van
+    ? [
+        { kind: 'paint', geo: G.box, m: M(0, 1.39, -0.25, 1.58, 0.07, 2.2), mat: (c) => c.mats.paint, color },
+        ...[[-0.76, 0.85], [0.76, 0.85], [-0.76, -1.32], [0.76, -1.32], [-0.76, -0.2], [0.76, -0.2]].map(([x, z]) => ({ kind: 'paint' as const, geo: G.box, m: M(x, 0.94, z, 0.07, 0.46, 0.09), mat: (c: WorldContext) => c.mats.paint, color })),
+      ]
+    : [{ kind: 'paint', geo: G.box, m: van ? M(0, 1.82, -0.35, 1.72, 0.5, L - 1.2) : M(0, 0.94, -0.25, 1.58, 0.52, 2.3), mat: (c) => c.mats.paint, color }];
   const parts: CarPart[] = [
     { kind: 'paint', geo: G.box, m: M(0, 0.32, 0, 1.78, van ? 1.5 : 0.62, L), mat: (c) => c.mats.paint, color },
-    { kind: 'paint', geo: G.box, m: van ? M(0, 1.82, -0.35, 1.72, 0.5, L - 1.2) : M(0, 0.94, -0.25, 1.58, 0.52, 2.3), mat: (c) => c.mats.paint, color },
+    ...cabin,
     { kind: 'glass', geo: G.box, m: van ? M(0, 1.3, L / 2 - 0.95, 1.7, 0.6, 0.35, 0, -0.35) : M(0, 0.95, -0.25, 1.62, 0.44, 2.36), mat: (c) => c.mats.darkGlass },
     { kind: 'dark', geo: G.box, m: M(0, 0.2, L / 2 - 0.05, 1.7, 0.2, 0.12), mat: (c) => c.mats.rubber },
     { kind: 'head', geo: G.box, m: M(-0.62, 0.62, L / 2, 0.36, 0.12, 0.05), mat: (c) => c.mats.lampCold },
@@ -215,7 +222,7 @@ export function carParts(color: number, van = false): CarPart[] {
   for (const sx of [-0.82, 0.82]) for (const sz of [-L / 2 + 0.85, L / 2 - 0.85]) parts.push({ kind: 'dark', geo: G.wheel, m: M(sx, 0.33, sz, 0.18, 0.33, 0.33), mat: (c) => c.mats.rubber });
   if (!van) {
     // seats and a wheel, seen through the glass
-    for (const x of [-0.4, 0.4]) parts.push({ kind: 'seat', geo: G.box, m: M(x, 0.62, -0.42, 0.5, 0.62, 0.12, 0, -0.18), mat: (c) => c.mats.rubber });
+    for (const x of [-0.4, 0.4]) parts.push({ kind: 'seat', geo: G.box, m: M(x, 0.8, -0.44, 0.5, 0.62, 0.12, 0, -0.18), mat: (c) => c.mats.rubber });
     parts.push({ kind: 'seat', geo: G.box, m: M(0, 0.62, -1.42, 1.4, 0.55, 0.12, 0, -0.12), mat: (c) => c.mats.rubber });
     parts.push({ kind: 'seat', geo: G.cyl, m: M(SEATS.wheel.x, SEATS.wheel.y - 0.02, SEATS.wheel.z, 0.19, 0.03, 0.19, 0, -1.1), mat: (c) => c.mats.rubber });
   }

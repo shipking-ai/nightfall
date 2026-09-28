@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { CAR_ROUTES } from '../world/layout';
-import { carParts, CAR_COLORS, CAR_GLASS } from '../world/builders/props';
+import { carParts, CAR_COLORS, CAR_GLASS, SEATS } from '../world/builders/props';
+import { FigureBatch } from './FigureBatch';
+import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from './Humanoid';
+import { makePerson, weighted } from '../data/people';
 import type { Lamp, WorldContext } from '../world/WorldContext';
 import { mulberry32 } from '../world/rng';
 
@@ -59,6 +62,11 @@ export class Traffic {
   group = new THREE.Group();
   cars: Car[] = [];
   private paths: Path[];
+  /** someone at every wheel (the taxi driver has been doing this a long time) */
+  private drivers: FigureBatch;
+  private people: { body: Body; outfit: Outfit; motion: Motion; rig: Rig; lastYaw: number }[] = [];
+  private seatM = new THREE.Matrix4();
+  private tmpM = new THREE.Matrix4();
   private rng = mulberry32(55);
 
   constructor(ctx: WorldContext, count = 4) {
@@ -99,7 +107,7 @@ export class Traffic {
       const color = isTaxi ? TAXI_COLOR : this.rng.pick(CAR_COLORS);
       const g = new THREE.Group();
       const tailMat = (ctx.mats.lampRed as THREE.MeshStandardMaterial).clone();
-      for (const part of carParts(color)) {
+      for (const part of carParts(color, false, true)) {
         const mat = part.kind === 'paint' ? new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.3 }) : part.kind === 'tail' ? tailMat : part.kind === 'glass' ? CAR_GLASS : part.mat(ctx);
         const mesh = new THREE.Mesh(part.geo, mat);
         mesh.applyMatrix4(part.m);
@@ -131,6 +139,43 @@ export class Traffic {
       if (isTaxi) car.taxi = { hailed: false, wait: 0, cooldown: 0, rider: false, stopping: false, arrived: false, riderId: '' };
       this.cars.push(car);
     }
+    this.drivers = new FigureBatch(count, { shadows: false });
+    this.group.add(this.drivers.group);
+    for (let i = 0; i < count; i++) {
+      const p = makePerson(this.rng, i === 0 ? 'taxi' : weighted(this.rng, [['commuter', 3], ['office', 2], ['worker', 2], ['courier', 1], ['nurse', 1], ['drifter', 1]]));
+      p.outfit.umbrella = false;
+      p.outfit.backpack = null;
+      const motion = newMotion();
+      motion.sit = 1;
+      motion.armL = motion.armR = 'wheel';
+      this.drivers.dress(i, p.outfit, 0x9fc4ff, p.body);
+      this.people.push({ body: p.body, outfit: p.outfit, motion, rig: newRig(), lastYaw: 0 });
+    }
+  }
+
+  /** The drivers: sat in, hands on the wheel, turning it with the road; they glance at what they pass. */
+  drawDrivers(dt: number, t: number, cam: THREE.Vector3) {
+    this.cars.forEach((car, i) => {
+      const p = this.people[i];
+      if (!p) return;
+      if (!car.group.visible || !this.group.visible) return this.drivers.hide(i);
+      const d = car.group.position.distanceTo(cam);
+      if (d > 70) return this.drivers.hide(i);
+      car.group.updateMatrixWorld();
+      this.seatM.copy(car.group.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.driver.x, SEATS.driver.y, SEATS.driver.z));
+      const m = p.motion;
+      const turn = wrapA(car.yaw - p.lastYaw) / Math.max(dt, 1e-3);
+      p.lastYaw = car.yaw;
+      m.steer += (THREE.MathUtils.clamp(turn * 1.6, -1, 1) - m.steer) * Math.min(1, dt * 5);
+      m.lookYaw += (m.steer * 0.35 + Math.sin(t * 0.3 + i * 2) * 0.15 - m.lookYaw) * Math.min(1, dt * 2);
+      m.speed = 0;
+      stepPhase(m, dt);
+      this.tmpM.makeScale(p.body.height, p.body.height, p.body.height);
+      this.seatM.multiply(this.tmpM);
+      solve(p.rig, this.seatM, p.body, p.outfit, m, t);
+      this.drivers.write(i, p.rig, visibleParts(p.outfit, d), false);
+    });
+    this.drivers.flush();
   }
 
   /** The taxi standing at the kerb within reach of p, if any. */
@@ -427,4 +472,10 @@ function sample(p: Path, s: number, out: THREE.Vector3, dir: THREE.Vector3) {
   const t = (s - p.cum[lo]) / seg;
   out.lerpVectors(p.pts[lo], p.pts[hi], Math.min(1, Math.max(0, t)));
   dir.subVectors(p.pts[hi], p.pts[lo]).normalize();
+}
+
+function wrapA(a: number) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
 }

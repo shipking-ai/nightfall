@@ -60,6 +60,11 @@ import { Account } from '../net/Account';
 import { h, wait } from '../ui/dom';
 import { ENTRIES } from '../data/archive';
 import { Nav } from '../ui/Nav';
+import { EmoteWheel } from '../ui/EmoteWheel';
+import { PhotoMode } from '../ui/PhotoMode';
+import { savePhoto, listPhotos } from '../core/photos';
+import { EMOTES } from '../data/emotes';
+import { SEATS } from '../world/builders/props';
 import { ModeSelect } from '../ui/ModeSelect';
 import { bindGlyphs, refreshGlyphs } from '../input/glyphs';
 import type { Action } from '../input/actions';
@@ -185,13 +190,46 @@ export class App {
   }
   private controlCtx: ControlContext | null = null;
   /** photo mode: a free camera and a shutter (After Hours, City) */
-  private photoOn = false;
+  private photo!: PhotoMode;
+  private get photoOn() {
+    return !!this.photo?.active;
+  }
+  private wheel!: EmoteWheel;
+  /** the emote we're showing the others (index + 1) and a toggle per start */
+  private emoteNo = 0;
+  private emoteSeq = 0;
+  /** getting into or out of a vehicle: a short animation at the door first */
+  private boarding: { t: number; go: () => void } | null = null;
   private controlSeen = new Map<ControlContext, number>();
 
   /** dev: a fixed camera (character reviews) */
   debugCam: { pos: THREE.Vector3; look: THREE.Vector3 } | null = null;
   /** dev: extra per-frame work (a line-up of people) */
   debugTick: ((dt: number, t: number) => void) | null = null;
+  /** dev: simulate without drawing (fast playtests) */
+  private noRender = false;
+  private simNow = 0;
+
+  /**
+   * Dev playtests: stop the real-time loop and step the game in fixed frames
+   * (drawing only the last), so a test runs on game time however slow the
+   * machine drawing it is. `realtime()` hands back to the browser's loop.
+   */
+  devStep(frames: number, ms = 1000 / 30) {
+    this.renderer.renderer.setAnimationLoop(null);
+    if (!this.simNow) this.simNow = performance.now();
+    for (let i = 0; i < frames; i++) {
+      this.simNow += ms;
+      this.noRender = i < frames - 1;
+      this.frame(this.simNow);
+    }
+    this.noRender = false;
+  }
+
+  realtime() {
+    this.simNow = 0;
+    this.renderer.renderer.setAnimationLoop((now) => this.frame(now));
+  }
 
   private state: State = 'boot';
   private overlay: Overlay = null;
@@ -246,6 +284,8 @@ export class App {
       tick: () => this.audio.uiTick(),
     });
     this.mode = this.settings.data.lastMode;
+    this.wheel = new EmoteWheel(this.ui);
+    this.photo = new PhotoMode(this.ui, document.getElementById('stage')!);
     this.pause = new PauseMenu(this.ui, {
       resume: () => this.closeOverlay(),
       map: () => this.openOverlay('map', 'pause'),
@@ -992,6 +1032,40 @@ export class App {
     this.hud.controlsFor(ctx, seen < 2);
   }
 
+  /** The emote wheel (hold, point, release) and photo mode. */
+  private emotesAndPhotos() {
+    const onFoot = !this.vehicle && !this.boat && !this.player.swimming && !this.dying && !this.boarding && !this.chat?.isOpen && !this.admin?.isOpen;
+    if (this.rules.emotes && onFoot && !this.photoOn) {
+      if (!this.wheel.isOpen && this.input.pressed('emote')) this.wheel.open();
+      if (this.wheel.isOpen) {
+        this.wheel.update(this.input);
+        if (!this.input.held('emote')) {
+          const e = this.wheel.close();
+          if (e) {
+            this.player.playEmote(e);
+            this.emoteSeq++;
+            this.audio.uiTick();
+          }
+        }
+      }
+    } else if (this.wheel.isOpen) this.wheel.close();
+    this.emoteNo = this.player.emote ? EMOTES.indexOf(this.player.emote) + 1 : 0;
+    if (this.rules.photo && onFoot && !this.photoOn && !this.wheel.isOpen && this.input.pressed('photo')) this.photoMode(true);
+  }
+
+  private photoMode(on: boolean) {
+    if (on) {
+      this.photo.enter(this.player.pos, this.follow.yaw);
+      this.hud.show(false);
+      listPhotos().then((l) => this.photo.setCount(l.length));
+    } else {
+      this.photo.exit();
+      this.camera.fov = this.settings.data.fov;
+      this.camera.updateProjectionMatrix();
+      if (this.state === 'playing') this.hud.show(true);
+    }
+  }
+
   /* ─────────────────────────── modes ─────────────────────────── */
 
   /** Enter world → how do you want to spend the night? */
@@ -1081,8 +1155,17 @@ export class App {
   }
 
   private enterVehicle(v: NonNullable<App['vehicle']>) {
+    if (this.boarding) return;
+    // turn to the door, duck in; then the seat
+    const cp = v.kind === 'drive' ? v.car.pos : v.car.group.position;
+    this.player.facing = Math.atan2(cp.x - this.player.pos.x, cp.z - this.player.pos.z);
+    this.player.stopEmote(0.1);
+    this.player.act('act.enterCar', { hold: true });
+    this.boarding = { t: 0.55, go: () => this.boardNow(v) };
+  }
+
+  private boardNow(v: NonNullable<App['vehicle']>) {
     this.vehicle = v;
-    this.player.hidden = true;
     this.player.vel.set(0, 0, 0);
     if (v.kind === 'drive') {
       v.car.occupied = true;
@@ -1194,6 +1277,8 @@ export class App {
 
   /* ─────────────────────────── combat ─────────────────────── */
 
+  private readonly seatM = new THREE.Matrix4();
+  private readonly tmpM = new THREE.Matrix4();
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpDir = new THREE.Vector3();
@@ -1477,7 +1562,7 @@ export class App {
   private async enterBoat(b: Boat) {
     b.occupied = true;
     this.boat = b;
-    this.player.hidden = true;
+    this.player.act('act.boardBoat');
     this.follow.yaw = b.yaw;
     this.audio.footstep(1, false);
     if (!this.driveVoice) this.driveVoice = this.audio.carVoice();
@@ -1490,6 +1575,7 @@ export class App {
     b.occupied = false;
     this.boat = null;
     this.player.hidden = false;
+    this.player.seat = null;
     this.driveVoice?.mute();
     if (Math.abs(b.pos.z - RIVER_Z0) < 3) this.player.place(b.pos.x, 0.15, QUAY_Z, Math.PI);
     else {
@@ -1849,6 +1935,8 @@ export class App {
     }
     this.vehicle = null;
     this.player.hidden = false;
+    this.player.seat = null;
+    this.player.act('act.exitCar', { hold: true });
     this.driveVoice?.mute();
     this.horn?.off();
     this.honking = false;
@@ -1934,17 +2022,19 @@ export class App {
       if (this.state === 'landing' && !this.overlay) this.cuts();
     } else if (inWorld) {
       this.fitLight.intensity = 0;
-      if (playing && this.input.enabled) {
+      if (playing && this.input.enabled && !this.wheel.isOpen && !this.photoOn) {
         this.follow.look(this.input.lookX, this.input.lookY);
         this.follow.stick(this.input.stickYaw, this.input.stickPitch);
       }
       this.introT = Math.min(1, this.introT + dt / 3.2);
       const v = this.vehicle;
-      if (this.boat) this.follow.updateVehicle(dt, this.boat.group.position, this.boat.yaw, this.boat.v, null);
+      if (this.photoOn) {
+        if (this.photo.update(dt, this.input, this.camera, this.player.pos, this.world.collision) === 'exit') this.photoMode(false);
+      } else if (this.boat) this.follow.updateVehicle(dt, this.boat.group.position, this.boat.yaw, this.boat.v, null);
       else if (v?.kind === 'drive') this.follow.updateVehicle(dt, v.car.pos, v.car.yaw, v.car.v, this.world.collision, this.vehicles.impact);
       else if (v?.kind === 'ride') this.follow.updateVehicle(dt, v.car.group.position, v.car.yaw, v.car.v, this.world.collision);
       else this.follow.update(dt, this.player, this.world.collision, t);
-      if (this.introT < 1 && !v) {
+      if (this.introT < 1 && !v && !this.photoOn) {
         // settle down behind the shoulder as the world fades in
         const k = 1 - easeOut(this.introT);
         this.camera.position.y += k * 2.6;
@@ -1976,13 +2066,17 @@ export class App {
     this.carScreen.show(veh?.kind === 'drive' && veh.car.screen && inWorld);
     this.carScreen.setVolume(this.settings.data.radio * this.settings.data.master * (this.overlay ? 0.3 : 1));
     if (inWorld) {
-      const move = playing && this.input.enabled && !this.carScreen.isOpen && !this.admin?.isOpen && !this.chat?.isOpen && !this.dying;
+      const move = playing && this.input.enabled && !this.carScreen.isOpen && !this.admin?.isOpen && !this.chat?.isOpen && !this.dying && !this.photoOn && !this.boarding;
       if (this.boat) {
         const b = this.boat;
         const r = this.boats.drive(b, dt, move ? this.input : null);
         this.boatSteer = r.steer;
         this.player.pos.set(b.pos.x, WATER_Y + 0.4, b.pos.z);
         this.player.facing = b.yaw;
+        b.group.updateMatrixWorld();
+        this.seatM.copy(b.group.matrixWorld).multiply(this.tmpM.makeTranslation(0.35, 0.05, -1.3));
+        this.player.seat = { m: this.seatM, drive: true, steer: -this.boatSteer };
+        this.player.update(dt, null, this.follow.yaw, this.world.collision, []);
         this.driveVoice?.setPosition(b.pos, Math.abs(b.v) * 1.4);
         if (move && this.input.pressed('exitVehicle')) this.leaveBoat();
       } else if (veh?.kind === 'drive') {
@@ -2007,10 +2101,18 @@ export class App {
         this.runOver(veh.car.pos, Math.abs(veh.car.v));
         this.player.pos.copy(veh.car.pos);
         this.player.facing = veh.car.yaw;
+        veh.car.group.updateMatrixWorld();
+        this.seatM.copy(veh.car.group.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.driver.x, SEATS.driver.y, SEATS.driver.z));
+        this.player.seat = { m: this.seatM, drive: true, steer: veh.car.steer / 0.62 };
+        this.player.update(dt, null, this.follow.yaw, this.world.collision, []);
         if (veh.car.leaving && Math.abs(veh.car.v) < 0.3) this.leaveVehicle(true);
       } else if (veh?.kind === 'ride') {
         this.player.pos.copy(veh.car.group.position);
         this.player.facing = veh.car.yaw;
+        veh.car.group.updateMatrixWorld();
+        this.seatM.copy(veh.car.group.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.back.x, SEATS.back.y, SEATS.back.z));
+        this.player.seat = { m: this.seatM, drive: false, steer: 0 };
+        this.player.update(dt, null, this.follow.yaw, this.world.collision, []);
         const tx = veh.car.taxi;
         // our stop (the host's taxi reports it), or the host gave the seat to someone else
         if (tx?.arrived && tx.riderId === this.mp.id) this.leaveVehicle(true);
@@ -2024,7 +2126,16 @@ export class App {
           for (const k of [-1.4, 0, 1.4]) this.obstacles.push({ x: c.group.position.x + Math.sin(c.yaw) * k, z: c.group.position.z + Math.cos(c.yaw) * k, r: 0.95 });
         }
         this.police.obstacles(this.obstacles);
-        this.player.update(dt, move ? this.input : null, this.follow.yaw, this.world.collision, this.obstacles);
+        if (this.player.seat) this.player.seat = null;
+        this.player.update(dt, move && !this.wheel.isOpen ? this.input : null, this.follow.yaw, this.world.collision, this.obstacles);
+        if (this.boarding) {
+          this.boarding.t -= dt;
+          if (this.boarding.t <= 0) {
+            const go = this.boarding.go;
+            this.boarding = null;
+            go();
+          }
+        }
       }
     }
     this.vehicles.update(dt);
@@ -2045,6 +2156,8 @@ export class App {
       s.yaw = v ? v.car.yaw : this.player.facing;
       s.speed = v ? Math.abs(v.car.v) : this.player.speed;
       s.mode = v ? v.kind : this.player.sitting ? 'sit' : 'walk';
+      s.emote = this.emoteNo;
+      s.eseq = this.emoteSeq;
       s.car = v?.kind === 'drive' ? { color: v.car.color, screen: v.car.screen, van: v.car.van, brake: v.car.braking, v: v.car.v, idx: this.vehicles.cars.indexOf(v.car) } : v?.kind === 'ride' ? { color: 0, screen: false, van: false, brake: Math.abs(v.car.v) < 0.5, v: v.car.v, idx: -1 } : undefined;
       mine = s;
     }
@@ -2096,6 +2209,7 @@ export class App {
       }
     }
     this.traffic.update(dt, this.vehicle?.kind === 'ride' ? null : playerPos, this.vehicle ? 99 : this.player.speed, leftInRoad, others);
+    this.traffic.drawDrivers(dt, t, this.camera.position);
     // host: tell everyone what the city is doing
     this.cityT -= dt;
     if (this.cityT <= 0 && this.mp.shared && this.mp.isHost && this.mp.peers.size) {
@@ -2125,6 +2239,7 @@ export class App {
     if (playing) {
       this.padGlobals();
       this.updateControlContext();
+      this.emotesAndPhotos();
       const fwd = this.camera.getWorldDirection(this.tmpV);
       this.interaction.update(this.player.pos, fwd, this.player.sitting || !!this.vehicle);
       const cur = this.interaction.current;
@@ -2197,7 +2312,14 @@ export class App {
     }
     this.audio.update(dt, this.camera, this.weather.intensity);
     this.input.endFrame();
+    if (this.noRender) return;
     this.renderer.render(t);
+    if (this.photo.wantShot) {
+      const url = this.photo.capture(this.renderer.canvas);
+      this.audio.footstep(1.6, false);
+      this.input.rumble('ui');
+      if (url) savePhoto({ id: `p${Date.now()}`, at: Date.now(), place: this.inside?.name ?? this.discovery.districtName, time: this.time.label, url }).then(() => listPhotos().then((l) => this.photo.setCount(l.length)));
+    }
   }
 
   /** Title sequence: dip to black between shots. */

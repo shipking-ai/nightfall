@@ -56,7 +56,7 @@ export class Vehicles {
       const g = new THREE.Group();
       const paint = new THREE.MeshStandardMaterial({ color: spec.color, roughness: 0.3, metalness: 0.3 });
       const tailMat = (ctx.mats.lampRed as THREE.MeshStandardMaterial).clone();
-      for (const part of carParts(spec.color, spec.van)) {
+      for (const part of carParts(spec.color, spec.van, true)) {
         const mesh = new THREE.Mesh(part.geo, part.kind === 'paint' ? paint : part.kind === 'tail' ? tailMat : part.kind === 'glass' ? CAR_GLASS : part.mat(ctx));
         mesh.applyMatrix4(part.m);
         mesh.castShadow = part.kind === 'paint';

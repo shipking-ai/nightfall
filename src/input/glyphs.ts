@@ -10,7 +10,7 @@ import type { Device, Input } from '../core/Input';
 
 const XBOX: Record<PadButton, string> = {
   A: 'A', B: 'B', X: 'X', Y: 'Y', LB: 'LB', RB: 'RB', LT: 'LT', RT: 'RT',
-  View: 'View', Menu: 'Menu', LS: 'LS', RS: 'RS', Up: '↑', Down: '↓', Left: '←', Right: '→', Home: 'Xbox',
+  View: 'View', Menu: 'Menu', LS: 'L3', RS: 'R3', Up: '↑', Down: '↓', Left: '←', Right: '→', Home: 'Xbox',
 };
 const PS: Record<PadButton, string> = {
   A: '✕', B: '○', X: '□', Y: '△', LB: 'L1', RB: 'R1', LT: 'L2', RT: 'R2',

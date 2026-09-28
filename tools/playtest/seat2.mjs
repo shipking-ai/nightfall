@@ -1,0 +1,11 @@
+import { launch } from './lib.mjs';
+const t = await launch({ pad: 'xbox' });
+const { page, shot, step, press, waitState } = t;
+await waitState('landing'); await t.wait(4000);
+await page.evaluate(() => { window.nf.mode = 'city'; window.nf.enter(); });
+await waitState('playing', 200); await step(1);
+await page.evaluate(() => { const nf = window.nf; nf.player.place(-5.2, 0.15, 22, -Math.PI / 2); nf.follow.snap(nf.player, nf.world.collision); });
+await step(1); await press('X'); await step(1.5);
+await page.evaluate(() => { const nf = window.nf; const car = nf.vehicle.car; car.group.children.forEach((m, i) => { if (i < 2) m.visible = false; }); const c = car.pos; nf.debugCam = { pos: c.clone().add({ x: 2.6, y: 1.2, z: -0.5 }), look: c.clone().add({ x: -0.4, y: 0.8, z: 0 }) }; });
+await step(0.2); await shot('seat-xray');
+await t.browser.close();
