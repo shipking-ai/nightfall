@@ -297,8 +297,6 @@ export class Traffic {
     car.lamps[1].pos.set(0.62, 0.66, 2.4).applyMatrix4(m);
     car.lamps[2].pos.set(-0.68, 0.74, -2.3).applyMatrix4(m);
     car.lamps[3].pos.set(0.68, 0.74, -2.3).applyMatrix4(m);
-    // the pooled headlight sits a little ahead so it lights the road
-    car.lamps[0].pos.addScaledVector(fwd, 1.5);
     car.lamps[0].gain = car.lamps[1].gain = 1;
     car.lamps[2].gain = car.lamps[3].gain = braking ? 2.6 : 1;
     car.tailMat.emissiveIntensity = braking ? 11 : 4;
@@ -339,7 +337,7 @@ export class Traffic {
       car.group.rotation.y = s.yaw;
       car.group.updateMatrixWorld();
       const m = car.group.matrixWorld;
-      car.lamps[0].pos.set(-0.62, 0.66, 2.4).applyMatrix4(m).addScaledVector(fwd, 1.5);
+      car.lamps[0].pos.set(-0.62, 0.66, 2.4).applyMatrix4(m);
       car.lamps[1].pos.set(0.62, 0.66, 2.4).applyMatrix4(m);
       car.lamps[2].pos.set(-0.68, 0.74, -2.3).applyMatrix4(m);
       car.lamps[3].pos.set(0.68, 0.74, -2.3).applyMatrix4(m);

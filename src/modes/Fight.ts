@@ -259,6 +259,8 @@ export class Fight {
         if (this.clock <= 0) this.timeUp();
       }
     }
+    // paused: the pause menu has the screen to itself
+    this.hud.el.classList.toggle('is-paused', !live && this.phase !== 'intro');
     const frozen = this.hitstop > 0;
     a.draw(dt, t, frozen || !live, this.events);
     b.draw(dt, t, frozen || !live, this.events);

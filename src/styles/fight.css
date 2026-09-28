@@ -17,6 +17,7 @@
   color: var(--paper);
 }
 .fhud.is-on { opacity: 1; visibility: visible; transition: opacity 500ms var(--ease); }
+.fhud.is-on.is-paused { opacity: 0; visibility: hidden; transition: opacity 200ms var(--ease), visibility 0s linear 200ms; }
 
 .fhud__top {
   position: absolute;

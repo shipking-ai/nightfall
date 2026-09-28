@@ -222,8 +222,6 @@ export class Vehicles {
     car.lamps[1].pos.set(0.62, 0.66, L + 0.2).applyMatrix4(m);
     car.lamps[2].pos.set(-0.68, 0.74, -L - 0.1).applyMatrix4(m);
     car.lamps[3].pos.set(0.68, 0.74, -L - 0.1).applyMatrix4(m);
-    car.lamps[0].pos.x += Math.sin(car.yaw) * 1.5;
-    car.lamps[0].pos.z += Math.cos(car.yaw) * 1.5;
     const on = car.occupied ? 1 : 0;
     car.lamps[0].gain = car.lamps[1].gain = on;
     car.lamps[2].gain = car.lamps[3].gain = on * (car.braking ? 2.6 : 1);
