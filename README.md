@@ -34,6 +34,17 @@
   </tr>
 </table>
 
+## Four ways to play one city
+
+Choose how you want the night to go. It's the same world, the same people and the same rain, with different rules.
+
+| Mode | |
+|---|---|
+| 🏙 **City** | The whole night: drive, explore, take side jobs, get into trouble, run from the police. Every so often, something in the city is not right. |
+| 🌙 **After Hours** | No weapons, no police, no clock to beat. Walk, drive with the radio on (or wear it in your headphones), sit by the river, set the rain and hold the hour, and take photographs that go into your Archive. |
+| 🎯 **Warzone** | 6 v 6 Domination across the Pier 9 container yard, in **first person** (or over the shoulder). Four loadouts, recoil and spread you can feel, armor, pickups, bots that flank and fall back, a kill feed and a scoreboard. |
+| 🥊 **Fight** | One on one where Harbor Lane crosses the avenue, with the traffic held at the lights and a crowd watching. Strings, launchers and juggles, block and parry, throws, a meter for EX specials and breakers, best of three, and a finisher. Play the CPU or a friend on a second controller. |
+
 ## What's in it
 
 | | |
@@ -46,9 +57,13 @@
 | 👥 **Together** | Invite anyone with a link. You share the same crowd, traffic and taxi, with text chat, **proximity voice chat**, and PvP. |
 | 🧥 **You** | Accounts (email, magic link, Google) or play as a guest, a wardrobe for your look, and saves that follow you between devices. |
 | 🛠 **Admin tools** | Fly / noclip, teleport, spawn a car, set the time and weather, blackouts, announcements, kick / ban / jail (checked server-side), live stats, and notes you can leave in the world. |
+| 🎮 **Controllers, first class** | Xbox and PlayStation pads with the right button glyphs everywhere, every menu navigable from the couch, an on-screen keyboard, remapping, dead zones and response curves, aim assist on pads only, rumble, a TV-size interface, an emote wheel with quick chat, and joining a friend by room code. |
+| 🧍 **People, animated** | Faces, hair, clothes and builds that make each person someone in particular (a courier, a nurse, a taxi driver), an animation system with blending and idle behaviour, 24 emotes, hands on the steering wheel, and reactions to near misses, horns and gunfire. |
 | 📱 **Anywhere** | Desktop, phones and tablets (with a thumbstick and touch buttons), all in the browser. |
 
 ## Controls
+
+**On a controller** (Xbox names; PlayStation shows its own): left stick move · right stick look · **A** jump · **X** interact / reload · **Y** switch weapon · **B** crouch · **LT** aim · **RT** fire / accelerate · **LB/RB** tabs and pages · **D-pad**: ↑ photo mode (↑ first / third person in Warzone), ↓ emote wheel, ← → radio · **View** map / scores · **Menu** pause. In Fight: **X** light · **Y** heavy (↑ launch, ↓ sweep, → kick) · **LB** block (tap to parry) · **B** dodge · **RB** throw · **RT** special · **A** jump. Everything can be remapped in Settings → Controller.
 
 | Keyboard & mouse | | Touch |
 |---|---|---|
@@ -122,8 +137,14 @@ src/
   env/ fx/     sky, rain, water, the night's clock; lamp FX, tracers, blood, quest marker
   audio/       procedural rain, voices, radio, the whole mix
   systems/     interaction, discovery, quests, combat
+  modes/       rules (one city, four rule sets), Fight + fight/ (frame data, fighters, CPU),
+               Warzone + warzone/ (bots, nav grid, guns, first-person viewmodel)
+  anim/        pose channels, the animator (layers, blending, masks), clips, idles
+  input/       actions, bindings, gamepads, glyphs, haptics
   net/         Multiplayer (transport chain), accounts, voice chat, transports/
-  ui/          HUD, menus, map, archive, wardrobe, chat, admin panel, touch controls
+  ui/          HUD, menus, map, archive, wardrobe, chat, admin panel, touch controls,
+               mode select, controller navigation + on-screen keyboard, emote wheel,
+               photo mode, the Fight and Warzone HUDs
   data/        archive entries, lines people say, side quests
 server/        the room server (Cloudflare Worker + Durable Objects)
 supabase/      database migrations (accounts, saves, admin)

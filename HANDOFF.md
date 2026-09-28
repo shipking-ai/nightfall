@@ -1,20 +1,57 @@
 # HANDOFF — NIGHTFALL
 
-Last updated: 2026-09-23 (moon shadow shimmer fixed; Supabase + Vercel set up). Read this first, then [README.md](README.md) for architecture and controls.
+Last updated: 2026-09-28 (four modes, controllers, people and animation). Read this first, then [README.md](README.md) for architecture and controls.
 
 ## State in one paragraph
 
-The playable browser game builds and runs: `npm run dev` serves it at http://localhost:5317, and `npm run build` passes the typecheck and produces the production bundle (203 KB gzipped JS, no external assets). The full flow works end to end:
+The browser game builds and runs: `npm run dev` serves it at http://localhost:5317, and `npm run build` typechecks and bundles it (no external assets). Production is https://nightfall-sand.vercel.app, deployed from the `claude/sharp-shannon-6ogxul` branch after every fix. The title leads to a **mode select**, and there are **four modes on one city**: City, After Hours, Warzone and Fight (see the next section). Everything can be played **with only a controller**; the four-mode run was playtested that way (tools/playtest/). The older sections below still describe the City systems accurately.
 
-1. boot intermission
-2. cinematic title sequence
-3. Enter World transition
-4. third-person free roam
-5. interactions and discoveries
-6. pause, map, archive and settings
-7. save state
+## Four modes, controllers, people (2026-09-24 → 2026-09-28)
 
-The work in progress is polish, plus an unfinished companion Design canvas; details below. There's an optional Supabase backend (cloud save plus "also recorded by N others"), and a Vercel production deploy at https://nightfall-sand.vercel.app; see *Backend & deploy*.
+### The mode architecture
+- `src/modes/rules.ts`: one `ModeRules` record per mode (crowd, traffic, police, crime, quests, unease rate, combat kind, emotes, photo, shared city, the title-shot preview). `App.applyRules()` applies them to the same simulation. There are no separate games. `App.applyRulesFor('city')` puts the ordinary city back behind the title after a match.
+- The mode select (`ui/ModeSelect.ts`) cuts the title camera to where each mode happens as you move between them (shots 5 and 6 in `CinematicCamera`).
+- Per mode, the lighting gets a sky-fill boost and a character readability fill (`TimeOfDay.fillBoost`, `charFill` in `FigureBatch`): Warzone 1.9, Fight 1.35, City 1.12.
+- `App.warmUp()` compiles **and draws once** everything a match will show (tracers, blood, pickups), behind the intermission card. It compiles into the composer's HDR target, because compiling for the screen produces a different program. Without it, the first shot stalls the GPU.
+
+### FIGHT (`modes/Fight.ts`, `modes/fight/*`, `anim/fightClips.ts`, `ui/FightHud.ts`, `styles/fight.css`)
+- The arena is the crossing at (0, 54), radius 6.2. `Traffic.hold()` parks the four pooled cars at the lights with their drivers watching, and 18 spectators stand in a ring (they hide when they'd block the camera).
+- Frame data runs at a fixed 60 Hz in `moves.ts` and **must match the clips** (the `hit` key is the first active frame). Hitstop freezes both fighters' animation clocks (`Fighter.tick()` runs inside the fixed step).
+- Moves: light string (jab → cross → hook), heavy (neutral overhand, → roundhouse, ↑ launcher, ↓ sweep), air punch and kick, special (EX with a bar of meter), throw and throw tech, block, parry (a block pressed ≤ 6 frames before the hit), guard meter and guard break, sidestep (beats narrow arcs), backstep, juggles with decay, knockdown and get-up, combo scaling, and a breaker (dodge in a combo, costs a bar).
+- Rounds are best of three with a 60 s clock. A KO triggers slow motion; the deciding round offers "Finish it" and a three-hit finisher (the special near a dizzy opponent).
+- The CPU (`FightAI.ts`) has a reaction time, spacing, punishes, combos and three levels. For local versus, **hold A on a second pad**. Player one is keyboard plus *their* pad (`Input.controlsWith`), so the second player's presses never drive them.
+
+### WARZONE (`modes/Warzone.ts`, `modes/warzone/*`, `ui/WarzoneHud.ts`, `styles/warzone.css`)
+- Domination in Pier 9 Yard. The bounds (x 40–101.5, z −28–60.5) are invisible collision walls added on start and removed on stop. The points are A (92, −20), B (68.5, 9) in the middle gap, and C (46, 44). Blue spawns south-west and Red north-east. The first team to 150 wins (1 point per held point every 2 s), with a 6-minute clock.
+- The bots (`Soldier.ts`) move on a 0.5 m `NavGrid` (A* with string-pulling) built from the yard's collision. Each one leans towards a point, needs line of sight plus a reaction time before firing, strafes, crouches at range, bursts, reloads, falls back when hurt, and turns on whoever shot it. Accuracy against the player scales with the difficulty (Recruit / Regular / Veteran).
+- Guns (`weapons.ts`): carbine, SMG, marksman rifle, shotgun and pistol, in four loadouts. Each has damage falloff, headshots, hip and ADS spread, bloom and recoil (the camera kicks and mostly settles). Armor soaks 60 % until it's gone, health regenerates out of the fight, and there are ammo and armor stations plus drops from the dead.
+- **First person by default** (`Viewmodel.ts`): the gun and gloved forearms ride the camera with sway, bob, kick, reload dip and swap. Aiming lines the sight up just under a dot. D-pad ↑ / V switches to over the shoulder, and death always uses the third-person camera. The first-person pitch range is ±1.3 (`FollowCamera.pitchMin/Max`).
+- Aim assist is pad only: slowdown over a visible enemy, plus a settle onto one when the sights come up.
+
+### CITY and AFTER HOURS
+- After Hours adds headphones (radio on foot, D-pad ←/→), plus pause-menu switches for the weather and for holding the hour (reset when you leave the mode), and photo mode. The City keeps everything it had.
+- Photos: `core/photos.ts` (IndexedDB, newest 48). They appear in the Archive under **Your photographs**, with a delete option.
+
+### Controllers and the interface (`input/*`, `ui/Nav.ts`, `ui/Osk.ts`, `styles/controller.css`)
+- Actions and bindings are remappable per device (localStorage `nightfall.bindings.v1`). `glyphs.ts` shows the right Xbox or PlayStation button everywhere and follows the last-used device.
+- `Nav` gives every menu spatial controller navigation: LB/RB tabs, B back, sliders and selects on the D-pad, and an on-screen keyboard for text. The pause menu is mode-aware: in a match it hides the map and wardrobe and offers Leave the match; it has the After Hours switches and Microphone in a room, and it fits 540p at TV size.
+- The emote wheel (hold ↓) has 4 pages: 3 of emotes, plus **Say**, which is quick chat with a gesture. Its last slot, Type…, opens chat with the on-screen keyboard. Gestures sync to other players (`WIRE_EMOTES`).
+- Rooms have a readable code (abcde-fghij). Invite shows it, and the title's **Join a friend** takes it through the on-screen keyboard (it only appears when multiplayer is configured, i.e. on Vercel).
+
+### People and animation
+- `entities/anatomy.ts`: sculpted heads with 14 face morphs, hair and hats, facial hair, hands in grips, shoes, and garments with morphing torsos. `data/people.ts` defines 16 archetypes (commuter, courier, nurse, taxi, police, soldier, fighter…) with personas.
+- `anim/*`: pose channels, the `Animator` (layers, fades, masks, additive, mirroring, events, `stay`), clips, and `IdleDirector`. `stay` clips hold their last frame and **never** fade on their own; this was a bug that stood the dead back up.
+
+### Playtests (headless Chromium + SwiftShader, a virtual pad)
+- `tools/playtest/*.mjs`: `menus`, `characters`, `city`, `fight`, `fight-exit`, `fight-pause`, `warzone`, `afterhours`, `modes` (all four, controller only, real time), and `tour` (lighting tour). Run them with the dev server up: `node tools/playtest/fight.mjs`. Screenshots go to `captures/playtest/`.
+- They step on game time with `nf.devStep(frames)`. CSS transitions don't advance while the render loop is stopped, so wait in real time (or call `nf.realtime()`) before pressing into a menu that fades in. SwiftShader can take tens of seconds on the first draw of something new, so screenshots have a 240 s timeout.
+
+### Open items
+- The yard is still dark between the stacks, even with the boost. It could use a few more floods on the gantry legs.
+- The Warzone bots don't use grenades or cover points; they strafe in the open.
+- Fight mode has no move list screen (the controls strip shows the inputs for the first 14 s).
+- Teammate name tags overlap at spawn.
+- The GitHub repository's social preview has to be uploaded by hand: Settings → General → Social preview → `docs/media/social-preview.jpg`.
 
 ## Vehicles (2026-09-23)
 
@@ -420,7 +457,7 @@ Reviewed against real captures in `captures/`:
 ## Known rough edges / backlog (in priority order)
 
 1. ~~Map player arrow~~, ~~rain in plates~~, ~~car corner radius~~: done by an earlier parallel pass (`MapView` pulse ring, `Photographer` hides weather, angle-aware radius of at most 6 m in `Traffic.roundPath`).
-2. **The Station shed interior is dark.** Tune it after a visual pass (concourse lights at y 5.8 and the carriage light).
+2. ~~The Station shed interior is dark~~: a visual pass on 2026-09-28 found it well lit (tools/playtest/tour.mjs).
 3. **Draw calls are about 590 on the avenue** with moon shadows. Candidates: a texture atlas for decals, turning `castShadow` off on the character limbs at Medium, or updating the moon shadow every other frame.
 4. **Running head bob is about 13 cm.** It may want softening.
 5. **NPCs pop when they "go inside"** at route ends. This only happens when the player is more than 18 m away.
