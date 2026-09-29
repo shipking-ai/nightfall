@@ -72,15 +72,30 @@ export interface Walker {
   /** stopped to talk to you (seconds left) */
   talk: number;
   idle: number;
+  hp: number;
+  /** running away (seconds left) from `from` */
+  flee: number;
+  from: THREE.Vector3;
+  /** seconds since they died (−1: alive) */
+  dead: number;
+  /** a police officer coming for you */
+  chase: boolean;
 }
 
 export class Populace {
   group = new THREE.Group();
   private lists = new Map<string, Resident[]>();
   private walkers = new Map<string, Walker>();
+  /** residents who are gone for good (world memory) */
+  gone = new Set<string>();
+  /** is there a price on your head in this town? (police chase you on sight) */
+  wanted: (town: string) => boolean = () => false;
+  /** an officer has hold of you */
+  onCatch: (w: Walker) => void = () => {};
   private pool = new Map<string, RealHuman>();
   private scanT = 0;
   private root = new THREE.Matrix4();
+  private tmp2 = new THREE.Vector3();
   private q = new THREE.Quaternion();
   /** people about now in the towns near you (the statistical layer, for the HUD and the debug) */
   about = 0;
@@ -193,11 +208,28 @@ export class Populace {
         // they went indoors: walk to the nearest door, then gone
         w.m.speed = 0;
       }
-      const target = outside ? tmp : w.pos;
+      // police on the lookout: a wanted face, close enough to see
+      if (w.dead < 0 && w.r.job === 'police' && !w.chase && this.wanted(w.r.town.id) && Math.hypot(player.x - w.pos.x, player.z - w.pos.z) < 28) w.chase = true;
+      let target = outside ? tmp : w.pos;
+      if (w.flee > 0) {
+        w.flee -= dt;
+        const ax = w.pos.x - w.from.x, az = w.pos.z - w.from.z, al = Math.hypot(ax, az) || 1;
+        target = this.tmp2.set(w.pos.x + (ax / al) * 20, w.pos.y, w.pos.z + (az / al) * 20);
+      } else if (w.chase) target = this.tmp2.set(player.x, w.pos.y, player.z);
       const dx = target.x - w.pos.x, dz = target.z - w.pos.z;
       const d = Math.hypot(dx, dz);
       let speed = 0;
-      if (w.talk > 0) {
+      if (w.dead >= 0) {
+        w.dead += dt;
+      } else if (w.flee > 0 || w.chase) {
+        speed = w.chase ? (d > 1.2 ? 4.6 : 0) : 4.2;
+        if (speed > 0) {
+          w.pos.x += (dx / (d || 1)) * speed * dt;
+          w.pos.z += (dz / (d || 1)) * speed * dt;
+        }
+        w.yaw += wrap(Math.atan2(dx, dz) - w.yaw) * Math.min(1, dt * 8);
+        if (w.chase && d < 1.4) this.onCatch(w);
+      } else if (w.talk > 0) {
         w.talk -= dt;
         const fy = Math.atan2(player.x - w.pos.x, player.z - w.pos.z);
         w.yaw += wrap(fy - w.yaw) * Math.min(1, dt * 5);
@@ -231,6 +263,7 @@ export class Populace {
       if (Math.hypot(town.x - player.x, town.z - player.z) > town.radius + 300) continue;
       const plan = this.towns.plan(town);
       for (const r of this.residents(town)) {
+        if (this.gone.has(r.id) && !this.walkers.has(r.id)) continue;
         if (!this.where(r, plan, minutes, p)) continue;
         about++;
         const d = Math.hypot(p.x - player.x, p.z - player.z);
@@ -246,6 +279,8 @@ export class Populace {
       keep.add(c.r.id);
       if (!this.walkers.has(c.r.id)) this.embody(c.r, c.p);
     }
+    // the dead stay where they fell, the frightened keep running, the police keep coming (while you're near)
+    for (const [id, w] of this.walkers) if ((w.dead >= 0 || w.flee > 0 || w.chase) && Math.hypot(w.pos.x - player.x, w.pos.z - player.z) < FAR + 30) keep.add(id);
     for (const [id, w] of this.walkers) if (!keep.has(id)) this.release(id, w);
   }
 
@@ -266,7 +301,7 @@ export class Populace {
     }
     human.group.visible = false;
     this.group.add(human.group);
-    this.walkers.set(r.id, { r, human, rig: newRig(), m: newMotion(), anim: new Animator(), pos: at.clone(), yaw: Math.random() * 6.28, outfit: { bulk: 1 } as Outfit, talk: 0, idle: 0 });
+    this.walkers.set(r.id, { r, human, rig: newRig(), m: newMotion(), anim: new Animator(), pos: at.clone(), yaw: Math.random() * 6.28, outfit: { bulk: 1 } as Outfit, talk: 0, idle: 0, hp: r.job === 'police' ? 140 : 100, flee: 0, from: new THREE.Vector3(), dead: -1, chase: false });
   }
 
   private release(id: string, w: Walker) {
@@ -279,7 +314,7 @@ export class Populace {
   nearest(pos: THREE.Vector3, fwd: THREE.Vector3, reach = 2.4): Walker | null {
     let best: Walker | null = null, bd = reach;
     for (const w of this.walkers.values()) {
-      if (!w.human.ready) continue;
+      if (!w.human.ready || w.dead >= 0 || w.flee > 0 || w.chase) continue;
       const dx = w.pos.x - pos.x, dz = w.pos.z - pos.z;
       const d = Math.hypot(dx, dz);
       if (d > bd || (dx * fwd.x + dz * fwd.z) / (d || 1) < 0.2) continue;
@@ -327,6 +362,74 @@ export class Populace {
 
   get count() {
     return this.walkers.size;
+  }
+
+  /* ── violence ───────────────────────────────────────── */
+
+  /** A ray against the people near you (legs, body, head as spheres). */
+  hitTest(o: THREE.Vector3, dir: THREE.Vector3, maxT: number): { t: number; w: Walker; head: boolean } | null {
+    let best: { t: number; w: Walker; head: boolean } | null = null;
+    const v = this.tmp2;
+    for (const w of this.walkers.values()) {
+      if (w.dead >= 0 || !w.human.ready) continue;
+      const hgt = w.human.body.height;
+      for (const [y, r, head] of [[0.5, 0.26, false], [1.15, 0.3, false], [1.6, 0.14, true]] as const) {
+        v.set(w.pos.x - o.x, w.pos.y + y * hgt - o.y, w.pos.z - o.z);
+        const tc = v.dot(dir);
+        if (tc < 0) continue;
+        const d2 = v.lengthSq() - tc * tc;
+        if (d2 > r * r) continue;
+        const t = tc - Math.sqrt(r * r - d2);
+        if (t < maxT && (!best || t < best.t)) best = { t, w, head };
+      }
+    }
+    return best;
+  }
+
+  /** Hurt someone; true if they died. They flinch and run, or fall where they stand. */
+  damage(w: Walker, dmg: number, from: THREE.Vector3): boolean {
+    if (w.dead >= 0) return false;
+    w.hp -= dmg;
+    w.talk = 0;
+    if (w.hp <= 0) {
+      w.dead = 0;
+      w.chase = false;
+      w.flee = 0;
+      const facing = Math.cos(Math.atan2(from.x - w.pos.x, from.z - w.pos.z) - w.yaw) > 0;
+      w.anim.play(facing ? 'react.deathBack' : 'react.deathForward', { stay: true, fadeIn: 0.08 });
+      this.gone.add(w.r.id);
+      return true;
+    }
+    w.anim.play('react.flinch', { fadeIn: 0.05 });
+    if (w.r.job === 'police') w.chase = true;
+    else {
+      w.flee = 12 + Math.random() * 6;
+      w.from.copy(from);
+    }
+    return false;
+  }
+
+  /** A gunshot, a scream: everyone within r runs from it (the police run towards it). */
+  scatter(at: THREE.Vector3, r: number) {
+    for (const w of this.walkers.values()) {
+      if (w.dead >= 0 || Math.hypot(w.pos.x - at.x, w.pos.z - at.z) > r) continue;
+      if (w.r.job === 'police') continue;
+      w.flee = 8 + Math.random() * 8;
+      w.talk = 0;
+      w.from.copy(at);
+    }
+  }
+
+  /** Who saw that: the living near `at` (other than the victim). */
+  witnesses(at: THREE.Vector3, r: number, except?: Walker): Walker[] {
+    const out: Walker[] = [];
+    for (const w of this.walkers.values()) if (w !== except && w.dead < 0 && Math.hypot(w.pos.x - at.x, w.pos.z - at.z) < r) out.push(w);
+    return out;
+  }
+
+  /** Stop every officer chasing you (you paid, or you're in the cells). */
+  standDown() {
+    for (const w of this.walkers.values()) w.chase = false;
   }
 
   /** The body of a resident, if they're near enough to have one. */

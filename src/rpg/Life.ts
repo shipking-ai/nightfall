@@ -3,7 +3,7 @@ import type { Rpg, RpgHost } from './Rpg';
 import { Game, newState, type GameState, type Tone } from './game/Game';
 import { Saves, type SlotId } from './game/saves';
 import { poiTalk, residentTalk, staffOf, type Node, type TalkCtx } from './game/dialogue';
-import { advanceMain, current, MAIN_ID, mainPlaces, startMain, type QuestWorld } from './game/quests';
+import { advanceMain, current, fail, MAIN_ID, mainPlaces, startMain, type QuestWorld } from './game/quests';
 import { heroSpec } from './people/kit';
 import type { HumanSpec } from './people/anatomy';
 import type { Walker } from './sim/Populace';
@@ -18,6 +18,7 @@ import { Campfire } from './sim/Camp';
 import type { Animal } from './sim/Wildlife';
 import { item } from './game/items';
 import { maxHealth } from './game/character';
+import { factionOfJob } from './game/factions';
 import { BIOMES } from './world/biomes';
 
 /**
@@ -77,6 +78,8 @@ export class Life {
   fishing: Fishing;
   /** your fire, if you've lit one */
   fire: Campfire | null = null;
+  /** people you've already been seen hurting (one charge each) */
+  private reported = new Set<string>();
 
   /** The screens, for the menu navigator (what back and the shoulder buttons mean). */
   get panels() {
@@ -117,8 +120,17 @@ export class Life {
     return st.hero;
   }
 
+  /** The world remembers: who's gone, where you're wanted. */
+  private hook() {
+    const pop = this.rpg.populace;
+    pop.gone = new Set(this.game?.s.mem.gone ?? []);
+    pop.wanted = (town) => (this.game?.s.mem.bounty[town] ?? 0) > 0;
+    pop.onCatch = () => void this.arrest();
+  }
+
   private apply(st: GameState) {
     this.game = new Game(st, this.events());
+    this.hook();
     this.pendingCreator = false;
     const p = st.pos;
     this.host.player.place(p.x, p.y + 0.2, p.z, p.yaw);
@@ -190,6 +202,7 @@ export class Life {
     const st = newState(name, d.bg, d.attrs, JSON.parse(JSON.stringify(d.spec)), { x: p.x, y: p.y, z: p.z, yaw: this.host.player.facing });
     st.clock = { minutes: this.rpg.atmos.minutes, day: this.rpg.atmos.day };
     this.game = new Game(st, this.events());
+    this.hook();
     startMain(this.world, this.game);
     this.rpg.setHero(st.hero);
     this.creator.close();
@@ -593,6 +606,90 @@ export class Life {
       g.s.mem.flags[`fish:${c.name}`] = true;
       g.note(`Caught my first ${c.name.toLowerCase()} (${c.weight} kg), ${BIOMES[this.rpg.place.biome].name.toLowerCase()}.`);
     }
+  }
+
+  /* ── violence, witnesses, the Watch ─────────────────── */
+
+  /**
+   * You hurt someone. Whether anyone saw decides most of what follows: a
+   * price on your head in this town, the Watch and the town turning against
+   * you, the police coming. Unseen (crouched, a blade, nobody near) it's
+   * between you and them.
+   */
+  violence(w: Walker, killed: boolean) {
+    const g = this.game;
+    if (!g) return;
+    const r = w.r;
+    const town = r.town.id;
+    const pl = this.host.player;
+    const seen = this.rpg.populace.witnesses(w.pos, pl.crouching && !this.weapon().gun ? 18 : 40, w);
+    const fac = factionOfJob(r.job);
+    if (killed) {
+      if (!g.s.mem.gone.includes(r.id)) g.s.mem.gone.push(r.id);
+      g.note(`${r.name} of ${r.town.name} is dead. I did that.`);
+      for (const q of g.s.quests) if (q.state === 'active' && (q.giver?.id === r.id || q.objectives.some((o) => !o.done && o.who === r.id))) fail(g, q, `${r.name} is dead.`);
+      if (fac) g.rep(fac, -12);
+    }
+    // one charge of assault per person, one of murder
+    const already = this.reported.has(r.id);
+    if (seen.length && (killed || !already)) {
+      this.reported.add(r.id);
+      const fine = killed ? (r.job === 'police' ? 1200 : 450) : 60;
+      g.s.mem.bounty[town] = (g.s.mem.bounty[town] ?? 0) + fine;
+      g.rep('watch', killed ? -14 : -4);
+      g.townRep(town, killed ? -30 : -8);
+      for (const o of seen) {
+        if (o.r.job === 'police') o.chase = true;
+        else {
+          o.flee = 12;
+          o.from.copy(w.pos);
+        }
+      }
+      this.rpg.hud.toast(`Seen. $${g.s.mem.bounty[town]} on your head in ${r.town.name}.`, 'bad');
+    } else if (killed) this.rpg.hud.toast('Nobody saw.', 'info');
+    this.autoT = Math.min(this.autoT, 5);
+  }
+
+  /** A gun going off in town: the Watch hears about it even if nobody's hurt. */
+  gunfire(at: THREE.Vector3) {
+    const g = this.game;
+    const s = this.rpg.place.settlement;
+    if (!g || !s || s.kind === 'ruin' || Math.hypot(at.x - s.x, at.z - s.z) > s.radius) return;
+    if (!this.rpg.populace.witnesses(at, 50).length) return;
+    g.s.mem.bounty[s.id] = (g.s.mem.bounty[s.id] ?? 0) + 25;
+  }
+
+  /** An officer has you: pay what you owe, or a night in the cells (and they keep your guns). */
+  async arrest() {
+    const g = this.game;
+    if (!g || this.busy) return;
+    const s = this.rpg.place.settlement;
+    const owed = s ? g.s.mem.bounty[s.id] ?? 0 : 0;
+    this.busy = true;
+    this.rpg.populace.standDown();
+    this.closePanel();
+    await this.host.curtain(true);
+    let lines: string[];
+    if (g.c.money >= owed) {
+      g.pay(owed);
+      lines = ['Hands where I can see them.', `$${owed}, paid on the spot. Don’t make me find you again.`];
+      g.rep('watch', 2);
+    } else {
+      const guns = g.s.inv.filter((st) => item(st.id).weapon?.skill === 'firearms' || item(st.id).kind === 'ammo');
+      for (const st of guns) g.take(st.id, st.n);
+      g.c.money = 0;
+      this.rpg.atmos.advance(12 * 60);
+      lines = ['They take your money, your guns, and your night.', 'In the morning the cell door opens and nobody says a word.'];
+    }
+    if (s) delete g.s.mem.bounty[s.id];
+    g.note(`Arrested in ${s?.name ?? 'town'}.`);
+    const station = s ? this.rpg.streamer.towns.plan(s).pois.find((p) => p.kind === 'police') : null;
+    if (station) this.host.player.place(station.x + Math.sin(station.yaw) * 2, this.rpg.gen.height(station.x, station.z) + 0.3, station.z + Math.cos(station.yaw) * 2, station.yaw);
+    await new Promise((r) => setTimeout(r, 500));
+    await this.host.curtain(false);
+    this.busy = false;
+    this.host.say(lines, 'The Watch');
+    this.autosave();
   }
 
   /**

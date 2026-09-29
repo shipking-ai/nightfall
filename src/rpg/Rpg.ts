@@ -386,6 +386,18 @@ export class Rpg {
   /** A shot or a punch through the wider world: the nearest animal it would hit, and what hitting it does. */
   hitTest(o: THREE.Vector3, dir: THREE.Vector3, maxT: number): { t: number; apply: (dmg: number) => boolean; what: string } | null {
     const hit = this.wildlife.hitTest(o, dir, maxT);
+    const man = this.populace.hitTest(o, dir, hit ? hit.t : maxT);
+    if (man) {
+      return {
+        t: man.t,
+        what: man.w.r.name,
+        apply: (dmg) => {
+          const killed = this.populace.damage(man.w, dmg * (man.head ? 2.2 : 1), this.host.player.pos);
+          this.life.violence(man.w, killed);
+          return killed;
+        },
+      };
+    }
     if (!hit) return null;
     return {
       t: hit.t,
@@ -401,6 +413,8 @@ export class Rpg {
   /** Something loud happened here (a gunshot): the animals scatter. */
   alarm(at: THREE.Vector3, r: number) {
     this.wildlife.alarm(at, r);
+    this.populace.scatter(at, Math.min(r, 70));
+    this.life.gunfire(at);
   }
 
   /** Something to do with what's in front of you (a person, a door, a place to search), for the interact prompt. */
