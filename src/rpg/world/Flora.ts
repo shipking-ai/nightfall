@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { worldUniforms } from '../../world/materials';
 import type { Species } from './biomes';
+import { RealTrees, type RealKind } from './RealTrees';
 
 /**
  * Trees, bushes and rocks. Each species is one small mesh built from a few
@@ -214,6 +215,9 @@ function speciesLow(s: Species): THREE.BufferGeometry | null {
 
 /** Past this, the stand-ins. */
 const LOD_NEAR = 130;
+/** Inside this, the real trees (EZ-Tree). */
+const REAL_NEAR = 75;
+const REAL: Partial<Record<Species, RealKind>> = { oak: 'oak', birch: 'birch', pine: 'pine', spruce: 'spruce', bush: 'bush' };
 
 /** How big each species can be, how solid its trunk, and how far it's drawn. */
 const SPEC: Record<Species, { trunk: number; far: number; shadow: boolean }> = {
@@ -270,6 +274,9 @@ export class Flora {
   private tmpV = new THREE.Vector3();
   private tmpS = new THREE.Vector3();
   private lastRebuild = new THREE.Vector3(1e9, 0, 0);
+  /** grown on first use (the RPG), not for District 03 */
+  real = new RealTrees();
+  private heights: Record<RealKind, number> = { oak: 10, birch: 10, pine: 12, spruce: 12, bush: 1.5 };
 
   constructor() {
     this.mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 });
@@ -299,7 +306,13 @@ vUp = normal.y;
     this.mat.customProgramCacheKey = () => 'nf-flora';
     const caps: Partial<Record<Species, number>> = { bush: 5000, fern: 4000, reed: 4000, rock: 3000, oak: 5000, spruce: 6000, pine: 5000, cypress: 3000, birch: 3000 };
     for (const s of Object.keys(SPEC) as Species[]) {
-      const p = new Pool(s, speciesGeometry(s), this.mat, Math.min(3500, caps[s] ?? 2500));
+      const geo = speciesGeometry(s);
+      const rk = REAL[s];
+      if (rk) {
+        geo.computeBoundingBox();
+        this.heights[rk] = geo.boundingBox!.max.y;
+      }
+      const p = new Pool(s, geo, this.mat, Math.min(3500, caps[s] ?? 2500));
       this.pools.set(s, p);
       this.group.add(p.mesh);
       const low = speciesLow(s);
@@ -313,6 +326,12 @@ vUp = normal.y;
   }
 
   add(owner: string, plants: Plant[]) {
+    if (!this.real.ready) {
+      void this.real.load(this.heights).then(() => {
+        this.dirty = true;
+      });
+      if (!this.real.group.parent) this.group.add(this.real.group);
+    }
     this.owners.set(owner, plants);
     this.dirty = true;
   }
@@ -335,12 +354,29 @@ vUp = normal.y;
     for (const p of this.pools.values()) counts.set(p, 0);
     for (const p of this.lows.values()) counts.set(p, 0);
     const near2 = LOD_NEAR * LOD_NEAR;
+    const real2 = REAL_NEAR * REAL_NEAR;
+    const realCounts = new Map<THREE.InstancedMesh, number>();
+    if (this.real.ready) for (const list of this.real.models.values()) for (const m of list) realCounts.set(m.bark, 0);
     for (const list of this.owners.values()) {
       for (const pl of list) {
         const far = SPEC[pl.s].far;
         const dx = pl.x - center.x, dz = pl.z - center.z;
         const d2 = dx * dx + dz * dz;
         if (d2 > far * far) continue;
+        const rk = REAL[pl.s];
+        if (rk && d2 < real2 && this.real.ready) {
+          const vs = this.real.models.get(rk)!;
+          const m = vs[Math.abs(Math.floor(pl.x * 13.1 + pl.z * 7.7)) % vs.length];
+          const i = realCounts.get(m.bark)!;
+          if (i < m.bark.instanceMatrix.count) {
+            this.tmpQ.setFromAxisAngle(UP, pl.yaw);
+            this.tmpM.compose(this.tmpV.set(pl.x, pl.y - 0.05, pl.z), this.tmpQ, this.tmpS.setScalar(pl.scale * m.fit));
+            m.bark.setMatrixAt(i, this.tmpM);
+            m.leaf.setMatrixAt(i, this.tmpM);
+            realCounts.set(m.bark, i + 1);
+            continue;
+          }
+        }
         const pool = d2 > near2 ? this.lows.get(pl.s) ?? this.pools.get(pl.s)! : this.pools.get(pl.s)!;
         const i = counts.get(pool)!;
         if (i >= pool.cap) continue;
@@ -353,6 +389,11 @@ vUp = normal.y;
     for (const [p, n] of counts) {
       p.mesh.count = n;
       p.mesh.instanceMatrix.needsUpdate = true;
+    }
+    if (this.real.ready) for (const list of this.real.models.values()) for (const m of list) {
+      const n = realCounts.get(m.bark) ?? 0;
+      m.bark.count = m.leaf.count = n;
+      m.bark.instanceMatrix.needsUpdate = m.leaf.instanceMatrix.needsUpdate = true;
     }
   }
 
