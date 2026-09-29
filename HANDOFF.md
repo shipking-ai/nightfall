@@ -1,6 +1,6 @@
 # HANDOFF — NIGHTFALL
 
-Last updated: 2026-09-29 (RPG R1, realistic people, R2 living world and R3 character/jobs/story/saves done; R4 next). Read this first, then [README.md](README.md) for architecture and controls.
+Last updated: 2026-09-29 (RPG R1–R3 done; R4a wild and R4b dread/roadside done; R4c combat with people, vehicles, minigames next). Read this first, then [README.md](README.md) for architecture and controls.
 
 ## State in one paragraph
 
@@ -66,10 +66,36 @@ The user's brief is a very large "fifth game" addendum: an endless streamed worl
 - **App:** overlay `'rpg'` (`host.panel(open, from)`). In RPG, map/archive open the Casefile. The creator uses the wardrobe's fitting camera and blocks back/Menu. The RPG clock pauses under any overlay. The controls strip has an `rpg` set.
 - **Playtest:** `tools/playtest/rpg-life.mjs`. After a page reload the title focuses "Sound on", so the test moves to Enter, and waits 2 s on the mode select before confirming.
 
+### Done: R4a, the wild (commit 4c69c5c)
+- **`src/rpg/sim/animals.ts` + `animal.worker.ts`:** 11 species sculpted as SDF parts (body; head and neck; tail; upper and lower legs; wings for birds), meshed in a worker and coloured per vertex (back, belly, legs, face, tail tip, hooves). Proportions come from withers height, body length and chest depth. `SPECIES` also holds behaviour: notice distance, speeds, predator or prey, yield.
+- **`sim/Wildlife.ts`:**
+  - Spawns herds by biome (from `BIOMES[].wildlife`), 130–230 m out and not in towns; drops them past 330 m.
+  - States: graze, walk, alert, flee, stalk, attack, dead, fly. Noticing you depends on speed, crouch (enabled in RPG), daylight, visibility and Stealth. Predators are bold at night or when hurt.
+  - `alarm()` is called on gunshots; `hitTest()` and `damage()` handle hits; `carcass()` finds bodies to butcher.
+  - Dev viewer: `/dev/animals.html?only=deer&walk=1`, captured by `tools/playtest/animals.mjs`.
+- **Hunting and combat hooks:**
+  - `Rpg.hitTest()` feeds App's `fire()` (fists and guns). The weapon in the RPG is `Life.weapon()`, the equipped item.
+  - Guns need rounds from your pockets (`spendRound`). Weapon buttons holster or unholster (`App.rpgHolstered`).
+  - `host.hurt` is where bites land. `App.die()` has an RPG branch, `Life.onDeath()`: you wake at the nearest clinic.
+- **Life:** butcher (needs a knife; Survival check), a campfire (lighter → Casefile → "Make a fire"; `sim/Camp.ts` is a pooled `Lamp` via `Rpg.extraLamps`, with a cook/craft/rest menu), and fishing (`ui/Fishing.ts`: wait, strike, reel; catches by biome).
+- **Playtest:** `tools/playtest/rpg-wild.mjs`.
+
+### Done: R4b, dread and the road (commit 557ca7a)
+- **`sim/Director.ts`:**
+  - Dread (0–1) builds from night, the hour, being out of town, ruins, biome and story stage. It drops by a fire, in a car, and with Nerve or the Cold Blooded perk. It drives the `.dread` vignette (with a pulse above 0.72).
+  - Scares:
+    - the watcher (a pale, very tall `Figures` person, faintly emissive, who vanishes when looked at or approached);
+    - lights (`director.dim` multiplies lamp gain);
+    - whisper, footsteps, silence, radio.
+  - First sightings go in the journal; four distinct ones reveal the "the-watcher" secret.
+  - Roadside events: breakdown (a static `vehicleMesh` with hazard lights), wounded (wolves spawn at dusk), lost hiker, and an ammo box with lore notes. `interaction()` is checked first in `Life.interaction`.
+- **`sim/Figures.ts`:** standalone RealHumans on the rig with looping clips, sitting and watching.
+- **Playtest:** `tools/playtest/rpg-dark.mjs`.
+
 ### Still to build (the addendum's list)
 - **R2 leftovers:** more landmark kinds.
 - **R3 leftovers:** combat-based jobs (bounties), owned vehicles in saves, the Places tab becomes the atlas in R5.
-- **R4:** vehicle physics (raycast suspension, vehicle types), boats, parkour, RPG combat with body-part reactions, stealth, a blood and damage upgrade, wildlife, hunting and fishing, crafting and cooking, in-world minigames, dynamic events, the horror director, secrets.
+- **R4 remaining:** combat with people (residents taking hits, deaths with the `react.death*` clips, witnesses leading to Watch standing and bounty), vehicle types and physics, boats anywhere, parkour, in-world minigames (cards at bars, arcade), more secrets.
 - **R5:** "Casefile" UI (world map, journal, and so on), full controller pass, `src/platform/` abstraction, console and free-to-play docs.
 - **R6:** the full playtest checklist and a 60-minute soak.
 
