@@ -277,6 +277,45 @@ export function createGroundMaterial(kind: 0 | 1 | 2): THREE.MeshStandardMateria
   diffuseColor.rgb = base;
   roughnessFactor = rough;
 }`,
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#include <normal_fragment_maps>
+{
+  // relief: the joints between paving stones, the grain of asphalt, the patching of concrete
+  // (a height pattern, tilted into the normal; faded out with distance so it doesn't shimmer)
+  float fade = 1.0 - smoothstep(12.0, 38.0, length(vViewPosition));
+  if (fade > 0.0) {
+    vec2 p = vWPos.xz;
+    float e = 0.012;
+    vec3 hh = vec3(nf_groundH(p), nf_groundH(p + vec2(e, 0.0)), nf_groundH(p + vec2(0.0, e)));
+    vec2 g = vec2(hh.y - hh.x, hh.z - hh.x) / e;
+    // (a puddle is flat water)
+    g *= fade * (1.0 - smoothstep(0.57, 0.63, nf_fbm(p * 0.06)) * uWet);
+    normal = normalize(normal + (viewMatrix * vec4(-g.x, 0.0, -g.y, 0.0)).xyz);
+  }
+}`,
+      )
+      .replace(
+        'varying vec3 vWPos;\n' + NOISE,
+        `varying vec3 vWPos;\n${NOISE}
+float nf_groundH(vec2 p) {
+  #if ${kind} == 0
+    return nf_noise(p * 9.0) * 0.004 + nf_noise(p * 33.0) * 0.0018;
+  #elif ${kind} == 1
+    vec2 tp = p / vec2(0.9, 1.35);
+    vec2 t = fract(tp);
+    float edge = min(min(t.x, 1.0 - t.x) * 0.9, min(t.y, 1.0 - t.y) * 1.35);
+    // each stone sits a little proud, a little tilted; the joints are sunk
+    vec2 id = floor(tp);
+    float tilt = (nf_hash(id) - 0.5) * 0.004 * (t.x - 0.5) + (nf_hash(id + 7.1) - 0.5) * 0.004 * (t.y - 0.5);
+    return -0.006 * (1.0 - smoothstep(0.0, 0.035, edge)) + tilt + nf_noise(p * 24.0) * 0.0008;
+  #else
+    vec2 t = fract(p / 6.0);
+    float edge = min(min(t.x, 1.0 - t.x), min(t.y, 1.0 - t.y)) * 6.0;
+    return -0.004 * (1.0 - smoothstep(0.0, 0.02, edge)) + nf_noise(p * 5.0) * 0.003 + nf_noise(p * 21.0) * 0.001;
+  #endif
+}`,
       );
   };
   m.customProgramCacheKey = () => `nf-ground-${kind}`;

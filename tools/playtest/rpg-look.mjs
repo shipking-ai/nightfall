@@ -27,8 +27,13 @@ for (const kind of want) {
     if (kind === 'town') {
       const P = nf.rpgMain(r.life.world);
       const pl = r.streamer.towns.plan(P.first);
-      const w = pl.walk.slice().sort((a, b) => Math.hypot(a.x - P.first.x, a.z - P.first.z) - Math.hypot(b.x - P.first.x, b.z - P.first.z))[0];
-      spot = { x: w.x, z: w.z };
+      // across the street from a diner or a bar, looking at its front
+      const door = pl.pois.find((p) => p.kind === 'diner' || p.kind === 'bar') ?? pl.pois[0];
+      if (door) spot = { x: door.x + Math.sin(door.yaw) * 10 + Math.cos(door.yaw) * 2, z: door.z + Math.cos(door.yaw) * 10 - Math.sin(door.yaw) * 2, face: door.yaw + Math.PI };
+      else {
+        const w = pl.walk.slice().sort((a, b) => Math.hypot(a.x - P.first.x, a.z - P.first.z) - Math.hypot(b.x - P.first.x, b.z - P.first.z))[0];
+        spot = { x: w.x, z: w.z };
+      }
     } else for (let k = 0; k < 3000 && !spot; k++) {
       const a = k * 2.399, d = 800 + k * 25;
       const x = Math.cos(a) * d, z = Math.sin(a) * d;
@@ -36,8 +41,9 @@ for (const kind of want) {
       if (gr.biome === kind && gr.water === null && gr.road === 0 && !g.placeAt(x, z, 200)) spot = { x, z };
     }
     if (!spot) return null;
-    nf.player.place(spot.x, g.height(spot.x, spot.z) + 0.4, spot.z, 0.6);
-    nf.follow.yaw = 0.6;
+    const face = spot.face ?? 0.6;
+    nf.player.place(spot.x, g.height(spot.x, spot.z) + 0.4, spot.z, face);
+    nf.follow.yaw = face;
     await r.streamer.preload(nf.player.pos, () => {});
     r.atmos.minutes = 10.5 * 60;
     r.atmos.override = 'clear';

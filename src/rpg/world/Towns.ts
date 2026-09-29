@@ -6,6 +6,7 @@ import { mulberry32, type Rng } from '../../world/rng';
 import { CITY_STYLES, type CityStyle, type FacadeStyle, type LandmarkKind, type Species } from './biomes';
 import { D03_KEEP, DISTRICT_03, SEA_Y, newGround, type Settlement, type WorldGen } from './WorldGen';
 import type { Plant } from './Flora';
+import { furnish, market } from './StreetLife';
 
 /**
  * Towns and cities. Each settlement has a plan — a street grid, blocks, what
@@ -344,6 +345,9 @@ export class Towns {
           out.plants.push({ s: sp, x, y: Y, z: b.z1 + 2, yaw: r.range(0, 6.28), scale: r.range(0.55, 0.8) });
         }
       }
+      // bins, benches, shelters, awnings, café tables; stalls in the squares
+      if (b.use === 'build' || b.use === 'landmark') furnish(ctx, plan, b, r, out, every);
+      if (b.use === 'plaza') market(ctx, b, r);
       // parked cars along one kerb
       if (r.chance(0.6)) for (let x = b.x0 + 4; x < b.x1 - 4; x += 7) if (r.chance(0.4)) out.cars.push({ x, y: y + 0.03, z: b.z0 - 4.6, yaw: Math.PI / 2 });
     }
