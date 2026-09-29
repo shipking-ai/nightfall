@@ -100,5 +100,10 @@ export function heroSpec(sex = 0.9, seed = 7): HumanSpec {
   s.bottom = { kind: 'trousers', color: 0x16171a, fabric: 'cotton' };
   s.shoes = { kind: 'boots', color: 0x17120e };
   s.extras = { scarf: 0x6a5a48, belt: 0x1a1410 };
+  s.hair = 'swept';
+  s.hairColor = 0x1c140e;
+  s.beard = 'stubble';
+  s.skin = 0xc99a7c;
+  s.eyeColor = 0x4e3220;
   return s;
 }

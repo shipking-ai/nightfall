@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import type { Body } from '../../entities/Humanoid';
 import { bindPose, jointMatrices, BIND_BONES } from './bind';
 import { headCentre, type HumanSpec, type Joints } from './anatomy';
-import type { BuiltHuman } from './build';
+import type { BuiltHuman, BuiltPart } from './build';
+import type { MHBuilt } from './mh';
 import { skinMaterial, fabricMaterial, hairMaterial, eyeMaterial } from './materials';
 
 /**
@@ -15,12 +16,12 @@ import { skinMaterial, fabricMaterial, hairMaterial, eyeMaterial } from './mater
  * their faces a moment later.
  */
 
-type Req = { resolve: (h: BuiltHuman) => void; reject: (e: unknown) => void };
+type Req = { resolve: (h: never) => void; reject: (e: unknown) => void };
 
 class Factory {
   private worker: Worker | null = null;
   private pending = new Map<number, Req>();
-  private cache = new Map<string, Promise<BuiltHuman>>();
+  private cache = new Map<string, Promise<unknown>>();
   private next = 1;
   private queue: (() => void)[] = [];
   private busy = 0;
@@ -28,11 +29,11 @@ class Factory {
   private get w() {
     if (!this.worker) {
       this.worker = new Worker(new URL('./human.worker.ts', import.meta.url), { type: 'module' });
-      this.worker.onmessage = (e: MessageEvent<{ id: number; human?: BuiltHuman; error?: string }>) => {
+      this.worker.onmessage = (e: MessageEvent<{ id: number; human?: BuiltHuman | MHBuilt; error?: string }>) => {
         const r = this.pending.get(e.data.id);
         this.pending.delete(e.data.id);
         this.busy--;
-        if (e.data.human) r?.resolve(e.data.human);
+        if (e.data.human) r?.resolve(e.data.human as never);
         else r?.reject(new Error(e.data.error));
         this.queue.shift()?.();
       };
@@ -40,24 +41,33 @@ class Factory {
     return this.worker;
   }
 
-  /** Build (or reuse) one person at one level of detail. Lower levels jump the queue. */
+  /** Build (or reuse) one sculpted person at one level of detail. Lower levels jump the queue. */
   build(spec: HumanSpec, joints: Joints, lod: number): Promise<BuiltHuman> {
     const key = `${lod}|${JSON.stringify(spec)}|${joints.headScale}|${joints.shR[0].toFixed(3)}|${joints.hipR[0].toFixed(3)}`;
-    let p = this.cache.get(key);
+    return this.ask(key, { spec, joints, lod }, lod === 2) as Promise<BuiltHuman>;
+  }
+
+  /** Build (or reuse) a MakeHuman person. */
+  buildMH(spec: HumanSpec): Promise<MHBuilt> {
+    return this.ask(`mh|${JSON.stringify(spec)}`, { spec, lod: 0, mh: true, base: location.origin }, false) as Promise<MHBuilt>;
+  }
+
+  private ask(key: string, msg: Record<string, unknown>, urgent: boolean): Promise<unknown> {
+    let p = this.cache.get(key) as Promise<unknown> | undefined;
     if (p) return p;
-    p = new Promise<BuiltHuman>((resolve, reject) => {
+    p = new Promise((resolve, reject) => {
       const go = () => {
         const id = this.next++;
-        this.pending.set(id, { resolve, reject });
+        this.pending.set(id, { resolve: resolve as (h: never) => void, reject });
         this.busy++;
-        this.w.postMessage({ id, spec, joints, lod });
+        this.w.postMessage({ id, ...msg });
       };
       if (this.busy === 0) go();
-      else if (lod === 2) this.queue.unshift(go);
+      else if (urgent) this.queue.unshift(go);
       else this.queue.push(go);
     });
     if (this.cache.size > 60) this.cache.delete(this.cache.keys().next().value!);
-    this.cache.set(key, p);
+    this.cache.set(key, p as Promise<BuiltHuman>);
     return p;
   }
 }
@@ -69,19 +79,23 @@ const LOD_DIST = [0, 6, 22];
 export class RealHuman {
   group = new THREE.Group();
   private bones: THREE.Bone[];
-  skeleton: THREE.Skeleton;
+  /** one skeleton per bind pose (MakeHuman's, and the sculpted far version's), sharing the bones */
+  private skeletons: THREE.Skeleton[] = [];
   private lods: (THREE.Group | null)[] = [null, null, null];
   private shown = -1;
   private mats: THREE.Matrix4[] = [];
   ready = false;
   /** the player: always the finest detail */
   hero = false;
-  private headC: THREE.Vector3;
+  private headC = new THREE.Vector3(0, 1.6, 0);
   private disposed = false;
+  /** the body the rig should be solved with (MakeHuman people bring their own proportions) */
+  body: Body;
+  onReady: ((h: RealHuman) => void) | null = null;
 
-  constructor(public spec: HumanSpec, public body: Body, opts: { hero?: boolean; lods?: number[] } = {}) {
+  constructor(public spec: HumanSpec, body: Body, opts: { hero?: boolean; lods?: number[]; mh?: boolean } = {}) {
     this.hero = !!opts.hero;
-    const { joints, matrices } = bindPose(body);
+    this.body = body;
     this.bones = BIND_BONES.map((n) => {
       const b = new THREE.Bone();
       b.name = n;
@@ -89,20 +103,48 @@ export class RealHuman {
       b.matrixWorldAutoUpdate = false;
       return b;
     });
-    this.skeleton = new THREE.Skeleton(this.bones, matrices.map((m) => m.clone().invert()));
+    if (opts.mh !== false) {
+      humanFactory.buildMH(spec).then((h) => {
+        if (this.disposed) return;
+        this.body = { ...h.body };
+        const sk = new THREE.Skeleton(this.bones, bindPose(this.body, h.angles).matrices.map((m) => m.clone().invert()));
+        this.skeletons.push(sk);
+        const jb = bindPose(this.body, h.angles).joints;
+        const hc = headCentre(jb);
+        this.headC.set(hc[0], hc[1], hc[2]);
+        this.lods[1] = this.assemble({ parts: h.parts, eyes: h.eyes, eyeR: h.eyeR, ms: h.ms, tris: h.tris }, 1, sk);
+        this.lods[0] = this.lods[1];
+        this.ready = true;
+        this.onReady?.(this);
+        // the far version: sculpted, on the rig's usual bind
+        if (!this.hero) {
+          const far = bindPose(this.body);
+          const skF = new THREE.Skeleton(this.bones, far.matrices.map((m) => m.clone().invert()));
+          this.skeletons.push(skF);
+          humanFactory.build(spec, far.joints, 2).then((f) => {
+            if (!this.disposed) this.lods[2] = this.assemble(f, 2, skF);
+          }).catch(() => {});
+        }
+      }).catch((e) => console.error('MakeHuman build failed', e));
+      return;
+    }
+    const { joints, matrices } = bindPose(body);
+    const sk = new THREE.Skeleton(this.bones, matrices.map((m) => m.clone().invert()));
+    this.skeletons.push(sk);
     const hc = headCentre(joints);
-    this.headC = new THREE.Vector3(hc[0], hc[1], hc[2]);
+    this.headC.set(hc[0], hc[1], hc[2]);
     const want = opts.lods ?? (this.hero ? [2, 0] : [2, 1]);
     for (const lod of want) {
       humanFactory.build(spec, joints, lod).then((h) => {
         if (this.disposed) return;
-        this.lods[lod] = this.assemble(h, lod);
+        this.lods[lod] = this.assemble(h, lod, sk);
         this.ready = true;
+        this.onReady?.(this);
       }).catch((e) => console.error('human build failed', e));
     }
   }
 
-  private assemble(h: BuiltHuman, lod: number): THREE.Group {
+  private assemble(h: BuiltHuman, lod: number, skeleton: THREE.Skeleton): THREE.Group {
     const g = new THREE.Group();
     const s = this.spec;
     const stubble = s.beard === 'stubble' ? 0.7 : s.beard === 'none' ? (s.sex > 0.6 ? 0.25 : 0) : 0.4;
@@ -116,21 +158,24 @@ export class RealHuman {
       geo.setAttribute('skinWeight', new THREE.BufferAttribute(p.skinWeight, 4));
       geo.setIndex(new THREE.BufferAttribute(p.index, 1));
       geo.computeBoundingSphere();
+      if (p.uv) geo.setAttribute('uv', new THREE.BufferAttribute(p.uv, 2));
+      if (p.eyeLocal) geo.setAttribute('eyeLocal', new THREE.BufferAttribute(p.eyeLocal, 3));
       let mat: THREE.Material;
-      if (p.mat === 'skin') mat = skinMaterial(p.color, this.headC, stubble, lip);
+      if (p.mat === 'eye') mat = eyeMaterial(p.color);
+      else if (p.mat === 'skin') mat = skinMaterial(p.color, this.headC, stubble, lip);
       else if (p.mat === 'hair') mat = hairMaterial(p.color, this.headC.clone().add(new THREE.Vector3(0, 0.1, -0.02)));
       else mat = fabricMaterial(p.color, p.fabric ?? 'cotton', p.mat);
       const mesh = new THREE.SkinnedMesh(geo, mat);
       mesh.bindMode = THREE.DetachedBindMode;
-      mesh.bind(this.skeleton, new THREE.Matrix4());
+      mesh.bind(skeleton, new THREE.Matrix4());
       mesh.frustumCulled = false;
-      mesh.castShadow = lod < 2;
+      mesh.castShadow = lod < 2 && p.mat !== 'eye' && p.name !== 'lash';
       mesh.receiveShadow = true;
       mesh.name = p.name;
       g.add(mesh);
     }
-    // the eyes
-    if (lod < 2) {
+    // the eyes (sculpted people; MakeHuman ones bring their own)
+    if (lod < 2 && !h.parts.some((p: BuiltPart) => p.mat === 'eye')) {
       const eg = new THREE.SphereGeometry(h.eyeR, 20, 14);
       const local = eg.attributes.position.array.slice() as Float32Array;
       const em = eyeMaterial(s.eyeColor);
@@ -148,7 +193,7 @@ export class RealHuman {
         e.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
         const mesh = new THREE.SkinnedMesh(e, em);
         mesh.bindMode = THREE.DetachedBindMode;
-        mesh.bind(this.skeleton, new THREE.Matrix4());
+        mesh.bind(skeleton, new THREE.Matrix4());
         mesh.frustumCulled = false;
         g.add(mesh);
       }

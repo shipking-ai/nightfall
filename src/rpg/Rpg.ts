@@ -18,6 +18,9 @@ import { Sea, createSeaMaterial } from './env/Sea';
 import { Precip } from './env/Precip';
 import { RpgHud } from './ui/RpgHud';
 import { FarCities } from './world/FarCities';
+import { RealHuman } from './people/RealHuman';
+import { heroSpec } from './people/kit';
+import type { Body, Outfit } from '../entities/Humanoid';
 
 export interface RpgHost {
   scene: THREE.Scene;
@@ -65,6 +68,9 @@ export class Rpg {
   private lastPlaceKey = '';
   private cityLamps: Lamp[] = [];
   private tmp = new THREE.Vector3();
+  /** you, as the RPG draws you */
+  private hero: RealHuman | null = null;
+  private saved: { body: Body; outfit: Outfit } | null = null;
 
   constructor(private host: RpgHost) {
     this.streamer = new Streamer(this.gen, host.collision, host.mats, createSeaMaterial(host.sky, host.fog));
@@ -104,6 +110,24 @@ export class Rpg {
     h.camera.far = Math.max(h.camera.far, 6000);
     h.camera.updateProjectionMatrix();
     this.savedEnv = h.scene.environment;
+    // you: a real person, not the city's figure (built in a worker while the world loads)
+    const pl = h.player;
+    this.saved = { body: pl.body, outfit: pl.outfit };
+    if (!this.hero) {
+      this.hero = new RealHuman(heroSpec(0.9, 7), pl.body, { hero: true });
+      this.group.add(this.hero.group);
+    }
+    const hero = this.hero;
+    const wear = () => {
+      pl.body = { ...hero.body };
+      pl.outfit = { ...pl.outfit, bulk: 1 };
+      pl.real = hero;
+      hero.group.visible = true;
+    };
+    if (hero.ready) wear();
+    else hero.onReady = () => {
+      if (this.active) wear();
+    };
     await this.streamer.preload(at, progress);
     this.locate(at);
     this.atmos.settle(at, this.place.biome);
@@ -117,6 +141,14 @@ export class Rpg {
     this.group.visible = false;
     this.streamer.clear();
     this.far.clear();
+    h.player.real = null;
+    h.player.hidden = false;
+    if (this.hero) this.hero.group.visible = false;
+    if (this.saved) {
+      h.player.body = this.saved.body;
+      h.player.outfit = this.saved.outfit;
+      this.saved = null;
+    }
     h.collision.base = null;
     h.player.waterAt = null;
     h.outskirts.limit = Infinity;

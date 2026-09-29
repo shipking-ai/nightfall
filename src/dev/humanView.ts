@@ -58,7 +58,7 @@ const people: Person[] = [];
 for (let i = 0; i < n; i++) {
   const spec = randomSpec(seed * 97 + i * 13, { sex: i % 2 ? 0.1 : 0.9 });
   const body: Body = { height: 0.97 + (i % 3) * 0.03, girth: 1, shoulders: 1, hips: 1, head: 1 };
-  const h = new RealHuman(spec, body, { hero: shot === 'face', lods: shot === 'face' ? [0] : [1] });
+  const h = new RealHuman(spec, body, { hero: shot === 'face', lods: shot === 'face' ? [0] : [1], mh: q.get('mh') !== '0' });
   scene.add(h.group);
   const x = (i - (n - 1) / 2) * 0.9;
   people.push({ h, rig: newRig(), m: newMotion(), anim: new Animator(), body, outfit: { bulk: 1 } as Outfit, x, spec });
@@ -79,8 +79,9 @@ function frame(now: number) {
     stepPhase(p.m, dt);
     p.anim.update(dt);
     const z = walk ? ((t * 1.5 + p.x * 3) % 6) - 3 : 0;
-    root.compose(new THREE.Vector3(p.x, 0, z), _q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), shot === 'face' ? 0 : walk ? 0 : 0.35 * Math.sin(t * 0.3)), new THREE.Vector3(1, 1, 1).multiplyScalar(p.body.height));
-    solve(p.rig, root, p.body, p.outfit, p.m, t, p.anim);
+    const body = p.h.body;
+    root.compose(new THREE.Vector3(p.x, 0, z), _q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), shot === 'face' ? 0 : walk ? 0 : 0.35 * Math.sin(t * 0.3)), new THREE.Vector3(1, 1, 1).multiplyScalar(body.height));
+    solve(p.rig, root, body, p.outfit, p.m, t, p.anim);
     p.h.pose(camera.position.distanceTo(new THREE.Vector3(p.x, 1, z)));
   }
   if (shot === 'face') {

@@ -346,8 +346,20 @@ export class Player {
     this.draw();
   }
 
+  /**
+   * RPG: a realistic body drawn in place of the city figure (rpg/people). Its
+   * bones follow the same rig, solved with its own proportions.
+   */
+  real: { group: THREE.Object3D; ready: boolean; pose(camDist: number): void } | null = null;
+
   private draw() {
     solve(this.rig, this.root, this.body, this.outfit, this.motion, performance.now() / 1000, this.anim);
+    if (this.real?.ready) {
+      this.real.pose(0);
+      this.batch.group.visible = false;
+      if (this.gun.visible) this.gun.matrix.copy(this.rig.handR);
+      return;
+    }
     this.batch.write(0, this.rig, this.parts, false);
     this.batch.flush();
     if (this.gun.visible) this.gun.matrix.copy(this.rig.handR);
@@ -371,7 +383,8 @@ export class Player {
 
   /** in a car with no windows to see through: the figure is not drawn, but position still drives the world */
   set hidden(v: boolean) {
-    this.batch.group.visible = !v;
+    this.batch.group.visible = !v && !this.real?.ready;
+    if (this.real) this.real.group.visible = !v;
   }
 
   get speed() {

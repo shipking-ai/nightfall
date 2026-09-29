@@ -14,6 +14,9 @@ export interface BuiltPart {
   index: Uint32Array;
   skinIndex: Uint16Array;
   skinWeight: Float32Array;
+  uv?: Float32Array;
+  /** eyes: each vertex relative to its eye's centre (the iris is drawn from it) */
+  eyeLocal?: Float32Array;
 }
 
 export interface BuiltHuman {

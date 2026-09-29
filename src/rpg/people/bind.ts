@@ -14,11 +14,18 @@ export const BIND_BONES = ['pelvis', 'spine', 'chest', 'neck', 'shL', 'elL', 'wr
 
 const NEUTRAL_OUTFIT = { bulk: 1 } as Outfit;
 
-export function bindPose(body: Body): { joints: Joints; matrices: THREE.Matrix4[] } {
+/** Arm and leg angles of the bind pose (MakeHuman people are bound at their own). */
+export interface BindAngles {
+  shAb: number;
+  elBend: number;
+  hipAb: number;
+}
+
+export function bindPose(body: Body, angles: BindAngles = { shAb: 0.9, elBend: 0.08, hipAb: 0.05 }): { joints: Joints; matrices: THREE.Matrix4[] } {
   const p = newPose();
-  p[C.shLab] = p[C.shRab] = 0.9;
-  p[C.elL] = p[C.elR] = 0.08;
-  p[C.hipLab] = p[C.hipRab] = 0.05;
+  p[C.shLab] = p[C.shRab] = angles.shAb;
+  p[C.elL] = p[C.elR] = angles.elBend;
+  p[C.hipLab] = p[C.hipRab] = angles.hipAb;
   const rig = newRig();
   const b: Body = { ...body, height: 1 };
   buildRig(rig, new THREE.Matrix4(), b, NEUTRAL_OUTFIT, p);

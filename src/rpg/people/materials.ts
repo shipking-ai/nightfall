@@ -94,7 +94,6 @@ export function skinMaterial(color: number, face: THREE.Vector3, stubble: number
   // freckles, moles, the unevenness of real skin
   float blotch = n3(vBind * 60.0);
   diffuseColor.rgb *= 0.93 + 0.12 * blotch;
-  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.72, 0.6, 0.55), step(0.985, nf_hash(floor(vBind.xy * 420.0) + floor(vBind.z * 420.0))) * 0.6);
 }`,
       )
       .replace(

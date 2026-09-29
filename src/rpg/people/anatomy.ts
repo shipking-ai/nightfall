@@ -78,7 +78,7 @@ export interface HumanSpec {
   seed: number;
 }
 
-export type MatKind = 'skin' | 'fabric' | 'hair' | 'leather' | 'rubber' | 'metal' | 'lid';
+export type MatKind = 'skin' | 'fabric' | 'hair' | 'leather' | 'rubber' | 'metal' | 'lid' | 'eye';
 
 export interface PartSpec {
   name: string;
@@ -427,7 +427,7 @@ function bottom(s: HumanSpec, j: Joints): PartSpec {
   return { name: 'bottom', shape: sh, min: bb.min, max: bb.max, cell: 0.013, mat: b.fabric === 'leather' ? 'leather' : 'fabric', color: b.color, fabric: b.fabric, bones: [B.pelvis, B.spine, ...LEG_L.slice(1), ...LEG_R.slice(1)] };
 }
 
-function shoes(s: HumanSpec, j: Joints): PartSpec[] {
+export function shoes(s: HumanSpec, j: Joints): PartSpec[] {
   const out: PartSpec[] = [];
   for (const [an, kn, name, bones] of [[j.anL, j.knL, 'shoeL', [B.knL, B.anL]], [j.anR, j.knR, 'shoeR', [B.knR, B.anR]]] as [V3, V3, string, number[]][]) {
     const sh = new Shape();
@@ -503,7 +503,7 @@ function hair(s: HumanSpec, j: Joints): PartSpec[] {
   return out;
 }
 
-function extras(s: HumanSpec, j: Joints): PartSpec[] {
+export function extras(s: HumanSpec, j: Joints): PartSpec[] {
   const out: PartSpec[] = [];
   const C = j.chest, N = j.neck, P = j.pelvis;
   const e = s.extras;
