@@ -595,6 +595,7 @@ export class App {
       },
       curtain: (on) => this.fade(on, on ? 500 : 700),
       inVehicle: () => !!this.vehicle || !!this.boat,
+      rumble: (k) => this.input.rumble('bump', k),
       hurt: (dmg, by) => {
         if (this.dying || this.combat.god) return;
         this.hud.hurt(Math.min(0.6, dmg / 30));

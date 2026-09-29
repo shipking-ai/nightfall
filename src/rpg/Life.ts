@@ -216,6 +216,11 @@ export class Life {
     this.cf.open(this.game, tab);
   }
 
+  /** A conversation that isn't with a resident (an event, the fire). */
+  talkTo(n: Node) {
+    this.openTalk(n, null);
+  }
+
   private openTalk(n: Node, w: Walker | null) {
     this.closeAll();
     this.talkingTo = w;
@@ -285,6 +290,9 @@ export class Life {
       const o = current(q);
       if (o?.search && o.at && Math.hypot(pos.x - o.at.x, pos.z - o.at.z) < o.at.r) return { name: o.at.label, verb: 'Search', go: () => void this.search(q.id) };
     }
+    // something happening by the road
+    const ev = this.rpg.director.interaction(pos);
+    if (ev) return ev;
     // something you brought down
     const carcass = this.rpg.wildlife.carcass(pos);
     if (carcass) return { name: carcass.sp.name, verb: 'Butcher', go: () => void this.butcher(carcass) };

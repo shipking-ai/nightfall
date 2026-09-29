@@ -191,7 +191,7 @@ export class RoadTraffic {
 
 const PAINT = [0x7a1c16, 0x1c2a44, 0x2c2c2e, 0xb8b4ac, 0x3a4a2a, 0x5a4a36, 0x8a8a86, 0x1a1a1c, 0x6a5a2a, 0x2a4a5a, 0xd8d4cc];
 
-function vehicleMesh(kind: VehicleKind, mats: Materials): { mesh: THREE.Group; lights: THREE.MeshStandardMaterial; tails: THREE.MeshStandardMaterial } {
+export function vehicleMesh(kind: VehicleKind, mats: Materials): { mesh: THREE.Group; lights: THREE.MeshStandardMaterial; tails: THREE.MeshStandardMaterial } {
   const g = new THREE.Group();
   const color = kind === 'taxi' ? 0xd8a82a : kind === 'police' ? 0x1a1c20 : kind === 'ambulance' ? 0xe8e4dc : PAINT[Math.floor(Math.random() * PAINT.length)];
   const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.4 });

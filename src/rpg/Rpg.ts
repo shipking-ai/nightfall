@@ -25,6 +25,7 @@ import { Life } from './Life';
 import { Populace } from './sim/Populace';
 import { RoadTraffic } from './sim/RoadTraffic';
 import { Wildlife } from './sim/Wildlife';
+import { Director } from './sim/Director';
 import type { Vehicles, DrivableCar } from '../entities/Vehicles';
 import type { Body, Outfit } from '../entities/Humanoid';
 
@@ -55,6 +56,7 @@ export interface RpgHost {
   inVehicle: () => boolean;
   /** something hurt you (an animal, the cold) */
   hurt: (dmg: number, by: string) => void;
+  rumble?: (k: number) => void;
   /** River Road, where every life starts */
   spawn: { x: number; z: number; yaw: number };
 }
@@ -98,8 +100,10 @@ export class Rpg {
   /** the character, their things, the screens and the saves */
   life: Life;
   wildlife: Wildlife;
+  /** dread after dark, and things by the road */
+  director: Director;
 
-  constructor(private host: RpgHost) {
+  constructor(public host: RpgHost) {
     this.streamer = new Streamer(this.gen, host.collision, host.mats, createSeaMaterial(host.sky, host.fog));
     this.sea = new Sea(createSeaMaterial(host.sky, host.fog));
     this.atmos = new Atmosphere(this.gen, host.sky, host.fog, host.lighting, host.weather, host.scene);
@@ -121,7 +125,8 @@ export class Rpg {
       visibility: () => this.atmos.now.visibility,
       bite: (dmg, by) => host.hurt(dmg, by),
     });
-    this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group, this.wildlife.group);
+    this.director = new Director(this, host.ui);
+    this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group, this.wildlife.group, this.director.group);
     this.group.visible = false;
     host.scene.add(this.group);
     this.streamer.onLamps = (all) => {
@@ -179,6 +184,7 @@ export class Rpg {
     this.populace.clear();
     this.traffic.clear();
     this.wildlife.clear();
+    this.director.clear();
     h.player.canCrouch = false;
     for (const car of this.parked.values()) h.vehicles.despawn(car);
     this.parked.clear();
@@ -237,6 +243,7 @@ export class Rpg {
     this.traffic.night = 1 - this.atmos.daylight;
     this.traffic.update(dt, p);
     if (!inD03(p.x, p.z)) this.wildlife.update(dt, this.place.biome, h.camera);
+    this.director.update(dt, live, h.camera);
     if (performance.now() >= this.parkT) {
       this.parkT = performance.now() + 800;
       this.park(p);
@@ -251,7 +258,7 @@ export class Rpg {
     this.streamer.glow.uniforms.uNight.value = dark;
     for (const sm of signMats) sm.emissiveIntensity = 0.35 + 1.9 * dark;
     doorMat.emissiveIntensity = 0.04 + 1.4 * dark;
-    for (const l of this.cityLamps) if (!l.flicker) l.gain = dark;
+    for (const l of this.cityLamps) if (!l.flicker) l.gain = dark * this.director.dim;
     // the environment (reflections, ambient on shiny things) follows the sky every so often
     this.envT -= dt;
     if (this.envT <= 0) {
@@ -359,6 +366,15 @@ export class Rpg {
       const car = this.host.vehicles.spawn({ pos: new THREE.Vector3(s.x, s.y, s.z), yaw: s.yaw, color: colors[k % colors.length], van: k % 7 === 0, screen: false }, true);
       this.parked.set(s.key, car);
     }
+  }
+
+  /** Any street lamp within r of p (for the lights to stutter). */
+  nearLamps(p: THREE.Vector3, r: number) {
+    return this.cityLamps.some((l) => l.pos.distanceTo(p) < r);
+  }
+
+  inD03(p: THREE.Vector3) {
+    return inD03(p.x, p.z);
   }
 
   /** Lamps beyond the city's own: the streets you're near, and your campfire. */
