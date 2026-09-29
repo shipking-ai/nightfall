@@ -110,6 +110,56 @@ ${NOISE}`,
 }`,
     )
     .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>');
+  if (!far) {
+    // up close, real surface detail (CC0 normal maps): fine grit on the flat, cracked earth where it's dry,
+    // rock on the steep; laid out in world space and turned into the view's frame
+    const t = terrainNormals();
+    shader.uniforms.uNGrit = { value: t.grit };
+    shader.uniforms.uNRock = { value: t.rock };
+    shader.uniforms.uNCrack = { value: t.cracked };
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uNGrit;\nuniform sampler2D uNRock;\nuniform sampler2D uNCrack;')
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#include <normal_fragment_maps>
+{
+  vec3 wn = normalize(vWNrm);
+  float slope = 1.0 - wn.y;
+  vec3 T = normalize(vec3(1.0, 0.0, 0.0) - wn * wn.x);
+  vec3 Bt = cross(wn, T);
+  vec2 p = vWPos.xz;
+  vec3 g = texture2D(uNGrit, p * 0.8).xyz * 2.0 - 1.0;
+  vec3 c = texture2D(uNCrack, p * 0.18).xyz * 2.0 - 1.0;
+  // rock: sampled across the slope (the face it's on), so it doesn't smear down cliffs
+  vec2 rp = abs(wn.x) > abs(wn.z) ? vWPos.zy : vWPos.xy;
+  vec3 r = texture2D(uNRock, rp * 0.22).xyz * 2.0 - 1.0;
+  float rk = smoothstep(0.2, 0.42, slope);
+  float dry = vMix.x * 0.8;
+  vec3 tn = mix(mix(g * vec3(0.3, 0.3, 1.0), c * vec3(0.8, 0.8, 1.0), dry), r * vec3(1.1, 1.1, 1.0), rk);
+  // snow smooths it over
+  float snowy = clamp(vMix.y + uSnowCover, 0.0, 1.0);
+  tn.xy *= 1.0 - snowy * 0.85;
+  vec3 wp = normalize(T * tn.x + Bt * tn.y + wn * max(0.3, tn.z));
+  float fade = 1.0 - smoothstep(40.0, 110.0, length(vViewPosition));
+  normal = normalize(mix(normal, normalize((viewMatrix * vec4(wp, 0.0)).xyz), fade));
+}`,
+      );
+  }
+}
+
+let TN: { grit: THREE.Texture; rock: THREE.Texture; cracked: THREE.Texture } | null = null;
+function terrainNormals() {
+  if (TN) return TN;
+  const l = new THREE.TextureLoader();
+  const load = (n: string) => {
+    const t = l.load(`${import.meta.env.BASE_URL ?? '/'}rpg/tex/n_${n}.webp`);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = THREE.NoColorSpace;
+    t.anisotropy = 8;
+    return t;
+  };
+  TN = { grit: load('grit'), rock: load('rock'), cracked: load('cracked') };
+  return TN;
 }
 
 export function createTerrainMaterial(far: boolean): THREE.MeshStandardMaterial {

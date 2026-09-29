@@ -582,6 +582,12 @@ export class App {
       cityRoot: this.world.root,
       ui: this.ui,
       environment: (zenith, horizon, ground) => this.makeEnvironment({ zenith, horizon, ground }),
+      envFromEquirect: (tex) => {
+        const pmrem = new THREE.PMREMGenerator(this.renderer.renderer);
+        const rt = pmrem.fromEquirectangular(tex);
+        pmrem.dispose();
+        return rt.texture;
+      },
       thunder: (delay, k) => setTimeout(() => this.audio.thunder(k), delay * 1000),
       vehicles: this.vehicles,
       say: (lines, who) => {

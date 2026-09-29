@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
 import type { Collision } from '../world/Collision';
 import type { Materials } from '../world/materials';
 import { worldUniforms } from '../world/materials';
@@ -47,6 +48,8 @@ export interface RpgHost {
   ui: HTMLElement;
   /** re-make the scene's environment map from sky colours */
   environment: (zenith: THREE.Color, horizon: THREE.Color, ground: THREE.Color) => THREE.Texture;
+  /** a captured sky (HDR, equirectangular) made into an environment map */
+  envFromEquirect: (tex: THREE.Texture) => THREE.Texture;
   thunder: (delay: number, strength: number) => void;
   say: (lines: string[], who: string) => void;
   vehicles: Vehicles;
@@ -264,16 +267,31 @@ export class Rpg {
     for (const sm of signMats) sm.emissiveIntensity = 0.35 + 1.9 * dark;
     doorMat.emissiveIntensity = 0.04 + 1.4 * dark;
     for (const l of this.cityLamps) if (!l.flicker) l.gain = dark * this.director.dim;
-    // the environment (reflections, ambient on shiny things) follows the sky every so often
+    // the environment (reflections, ambient on shiny things): a real captured sky (Poly Haven HDRIs) for the
+    // hour and the place, with a generated one standing in until it's loaded
     this.envT -= dt;
     if (this.envT <= 0) {
-      this.envT = 6;
-      const u = h.sky.uniforms;
-      const tex = h.environment(u.uZenith.value, u.uHorizon.value, new THREE.Color(0.12, 0.1, 0.08).multiplyScalar(0.3 + this.atmos.daylight));
-      this.envTex?.dispose();
-      this.envTex = tex;
-      h.scene.environment = tex;
+      this.envT = 4;
+      const got = this.hdri.get(this.skyFor());
+      if (got) {
+        if (h.scene.environment !== got) {
+          h.scene.environment = got;
+          this.envTex?.dispose();
+          this.envTex = null;
+        }
+      } else {
+        this.loadHdri(this.skyFor());
+        if (!this.envTex) {
+          const u = h.sky.uniforms;
+          this.envTex = h.environment(u.uZenith.value, u.uHorizon.value, new THREE.Color(0.12, 0.1, 0.08).multiplyScalar(0.3 + this.atmos.daylight));
+          h.scene.environment = this.envTex;
+        }
+      }
+      // captured skies carry their sun at full strength: each is scaled so the ambient matches the sky it replaces
+      this.envGain = got ? HDRI_GAIN[this.skyFor()] ?? 0.4 : 1;
     }
+    // (the atmosphere sets the day's ambient each frame; the sky's own strength scales it)
+    h.scene.environmentIntensity *= this.envGain;
     this.life.update(dt, live);
     this.hud.update(dt, h.follow.yaw, this.atmos.label, this.atmos.describe(), this.place.name, this.place.region);
   }
@@ -422,6 +440,40 @@ export class Rpg {
     return inD03(p.x, p.z);
   }
 
+  /** Which captured sky suits the hour and the place. */
+  private skyFor(): string {
+    const hr = this.atmos.hours, d = this.atmos.daylight;
+    if (d < 0.12) return 'night';
+    if (hr < 6.5) return 'dawn';
+    if (hr < 8) return 'sunrise';
+    if (hr > 17.5) return 'sunset';
+    const s = this.place.settlement;
+    if (s && s.kind === 'city') return 'city';
+    const b = this.place.biome;
+    if (b === 'forest' || b === 'boreal' || b === 'swamp') return 'forest';
+    if (b === 'temperate' || b === 'coast') return 'park';
+    return 'sky';
+  }
+
+  private envGain = 1;
+  private hdri = new Map<string, THREE.Texture>();
+  private hdriLoading = new Set<string>();
+  private loadHdri(name: string) {
+    if (this.hdriLoading.has(name)) return;
+    this.hdriLoading.add(name);
+    new EXRLoader().load(
+      `${import.meta.env.BASE_URL ?? '/'}rpg/env/${name}.exr`,
+      (tex) => {
+        tex.mapping = THREE.EquirectangularReflectionMapping;
+        this.hdri.set(name, this.host.envFromEquirect(tex));
+        tex.dispose();
+        this.envT = 0;
+      },
+      undefined,
+      () => this.hdriLoading.delete(name),
+    );
+  }
+
   /** Lamps beyond the city's own: the streets you're near, and your campfire. */
   extraLamps: Lamp[] = [];
   refreshLamps() {
@@ -491,6 +543,9 @@ export class Rpg {
     return { people: this.populace.count, about: this.populace.about, traffic: this.traffic.count, parked: this.parked.size, chunks: this.streamer.chunks.size, tiles: s.tiles, built: s.built, dropped: s.dropped, ms: +s.lastMs.toFixed(1), plants: this.streamer.flora.total, lamps: this.cityLamps.length, chunkSize: CHUNK };
   }
 }
+
+/** How strongly each captured sky lights the world (they differ by stops: an open noon sky is blinding). */
+const HDRI_GAIN: Record<string, number> = { sky: 0.18, park: 0.3, forest: 0.45, city: 0.4, sunset: 0.45, sunrise: 0.4, dawn: 0.6, night: 1.4 };
 
 /** How each kind handles, where you sit in it, and how long it is (half, from the middle to the axle circles). */
 const TUNES: Partial<Record<VehicleKind, { tune: Tune; seat?: { x: number; y: number; z: number }; reach?: number }>> = {

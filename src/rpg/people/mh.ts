@@ -557,8 +557,12 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
       nrm[i * 3 + 1] = loc[i * 3 + 1] / l;
       nrm[i * 3 + 2] = loc[i * 3 + 2] / l;
     }
-    void eUv;
-    parts.push({ name: 'eyes', mat: 'eye', color: s.eyeColor, position: new Float32Array(pos), normal: nrm, ao: new Float32Array(n).fill(1), index: new Uint32Array(idx), skinIndex: sI, skinWeight: sW, eyeLocal: new Float32Array(loc) });
+    const uvE = new Float32Array(n * 2);
+    for (let r = 0; r < ePos.length; r++) {
+      uvE[r * 2] = eUv[r * 2];
+      uvE[r * 2 + 1] = eUv[r * 2 + 1];
+    }
+    parts.push({ name: 'eyes', mat: 'eye', color: s.eyeColor, position: new Float32Array(pos), normal: nrm, ao: new Float32Array(n).fill(1), index: new Uint32Array(idx), skinIndex: sI, skinWeight: sW, eyeLocal: new Float32Array(loc), uv: uvE });
     tris += idx.length / 3;
   }
   return { parts, body, angles: { shAb, elBend, hipAb }, eyes, eyeR: eyeR * 0.55, ms: performance.now() - t0, tris };

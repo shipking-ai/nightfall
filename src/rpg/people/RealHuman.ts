@@ -161,8 +161,13 @@ export class RealHuman {
       if (p.uv) geo.setAttribute('uv', new THREE.BufferAttribute(p.uv, 2));
       if (p.eyeLocal) geo.setAttribute('eyeLocal', new THREE.BufferAttribute(p.eyeLocal, 3));
       let mat: THREE.Material;
-      if (p.mat === 'eye') mat = eyeMaterial(p.color);
-      else if (p.mat === 'skin') mat = skinMaterial(p.color, this.headC, stubble, lip);
+      if (p.mat === 'eye') mat = eyeMaterial(p.color, !!p.uv);
+      else if (p.mat === 'skin') {
+        // brows: the hair colour, darker; thinner with age (MakeHuman bodies know where their eyes are)
+        const bc = new THREE.Color(s.hairColor).multiplyScalar(s.hairColor > 0x808080 ? 0.75 : 0.85).getHex();
+        const brows = h.parts.some((q: BuiltPart) => q.mat === 'eye') ? { eyes: h.eyes as [number, number, number][], r: h.eyeR, color: bc, thick: (s.sex > 0.5 ? 0.8 : 0.35) * (1 - s.age * 0.4) } : undefined;
+        mat = skinMaterial(p.color, this.headC, stubble, lip, brows);
+      }
       else if (p.mat === 'hair') mat = hairMaterial(p.color, this.headC.clone().add(new THREE.Vector3(0, 0.1, -0.02)));
       else mat = fabricMaterial(p.color, p.fabric ?? 'cotton', p.mat);
       const mesh = new THREE.SkinnedMesh(geo, mat);
