@@ -60,6 +60,9 @@ for (let i = 0; i < n; i++) {
   // ?hair=long,bun,… tries the cuts in turn
   const hairs = q.get('hair')?.split(',');
   if (hairs) spec.hair = hairs[i % hairs.length] as HumanSpec['hair'];
+  // ?top=coat,shirt,… likewise
+  const tops = q.get('top')?.split(',');
+  if (tops) spec.top = { ...spec.top, kind: tops[i % tops.length] as HumanSpec['top']['kind'] };
   const body: Body = { height: 0.97 + (i % 3) * 0.03, girth: 1, shoulders: 1, hips: 1, head: 1 };
   const h = new RealHuman(spec, body, { hero: shot === 'face', lods: shot === 'face' ? [0] : [1], mh: q.get('mh') !== '0' });
   scene.add(h.group);

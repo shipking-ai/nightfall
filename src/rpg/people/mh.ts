@@ -4,6 +4,7 @@ import { bindPose, type BindAngles } from './bind';
 import { B, headCentre, shoes as sdfShoes, extras as sdfExtras, type HumanSpec, type Joints, type MatKind, type Fabric } from './anatomy';
 import { mesh } from './nets';
 import { hairCards } from './hairCards';
+import { loosen, torsoEnvelope, type Loose } from './cloth';
 import type { BuiltPart } from './build';
 import type { V3 } from './sdf';
 
@@ -344,7 +345,7 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
    * let it bridge them (under the chest, the small of the back), and a cut
    * edge is pulled level (a hem, a waistband) so it doesn't zigzag.
    */
-  const drape = (rounds: number, level?: { below: number; y: number }[], collar?: (x: number, z: number) => number) => (pos: number[], idx: number[], nrm: number[], src: number[]) => {
+  const drape = (rounds: number, level?: { below: number; y: number }[], collar?: (x: number, z: number) => number, loose?: Loose) => (pos: number[], idx: number[], nrm: number[], src: number[]) => {
     // work on the mesh's positions (render vertices split at uv seams share one), then copy back
     const ids = new Map<number, number>();
     const of: number[] = [];
@@ -388,6 +389,12 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
       }
       X.set(T);
     }
+    // cloth hangs off the widest parts of the body rather than following every contour
+    if (loose) {
+      const bones = new Int32Array(n);
+      for (let v = 0; v < src.length; v++) bones[of[v]] = si[src[v] * 4];
+      loosen(X, n, bones, j, loose, torsoEnv);
+    }
     for (let v = 0; v < src.length; v++) for (let k = 0; k < 3; k++) pos[v * 3 + k] = X[of[v] * 3 + k];
     // level the hems: edge vertices (few neighbours) below a line come up to it
     if (level) for (let v = 0; v < src.length; v++) {
@@ -404,6 +411,13 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
 
   // where a vertex is, by the bone it mostly follows (for cutting clothes)
   const main = (p: number) => si[p * 4];
+  // how far the body reaches round its middle, for loose clothes to hang from
+  const bodyVerts = new Set<number>();
+  {
+    const bt = tri('body');
+    for (let i = 0; i < bt.length; i++) bodyVerts.add(rvPos[bt[i]]);
+  }
+  const torsoEnv = torsoEnvelope(Q, bodyVerts, main, j);
   const armBone = (b: number) => b === B.shL || b === B.shR || b === B.elL || b === B.elR || b === B.wrL || b === B.wrR;
   const legBone = (b: number) => b === B.hipL || b === B.hipR || b === B.knL || b === B.knR || b === B.anL || b === B.anR;
   const yOf = (p: number) => Q[p * 3 + 1];
@@ -476,13 +490,26 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
     }
     return yOf(p) > pelvisY + (t.kind === 'jacket' || t.kind === 'coat' || t.kind === 'duster' ? -0.02 : 0.03) - 0.015;
   };
+  // how loosely each kind of top sits
+  const topLoose: Loose = {
+    tee: { limb: 0.35, torso: 0.35, hang: 0, cap: 0.014 },
+    tank: { limb: 0.2, torso: 0.3, hang: 0, cap: 0.01 },
+    shirt: { limb: 0.6, torso: 0.5, hang: 0.5, cap: 0.024 },
+    sweater: { limb: 0.6, torso: 0.6, hang: 0.3, cap: 0.028 },
+    hoodie: { limb: 0.7, torso: 0.65, hang: 0.5, cap: 0.032 },
+    jacket: { limb: 0.7, torso: 0.6, hang: 0.7, cap: 0.035 },
+    coat: { limb: 0.8, torso: 0.7, hang: 1, cap: 0.05 },
+    duster: { limb: 0.8, torso: 0.7, hang: 1, cap: 0.055 },
+    armor: { limb: 0.3, torso: 0.5, hang: 0.3, cap: 0.03 },
+  }[t.kind] as Loose;
+  topLoose.pad = topPush + 0.004;
   const hemY = pelvisY + (t.kind === 'jacket' || t.kind === 'coat' || t.kind === 'duster' ? -0.02 : 0.03);
-  part('top', 'helper-tights', t.fabric === 'leather' ? 'leather' : 'fabric', t.color, t.fabric, topKeep, topPush + 0.004, drape(4, [{ below: hemY - 0.05, y: hemY + 0.006 }], collarY));
+  part('top', 'helper-tights', t.fabric === 'leather' ? 'leather' : 'fabric', t.color, t.fabric, topKeep, topPush + 0.004, drape(4, [{ below: hemY - 0.05, y: hemY + 0.006 }], collarY, topLoose));
   // a coat's skirt, from the skirt helper
   if (t.kind === 'coat' || t.kind === 'duster') {
     const kneeY0 = (j.knL[1] + j.knR[1]) / 2;
     const coatHem = t.kind === 'duster' ? kneeY0 - 0.2 : kneeY0 - 0.03;
-    part('coatSkirt', 'helper-skirt', t.fabric === 'leather' ? 'leather' : 'fabric', t.color, t.fabric, (p) => yOf(p) > coatHem - 0.02, topPush, drape(2, [{ below: coatHem - 0.08, y: coatHem }]));
+    part('coatSkirt', 'helper-skirt', t.fabric === 'leather' ? 'leather' : 'fabric', t.color, t.fabric, (p) => yOf(p) > coatHem - 0.02, topPush, drape(2, [{ below: coatHem - 0.08, y: coatHem }], undefined, { limb: 0, torso: 0.7, hang: 1, cap: 0.06, pad: topPush + 0.006, all: true }));
   }
   // ── the bottom: tights from the waist down
   const b = s.bottom;
@@ -498,7 +525,9 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
     return y > ankleY + 0.03;
   };
   if (b.kind === 'skirt') part('skirt', 'helper-skirt', 'fabric', b.color, b.fabric, null, 0.004);
-  else part('bottom', 'helper-tights', b.fabric === 'leather' ? 'leather' : 'fabric', b.color, b.fabric, botKeep, (p) => (yOf(p) < pelvisY - 0.05 ? (b.kind === 'jeans' ? 0.004 : b.kind === 'cargo' ? 0.016 : 0.012) : 0.004), drape(3, [{ below: ankleY, y: ankleY + 0.035 }]));
+  else part('bottom', 'helper-tights', b.fabric === 'leather' ? 'leather' : 'fabric', b.color, b.fabric, botKeep, (p) => (yOf(p) < pelvisY - 0.05 ? (b.kind === 'jeans' ? 0.004 : b.kind === 'cargo' ? 0.016 : 0.012) : 0.004), drape(3, [{ below: ankleY, y: ankleY + 0.035 }], undefined, {
+    limb: b.kind === 'jeans' ? 0.35 : b.kind === 'cargo' ? 0.85 : 0.65, torso: 0.25, hang: 0, cap: b.kind === 'jeans' ? 0.012 : b.kind === 'cargo' ? 0.034 : 0.024, pad: 0.004,
+  }));
   // ── shoes: sculpted over the rig's ankles (the feet are hidden inside)
   for (const sp of sdfShoes(s, j)) {
     const m = mesh(sp.shape, sp.min, sp.max, sp.cell * 0.9, 0.02);
