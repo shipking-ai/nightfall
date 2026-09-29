@@ -37,6 +37,9 @@ const D: ItemDef[] = [
   { id: 'stew', name: 'Stew in a tin mug', kind: 'food', w: 0.6, v: 9, desc: 'Cooked over a fire. The best thing you’ve eaten all week.', use: { fed: 60, warmth: 20, label: 'Eat' } },
   { id: 'fish', name: 'Fresh fish', kind: 'food', w: 1.1, v: 8, desc: 'Caught today. Cook it or sell it.', use: { fed: 12, label: 'Eat raw' } },
   { id: 'meat', name: 'Raw venison', kind: 'food', w: 1.5, v: 12, desc: 'Needs a fire.', use: { fed: 10, label: 'Eat raw' } },
+  { id: 'grilledfish', name: 'Grilled fish', kind: 'food', w: 0.5, v: 10, desc: 'Charred skin, white flakes, a pinch of ash.', use: { fed: 45, warmth: 10, label: 'Eat' } },
+  { id: 'venison', name: 'Roast venison', kind: 'food', w: 0.8, v: 16, desc: 'Cooked over coals. Worth the trouble.', use: { fed: 60, warmth: 12, label: 'Eat' } },
+  { id: 'tea', name: 'Herbal tea', kind: 'drink', w: 0.3, v: 5, desc: 'Bitter, hot, and it does something for the aches.', use: { heal: 15, warmth: 20, rest: 5, label: 'Drink' } },
   { id: 'herbs', name: 'Wild herbs', kind: 'material', w: 0.1, v: 3, desc: 'Yarrow and something bitter. Good for a wound.', use: { heal: 6, label: 'Chew' } },
   // medical
   { id: 'bandage', name: 'Bandage', kind: 'medical', w: 0.1, v: 5, desc: 'Stops the bleeding.', use: { heal: 20, label: 'Apply' } },

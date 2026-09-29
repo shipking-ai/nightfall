@@ -25,6 +25,8 @@ export interface CasefileHooks {
   newLife(): void;
   /** something you did changed what you look like or hold */
   changed(): void;
+  /** strike the lighter: a campfire where you stand */
+  makeFire(): string;
   toast(text: string): void;
 }
 
@@ -237,6 +239,7 @@ export class Casefile {
         return 'You slit the tape.';
       });
     }
+    if (st.id === 'lighter') act('Make a fire', () => this.hk.makeFire());
     if (!d.quest) act(st.n > 1 ? 'Drop one' : 'Drop', () => {
       g.take(st.id, 1);
       return `Dropped the ${d.name.toLowerCase()}.`;

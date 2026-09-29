@@ -24,6 +24,7 @@ import type { HumanSpec } from './people/anatomy';
 import { Life } from './Life';
 import { Populace } from './sim/Populace';
 import { RoadTraffic } from './sim/RoadTraffic';
+import { Wildlife } from './sim/Wildlife';
 import type { Vehicles, DrivableCar } from '../entities/Vehicles';
 import type { Body, Outfit } from '../entities/Humanoid';
 
@@ -52,6 +53,8 @@ export interface RpgHost {
   /** fade to black and back (sleeping, searching, travelling, loading) */
   curtain: (on: boolean) => Promise<void>;
   inVehicle: () => boolean;
+  /** something hurt you (an animal, the cold) */
+  hurt: (dmg: number, by: string) => void;
   /** River Road, where every life starts */
   spawn: { x: number; z: number; yaw: number };
 }
@@ -94,6 +97,7 @@ export class Rpg {
   private saved: { body: Body; outfit: Outfit } | null = null;
   /** the character, their things, the screens and the saves */
   life: Life;
+  wildlife: Wildlife;
 
   constructor(private host: RpgHost) {
     this.streamer = new Streamer(this.gen, host.collision, host.mats, createSeaMaterial(host.sky, host.fog));
@@ -105,12 +109,24 @@ export class Rpg {
     this.populace = new Populace(this.gen, this.streamer.towns, host.collision);
     this.traffic = new RoadTraffic(this.gen, host.mats);
     this.life = new Life(this, host);
-    this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group);
+    this.wildlife = new Wildlife({
+      gen: this.gen,
+      heightAt: (x, z) => this.streamer.heightAt(x, z),
+      waterAt: (x, z) => this.streamer.waterAt(x, z),
+      player: () => {
+        const pl = host.player, c = this.life.game?.c;
+        return { pos: pl.pos, speed: pl.speed, crouch: pl.crouching, inCar: host.inVehicle(), stealth: c ? c.skills.stealth + c.attrs.reflex * 5 + (c.perks.includes('softstep') ? 15 : 0) : 0 };
+      },
+      daylight: () => this.atmos.daylight,
+      visibility: () => this.atmos.now.visibility,
+      bite: (dmg, by) => host.hurt(dmg, by),
+    });
+    this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group, this.wildlife.group);
     this.group.visible = false;
     host.scene.add(this.group);
     this.streamer.onLamps = (all) => {
       this.cityLamps = all;
-      host.lighting.setExtraLamps(all);
+      this.refreshLamps();
     };
   }
 
@@ -121,6 +137,7 @@ export class Rpg {
     this.group.visible = true;
     h.collision.base = (x, z, y, step) => (inD03(x, z) ? 0 : this.streamer.surfaceAt(x, z, y, step));
     h.player.waterAt = (x, z) => (inD03(x, z) ? undefined : this.streamer.waterAt(x, z));
+    h.player.canCrouch = true;
     h.outskirts.limit = 4;
     h.outskirts.follow = false;
     h.outskirts.update(at);
@@ -161,6 +178,8 @@ export class Rpg {
     this.far.clear();
     this.populace.clear();
     this.traffic.clear();
+    this.wildlife.clear();
+    h.player.canCrouch = false;
     for (const car of this.parked.values()) h.vehicles.despawn(car);
     this.parked.clear();
     h.player.real = null;
@@ -217,6 +236,7 @@ export class Rpg {
     this.populace.update(dt, performance.now() / 1000, this.atmos.minutes, p, h.camera, now.rain);
     this.traffic.night = 1 - this.atmos.daylight;
     this.traffic.update(dt, p);
+    if (!inD03(p.x, p.z)) this.wildlife.update(dt, this.place.biome, h.camera);
     if (performance.now() >= this.parkT) {
       this.parkT = performance.now() + 800;
       this.park(p);
@@ -339,6 +359,32 @@ export class Rpg {
       const car = this.host.vehicles.spawn({ pos: new THREE.Vector3(s.x, s.y, s.z), yaw: s.yaw, color: colors[k % colors.length], van: k % 7 === 0, screen: false }, true);
       this.parked.set(s.key, car);
     }
+  }
+
+  /** Lamps beyond the city's own: the streets you're near, and your campfire. */
+  extraLamps: Lamp[] = [];
+  refreshLamps() {
+    this.host.lighting.setExtraLamps(this.cityLamps.concat(this.extraLamps));
+  }
+
+  /** A shot or a punch through the wider world: the nearest animal it would hit, and what hitting it does. */
+  hitTest(o: THREE.Vector3, dir: THREE.Vector3, maxT: number): { t: number; apply: (dmg: number) => boolean; what: string } | null {
+    const hit = this.wildlife.hitTest(o, dir, maxT);
+    if (!hit) return null;
+    return {
+      t: hit.t,
+      what: hit.a.sp.name,
+      apply: (dmg) => {
+        const killed = this.wildlife.damage(hit.a, dmg * (hit.head ? 2 : 1), this.host.player.pos);
+        if (killed) this.life.killed(hit.a);
+        return killed;
+      },
+    };
+  }
+
+  /** Something loud happened here (a gunshot): the animals scatter. */
+  alarm(at: THREE.Vector3, r: number) {
+    this.wildlife.alarm(at, r);
   }
 
   /** Something to do with what's in front of you (a person, a door, a place to search), for the interact prompt. */

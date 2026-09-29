@@ -220,6 +220,8 @@ export class App {
   /** getting into or out of a vehicle: a short animation at the door first */
   private boarding: { t: number; go: () => void } | null = null;
   private controlSeen = new Map<ControlContext, number>();
+  /** RPG: the gun in your pocket, not in your hand */
+  private rpgHolstered = true;
 
   /** dev: a fixed camera (character reviews) */
   debugCam: { pos: THREE.Vector3; look: THREE.Vector3 } | null = null;
@@ -593,6 +595,13 @@ export class App {
       },
       curtain: (on) => this.fade(on, on ? 500 : 700),
       inVehicle: () => !!this.vehicle || !!this.boat,
+      hurt: (dmg, by) => {
+        if (this.dying || this.combat.god) return;
+        this.hud.hurt(Math.min(0.6, dmg / 30));
+        this.input.rumble('bump', Math.min(1, dmg / 20));
+        this.blood.spray(this.tmpB.set(this.player.pos.x, this.player.pos.y + 1, this.player.pos.z), this.tmpDir.set(Math.random() - 0.5, 0.4, Math.random() - 0.5).normalize(), 0.5);
+        if (this.combat.hurt(dmg)) this.die(by);
+      },
       spawn: SPAWN,
     });
     for (const el of this.rpg.life.panels) this.nav.scope(el, { back: () => this.back(), tab: (d) => this.rpg.life.panel === 'casefile' && this.rpg.life.cf.flip(d) });
@@ -1553,11 +1562,20 @@ export class App {
       this.hud.combat(this.dying || this.vehicle ? { health: c.health, stars: c.stars, weapon: 'Fists', ammo: '', cross: false, hot: this.crowd.police > 0 } : null);
       return;
     }
-    if (inp.pressed('weapon1')) c.select(0);
-    if (inp.pressed('weapon2')) c.select(1);
-    if (inp.pressed('weapon3')) c.select(2);
-    if (inp.pressed('nextWeapon')) c.cycle(1);
-    if (inp.pressed('prevWeapon')) c.cycle(-1);
+    if (this.rpg.active) {
+      // the wider world: you fight with what you're holding (the Casefile), and a gun only if you have one out
+      const rw = this.rpg.life.weapon();
+      if (inp.pressed('nextWeapon') || inp.pressed('prevWeapon') || inp.pressed('weapon2')) this.rpgHolstered = !this.rpgHolstered;
+      if (inp.pressed('weapon1')) this.rpgHolstered = true;
+      const want = rw.gun && !this.rpgHolstered ? 1 : 0;
+      if (c.weapon !== want) c.select(want);
+    } else {
+      if (inp.pressed('weapon1')) c.select(0);
+      if (inp.pressed('weapon2')) c.select(1);
+      if (inp.pressed('weapon3')) c.select(2);
+      if (inp.pressed('nextWeapon')) c.cycle(1);
+      if (inp.pressed('prevWeapon')) c.cycle(-1);
+    }
     if (inp.pressed('reload')) {
       c.reload();
       if (c.reloading > 0) inp.rumble('reload');
@@ -1575,7 +1593,7 @@ export class App {
     const aimHeld = inp.state('aim');
     const aiming = aimHeld || c.sinceFire < 0.9;
     inp.aiming = aimHeld && gun;
-    if (c.trigger(held, pressed)) {
+    if (c.trigger(held, pressed) && (!this.rpg.active || !gun || this.rpg.life.spendRound())) {
       this.fire();
       inp.rumble(w.id === 'smg' ? 'smg' : w.id === 'fists' ? 'punch' : 'gunshot');
     }
@@ -1583,8 +1601,10 @@ export class App {
     p.armPose = gun ? (aiming ? 'aim' : null) : c.sinceFire < 0.2 ? 'punch' : aiming ? 'guard' : null;
     p.aimYaw = aiming ? this.follow.yaw : null;
     this.follow.aim = gun && aiming;
-    const ammo = c.reloading > 0 ? 'Reloading' : Number.isFinite(w.mag) ? `${c.ammo[c.weapon]} / ${w.mag}` : '';
-    this.hud.combat({ health: c.health, stars: c.stars, weapon: w.name, ammo, cross: gun || aiming, hot: this.crowd.police > 0 });
+    const rw = this.rpg.active ? this.rpg.life.weapon() : null;
+    const rounds = rw?.gun && rw.ammo ? String(this.rpg.life.game?.count(rw.ammo) ?? 0) : '';
+    const ammo = c.reloading > 0 ? 'Reloading' : rw ? rounds : Number.isFinite(w.mag) ? `${c.ammo[c.weapon]} / ${w.mag}` : '';
+    this.hud.combat({ health: c.health, stars: c.stars, weapon: rw ? (gun ? rw.name : rw.gun ? 'Fists' : rw.name) : w.name, ammo, cross: gun || aiming, hot: this.crowd.police > 0 });
   }
 
   /** Our shot (or punch): who it hits, what everyone sees and hears, and what the police make of it. */
@@ -1595,7 +1615,13 @@ export class App {
       const dir = this.tmpDir.set(Math.sin(p.facing), -0.1, Math.cos(p.facing)).normalize();
       const npc = this.crowd.hitTest(o, dir, w.range);
       const rem = this.remotes.hitTest(o, dir, npc ? npc.t : w.range);
-      this.audio.punch(!!(npc || rem));
+      const wild = this.rpg.active && !npc && !rem ? this.rpg.hitTest(o, dir, w.range + 0.4) : null;
+      this.audio.punch(!!(npc || rem || wild));
+      if (wild) {
+        wild.apply(this.rpg.life.weapon().dmg);
+        this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, wild.t), dir, 0.4);
+        return;
+      }
       if (npc) {
         this.hitNpc(npc.i, w.dmg);
         this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, npc.t), dir, 0.4);
@@ -1618,7 +1644,9 @@ export class App {
     if (npc) t = npc.t;
     const rem = this.remotes.hitTest(o, dir, t);
     if (rem) t = rem.t;
-    const heli = !npc && !rem ? this.police.heliHit(o, dir, t) : null;
+    const wild = this.rpg.active && !npc && !rem ? this.rpg.hitTest(o, dir, t) : null;
+    if (wild) t = wild.t;
+    const heli = !npc && !rem && !wild ? this.police.heliHit(o, dir, t) : null;
     if (heli != null) {
       t = heli;
       this.police.damageHeli(w.dmg);
@@ -1632,6 +1660,11 @@ export class App {
     this.crowd.scatter(end.x, end.z, 14, p.pos);
     // shooting in the street is a crime if anyone's around to see it
     if (this.witnesses(p.pos, 35)) this.combat.crime(w.id === 'smg' ? 0.05 : 0.15);
+    if (this.rpg.active) this.rpg.alarm(p.pos, 220);
+    if (wild) {
+      wild.apply(this.rpg.life.weapon().dmg);
+      this.blood.spray(end, dir, 0.8);
+    }
     if (npc) {
       this.hitNpc(npc.i, w.dmg);
       this.blood.spray(end, dir);
@@ -1716,8 +1749,15 @@ export class App {
     await wait(1300);
     await this.fade(true, 900);
     if (this.inside) this.setInside(null);
-    this.player.place(-10.2, 0.15, 30, Math.PI / 2);
-    this.follow.yaw = Math.PI / 2;
+    const rpgWake = this.rpg.active && !inD03(this.player.pos.x, this.player.pos.z) ? this.rpg.life.onDeath() : null;
+    if (rpgWake) {
+      this.player.place(rpgWake.x, rpgWake.y, rpgWake.z, rpgWake.yaw);
+      this.follow.yaw = rpgWake.yaw;
+      await this.rpg.streamer.preload(this.player.pos, () => {});
+    } else {
+      this.player.place(-10.2, 0.15, 30, Math.PI / 2);
+      this.follow.yaw = Math.PI / 2;
+    }
     this.follow.snap(this.player, this.world.collision);
     this.lighting.focusNow(this.player.pos);
     this.combat.respawn();
@@ -1725,6 +1765,12 @@ export class App {
     this.discovery.forgetDistrict();
     await this.fade(false, 1200);
     this.dying = false;
+    if (rpgWake) {
+      this.combat.health = this.rpg.life.game ? Math.max(50, this.combat.health * 0.5) : this.combat.health;
+      this.hud.say(rpgWake.lines);
+      this.rpg.life.autosave();
+      return;
+    }
     this.hud.say(['You came to outside the pharmacy.', 'Somebody called an ambulance. Nobody stayed.']);
   }
 
