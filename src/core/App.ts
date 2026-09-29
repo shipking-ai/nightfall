@@ -582,6 +582,15 @@ export class App {
       cityRoot: this.world.root,
       ui: this.ui,
       environment: (zenith, horizon, ground) => this.makeEnvironment({ zenith, horizon, ground }),
+      warm: async (obj) => {
+        // for the target the scene is really drawn into (the composer's HDR buffer), as the warm-up does
+        const r = this.renderer.renderer;
+        const prev = r.getRenderTarget();
+        r.setRenderTarget(this.renderer.composer.renderTarget1);
+        const done = r.compileAsync(obj, this.camera, this.scene);
+        r.setRenderTarget(prev);
+        await done;
+      },
       envFromEquirect: (tex) => {
         const pmrem = new THREE.PMREMGenerator(this.renderer.renderer);
         const rt = pmrem.fromEquirectangular(tex);
@@ -1086,7 +1095,9 @@ export class App {
     }
     if (o === 'archive') {
       // develop any plates that were never exposed (e.g. places found in an older build)
-      for (const e of ENTRIES) if (e.plate && this.save.has(e.id) && !this.photographer.has(e.plate)) this.photographer.capture(e.plate, this.time.label);
+      // (one at a time, a moment apart, so the archive opening doesn't hold the frame up)
+      const missing = ENTRIES.filter((e) => e.plate && this.save.has(e.id) && !this.photographer.has(e.plate));
+      missing.forEach((e, i) => setTimeout(() => this.photographer.capture(e.plate!, this.time.label), 300 + i * 450));
       this.archive.open({
         found: new Set(this.save.data.discovered),
         unread: new Set(this.save.data.unread),

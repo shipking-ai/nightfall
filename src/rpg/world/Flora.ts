@@ -276,6 +276,8 @@ export class Flora {
   private lastRebuild = new THREE.Vector3(1e9, 0, 0);
   /** grown on first use (the RPG), not for District 03 */
   real = new RealTrees();
+  /** the real trees being grown (the loading screen waits for it) */
+  realLoading: Promise<void> | null = null;
   private heights: Record<RealKind, number> = { oak: 10, birch: 10, pine: 12, spruce: 12, bush: 1.5, rock: 0.8, boulder: 1.8 };
 
   constructor() {
@@ -327,7 +329,7 @@ vUp = normal.y;
 
   add(owner: string, plants: Plant[]) {
     if (!this.real.ready) {
-      void this.real.load(this.heights).then(() => {
+      this.realLoading ??= this.real.load(this.heights).then(() => {
         this.dirty = true;
       });
       if (!this.real.group.parent) this.group.add(this.real.group);

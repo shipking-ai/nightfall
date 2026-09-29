@@ -28,6 +28,7 @@ import { Populace } from './sim/Populace';
 import { RoadTraffic, vehicleMesh } from './sim/RoadTraffic';
 import { Wildlife } from './sim/Wildlife';
 import { GroundCover } from './world/GroundCover';
+import { setWarmer } from './world/warm';
 import { terrainUniforms } from './world/Terrain';
 import { Director } from './sim/Director';
 import type { Vehicles, DrivableCar } from '../entities/Vehicles';
@@ -52,6 +53,8 @@ export interface RpgHost {
   environment: (zenith: THREE.Color, horizon: THREE.Color, ground: THREE.Color) => THREE.Texture;
   /** a captured sky (HDR, equirectangular) made into an environment map */
   envFromEquirect: (tex: THREE.Texture) => THREE.Texture;
+  /** compile an object's shaders in the background (so its first draw doesn't stall) */
+  warm?: (obj: THREE.Object3D) => Promise<void>;
   thunder: (delay: number, strength: number) => void;
   say: (lines: string[], who: string) => void;
   vehicles: Vehicles;
@@ -137,6 +140,7 @@ export class Rpg {
     });
     this.director = new Director(this, host.ui);
     this.cover = new GroundCover(this.streamer);
+    setWarmer(host.warm ?? null);
     this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group, this.wildlife.group, this.director.group, this.cover.group);
     this.group.visible = false;
     host.scene.add(this.group);
@@ -176,6 +180,9 @@ export class Rpg {
     const spec = this.life.resume();
     this.setHero(spec, true);
     await this.streamer.preload(at, progress);
+    // the real trees, the grass and their shaders: grown and compiled behind the card, not in the first minute of play
+    // (capped, so a slow machine still gets in)
+    await Promise.race([Promise.all([this.streamer.flora.realLoading, this.cover.prepare()]), new Promise((r) => setTimeout(r, 20000))]);
     this.locate(at);
     this.atmos.settle(at, this.place.biome);
     this.lastPlaceKey = '';

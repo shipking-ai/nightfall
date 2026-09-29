@@ -8,7 +8,8 @@ import { mulberry32 } from '../../world/rng';
 import { hash3 } from './noise';
 import { BIOMES, type Species } from './biomes';
 import { DISTRICT_03, type WorldGen } from './WorldGen';
-import { buildField, fieldMesh, fieldHeight, fieldWater, waterMesh, createTerrainMaterial, terrainUniforms, BIOME_LIST, type Field } from './Terrain';
+import { fieldMesh, fieldHeight, fieldWater, waterMesh, createTerrainMaterial, terrainUniforms } from './Terrain';
+import { buildField, BIOME_LIST, type Field, type FieldSamples } from './fieldGen';
 import { Flora, trunkOf, type Plant } from './Flora';
 import { Towns, type Poi, type TownOut } from './Towns';
 import { roadGeometry, createRoadMaterial, deckHeight, type Deck } from './Roads';
@@ -71,6 +72,41 @@ export class Streamer {
   onChunk: ((c: Chunk, loaded: boolean) => void) | null = null;
   private lampsDirty = false;
   stats = { built: 0, dropped: 0, lastMs: 0, tiles: 0 };
+  /** fields worked out in the workers, waiting to be built into chunks and tiles */
+  private fields = new Map<string, FieldSamples>();
+  private asked = new Set<string>();
+  private workers: Worker[] = [];
+  /** the chunk being built, a piece a frame */
+  private job: { key: string; it: Generator<void, void>; rec: Box[] } | null = null;
+  private nextWorker = 0;
+
+  /**
+   * A field, if it's ready; otherwise it's asked for (from a worker) and this
+   * returns undefined, and the chunk or tile is built on a later frame.
+   */
+  private field(key: string, x0: number, z0: number, size: number, seg: number): FieldSamples | undefined {
+    const f = this.fields.get(key);
+    if (f) {
+      this.fields.delete(key);
+      return f;
+    }
+    if (typeof Worker === 'undefined') return buildField(this.gen, x0, z0, size, seg);
+    if (this.asked.has(key)) return undefined;
+    if (!this.workers.length) {
+      const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 4) - 2));
+      for (let i = 0; i < n; i++) {
+        const w = new Worker(new URL('./field.worker.ts', import.meta.url), { type: 'module' });
+        w.onmessage = (e: MessageEvent<{ key: string; s: FieldSamples }>) => {
+          if (!this.asked.delete(e.data.key)) return; // (forgotten meanwhile)
+          this.fields.set(e.data.key, e.data.s);
+        };
+        this.workers.push(w);
+      }
+    }
+    this.asked.add(key);
+    this.workers[this.nextWorker++ % this.workers.length].postMessage({ seed: this.gen.seed, x0, z0, size, seg, key });
+    return undefined;
+  }
 
   constructor(private gen: WorldGen, private collision: Collision, private mats: Materials, private waterMat: THREE.Material) {
     this.towns = new Towns(gen);
@@ -115,17 +151,49 @@ export class Streamer {
     const t0 = performance.now();
     const ci = Math.floor(pos.x / CHUNK), cj = Math.floor(pos.z / CHUNK);
     this.center = { ci, cj };
+    // a chunk being built: carry on with it
+    if (this.job) {
+      const j = this.job;
+      while (performance.now() - t0 < budgetMs || budgetMs <= 0) {
+        if (j.it.next().done) {
+          this.job = null;
+          break;
+        }
+      }
+    }
     // what's wanted, nearest first
     let built = 0;
     for (let ring = 0; ring <= NEAR_R; ring++) {
       for (let i = -ring; i <= ring; i++) for (let j = -ring; j <= ring; j++) {
         if (Math.max(Math.abs(i), Math.abs(j)) !== ring) continue;
         const key = `${ci + i},${cj + j}`;
-        if (this.chunks.has(key)) continue;
+        if (this.chunks.has(key) || this.job) continue;
         if (built > 0 && performance.now() - t0 > budgetMs) continue;
-        this.buildChunk(ci + i, cj + j);
+        const f = this.field(`c:${key}`, (ci + i) * CHUNK, (cj + j) * CHUNK, CHUNK, SEG);
+        if (!f) continue;
+        const rec: Box[] = [];
+        const it = this.chunkSteps(ci + i, cj + j, f, rec);
+        this.job = { key, it, rec };
+        while (performance.now() - t0 < budgetMs) {
+          if (it.next().done) {
+            this.job = null;
+            break;
+          }
+        }
         built++;
       }
+    }
+    // the next ring out, worked out ahead
+    for (let i = -NEAR_R - 1; i <= NEAR_R + 1; i++) for (let j = -NEAR_R - 1; j <= NEAR_R + 1; j++) {
+      if (Math.max(Math.abs(i), Math.abs(j)) !== NEAR_R + 1) continue;
+      const key = `c:${ci + i},${cj + j}`;
+      if (!this.fields.has(key) && !this.asked.has(key) && this.asked.size < 12) this.field(key, (ci + i) * CHUNK, (cj + j) * CHUNK, CHUNK, SEG);
+    }
+    // forget fields for places left behind
+    for (const k of this.fields.keys()) {
+      const [kind, rest] = k.split(':');
+      const [a, b] = rest.split(',').map(Number);
+      if (kind === 'c' ? Math.max(Math.abs(a - ci), Math.abs(b - cj)) > NEAR_R + 2 : Math.max(Math.abs(a - Math.floor(pos.x / TILE)), Math.abs(b - Math.floor(pos.z / TILE))) > FAR_R + 2) this.fields.delete(k);
     }
     // what's gone (with a margin, so walking along a border doesn't thrash)
     for (const c of this.chunks.values()) if (Math.abs(c.ci - ci) > NEAR_R + 1 || Math.abs(c.cj - cj) > NEAR_R + 1) this.dropChunk(c);
@@ -135,7 +203,9 @@ export class Streamer {
       const key = `${ti + i},${tj + j}`;
       if (this.tiles.has(key)) continue;
       if (performance.now() - t0 > budgetMs && budgetMs > 0) break;
-      this.buildTile(ti + i, tj + j);
+      const f = budgetMs > 0 ? this.field(`t:${key}`, (ti + i) * TILE, (tj + j) * TILE, TILE, TILE_SEG) : buildField(this.gen, (ti + i) * TILE, (tj + j) * TILE, TILE, TILE_SEG);
+      if (!f) continue;
+      this.buildTile(ti + i, tj + j, f);
     }
     for (const [k, t] of this.tiles) {
       const [a, b] = k.split(',').map(Number);
@@ -168,11 +238,28 @@ export class Streamer {
     this.stats.tiles = this.tiles.size;
   }
 
-  private buildChunk(ci: number, cj: number) {
+  /** Build a chunk now, all of it (the loading screen). */
+  private buildChunk(ci: number, cj: number, ready?: FieldSamples) {
+    const it = this.chunkSteps(ci, cj, ready, []);
+    while (!it.next().done);
+  }
+
+  /**
+   * A chunk, a piece at a time: the ground, water and roads, then the town a
+   * block at a time, then bridges, trees and the rest. Nothing shows (and it
+   * isn't a chunk yet) until it's all there. `rec` collects its collision boxes.
+   */
+  private *chunkSteps(ci: number, cj: number, ready: FieldSamples | undefined, rec: Box[]): Generator<void, void> {
+    const col = Object.create(this.collision) as Collision;
+    col.add = (...a: Parameters<Collision['add']>) => {
+      const b = this.collision.add(...a);
+      rec.push(b);
+      return b;
+    };
     const x0 = ci * CHUNK, z0 = cj * CHUNK;
     const key = `${ci},${cj}`;
     const group = new THREE.Group();
-    const s = buildField(this.gen, x0, z0, CHUNK, SEG);
+    const s = ready ?? buildField(this.gen, x0, z0, CHUNK, SEG);
     const f = s.field;
     const terrain = new THREE.Mesh(fieldMesh(s, 3), this.terrainMat);
     terrain.position.set(x0, 0, z0);
@@ -205,10 +292,10 @@ export class Streamer {
       ['aBld', 4],
       ['aTop', 3],
     ]);
-    ctx.collision = this.collision;
-    const before = this.collision.boxes.length;
+    ctx.collision = col;
     const out: TownOut = { plants: [], lamps: [], pois: [], spots: [], cars: [] };
-    this.towns.build(ctx, x0, z0, CHUNK, out);
+    yield;
+    yield* this.towns.buildSteps(ctx, x0, z0, CHUNK, out);
     for (const p of rg.piers) {
       const ground = this.gen.height(p.x, p.z);
       const bottom = Math.min(ground, p.top) - 2;
@@ -227,8 +314,9 @@ export class Streamer {
     // trunks are solid
     for (const p of plants) {
       const t = trunkOf(p.s) * p.scale;
-      if (t > 0.05) this.collision.add(p.x - t * 0.5, p.y, p.z - t * 0.5, p.x + t * 0.5, p.y + 3.2, p.z + t * 0.5, false);
+      if (t > 0.05) col.add(p.x - t * 0.5, p.y, p.z - t * 0.5, p.x + t * 0.5, p.y + 3.2, p.z + t * 0.5, false);
     }
+    yield;
     ctx.batch.build(group);
     group.traverse((o) => {
       o.matrixAutoUpdate = false;
@@ -240,7 +328,7 @@ export class Streamer {
     const signs = out.pois.length ? signsFor(out.pois) : null;
     if (signs) this.group.add(signs.group);
     const chunk: Chunk = {
-      key, ci, cj, x0, z0, group, field: f, boxes: this.collision.boxes.slice(before), lamps: ctx.lamps, pois: out.pois, spots: out.spots, cars: out.cars, decks: rg.decks, plants: plants.length, signs,
+      key, ci, cj, x0, z0, group, field: f, boxes: rec, lamps: ctx.lamps, pois: out.pois, spots: out.spots, cars: out.cars, decks: rg.decks, plants: plants.length, signs,
     };
     this.chunks.set(key, chunk);
     if (ctx.lamps.length) this.lampsDirty = true;
@@ -294,8 +382,8 @@ export class Streamer {
     this.onChunk?.(c, false);
   }
 
-  private buildTile(ti: number, tj: number) {
-    const s = buildField(this.gen, ti * TILE, tj * TILE, TILE, TILE_SEG);
+  private buildTile(ti: number, tj: number, ready?: FieldSamples) {
+    const s = ready ?? buildField(this.gen, ti * TILE, tj * TILE, TILE, TILE_SEG);
     const mesh = new THREE.Mesh(fieldMesh(s, 30), this.farMat);
     mesh.position.set(ti * TILE, 0, tj * TILE);
     mesh.receiveShadow = false;
@@ -307,12 +395,19 @@ export class Streamer {
 
   /** Drop everything (leaving the mode). */
   clear() {
+    // a chunk half built: its boxes go, the rest was never shown
+    if (this.job) {
+      this.collision.remove(this.job.rec);
+      this.job = null;
+    }
     for (const c of [...this.chunks.values()]) this.dropChunk(c);
     for (const t of this.tiles.values()) {
       this.group.remove(t.mesh);
       t.mesh.geometry.dispose();
     }
     this.tiles.clear();
+    this.fields.clear();
+    this.asked.clear();
     this.flora.clear();
     this.flora.update(new THREE.Vector3(1e9, 0, 0));
     this.glow.set([]);

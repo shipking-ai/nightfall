@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { worldUniforms } from '../../world/materials';
 import { floraUniforms } from './Flora';
+import { warm } from './warm';
 
 /**
  * The trees you walk among: real ones, grown by EZ-Tree (Daniel Greenheck,
@@ -44,6 +45,7 @@ export class RealTrees {
     this.loading = true;
     await this.loadRocks(heights).catch((e) => console.warn('rocks', e));
     const { Tree } = await import('@dgreenheck/ez-tree');
+    const fresh: THREE.InstancedMesh[] = [];
     for (const kind of Object.keys(PRESETS) as TreeKind[]) {
       const list: RealModel[] = [];
       for (const [preset, seed] of PRESETS[kind]) {
@@ -64,14 +66,19 @@ export class RealTrees {
           m.castShadow = true;
           m.receiveShadow = true;
           m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-          this.group.add(m);
+          fresh.push(m);
         }
         list.push({ bark, leaf, fit: heights[kind] / Math.max(1, h) });
+        // (one tree at a time: growing is the slow part)
+        await new Promise((r) => setTimeout(r, 0));
       }
       this.models.set(kind, list);
-      // don't hold the frame up growing the whole forest at once
-      await new Promise((r) => setTimeout(r, 0));
     }
+    // compile the bark and leaf shaders off the frame, then show them
+    const hold = new THREE.Group();
+    for (const m of fresh) (m.count = 1), hold.add(m);
+    await warm(hold);
+    for (const m of fresh) (m.count = 0), this.group.add(m);
     this.ready = true;
   }
 
@@ -104,6 +111,7 @@ export class RealTrees {
       mat.customProgramCacheKey = () => 'nf-real-rock';
       scans.push({ geo, mat, h: (bb.max.y - bb.min.y) * 0.88 });
     }
+    const rockHold = new THREE.Group();
     for (const kind of ['rock', 'boulder'] as const) {
       const list: RealModel[] = [];
       for (const s of scans) {
@@ -113,11 +121,14 @@ export class RealTrees {
         bark.castShadow = kind === 'boulder';
         bark.receiveShadow = true;
         bark.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        this.group.add(bark);
+        bark.count = 1;
+        rockHold.add(bark);
         list.push({ bark, fit: heights[kind] / Math.max(0.05, s.h) });
       }
       if (list.length) this.models.set(kind, list);
     }
+    await warm(rockHold);
+    for (const m of [...rockHold.children] as THREE.InstancedMesh[]) (m.count = 0), this.group.add(m);
   }
 }
 

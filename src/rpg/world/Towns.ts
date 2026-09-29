@@ -208,6 +208,11 @@ export class Towns {
    * rest of the world needs to know (plants, lamps, shop doors, places to stand).
    */
   build(ctx: WorldContext, x0: number, z0: number, size: number, out: TownOut) {
+    for (const _ of this.buildSteps(ctx, x0, z0, size, out)) void _;
+  }
+
+  /** The same, a block at a time (the streamer spreads a town over a few frames). */
+  *buildSteps(ctx: WorldContext, x0: number, z0: number, size: number, out: TownOut): Generator<void, void> {
     const cx = x0 + size / 2, cz = z0 + size / 2;
     for (const s of this.gen.settlementsNear(cx, cz, 1)) {
       if (Math.hypot(cx - s.x, cz - s.z) > s.radius + size) continue;
@@ -216,9 +221,11 @@ export class Towns {
         const bx = (b.x0 + b.x1) / 2, bz = (b.z0 + b.z1) / 2;
         if (bx < x0 || bx >= x0 + size || bz < z0 || bz >= z0 + size) continue;
         this.buildBlock(ctx, plan, b, out);
+        yield;
       }
       for (const p of plan.pois) if (p.x >= x0 && p.x < x0 + size && p.z >= z0 && p.z < z0 + size) out.pois.push(p);
       this.streets(ctx, plan, x0, z0, size, out);
+      yield;
     }
   }
 

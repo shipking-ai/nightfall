@@ -7,6 +7,15 @@ const log = (...a) => console.log(...a);
 await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('nightfall.rpg.save')) localStorage.removeItem(k); });
 await waitState('landing');
 await t.wait(3000);
+// (trace anything that takes the game back to the title)
+await page.evaluate(() => {
+  const nf = window.nf;
+  window.__calls = [];
+  for (const k of ['toLanding', 'leave']) {
+    const f = nf[k].bind(nf);
+    nf[k] = (...a) => { window.__calls.push({ k, state: nf.state, stack: new Error().stack.split('\n').slice(2, 8).map((x) => x.trim().replace(/https?:\/\/[^/]+\//, '')).join(' | ') }); return f(...a); };
+  }
+});
 await until(async () => (await focused()).includes('Enter'), 8);
 for (let i = 0; i < 6 && !(await focused()).includes('Enter'); i++) { await tap(i < 3 ? 'Down' : 'Up'); await t.wait(700); }
 await tap('A');
@@ -54,9 +63,11 @@ for (const kind of want) {
   await t.wait(1500);
   for (let i = 0; i < 4; i++) await step(0.5);
   log('atmos', JSON.stringify(await page.evaluate(() => { const r = window.nf.rpg; return { now: r.atmos.now, fog: window.nf.scene.fog?.density, fogc: window.nf.scene.fog?.color.getHexString(), env: window.nf.scene.environmentIntensity, y: window.nf.player.pos.y, cam: window.nf.camera.position.y }; })));
+  log('state', await page.evaluate(() => window.nf.state));
   log(kind, JSON.stringify(at), 'sky', await page.evaluate(() => window.nf.rpg.skyFor()), 'hdri loaded', await page.evaluate(() => [...window.nf.rpg.hdri.keys()].join(',')));
   log('real', JSON.stringify(await page.evaluate(() => { const f = window.nf.rpg.streamer.flora; const o = {}; for (const [k, l] of f.real.models) o[k] = l.reduce((n, m) => n + m.bark.count, 0); return o; })));
   await shot(`rpg-look-${kind}`);
 }
+log('title calls', JSON.stringify(await page.evaluate(() => window.__calls)));
 log('errors', JSON.stringify(errors));
 await t.browser.close();
