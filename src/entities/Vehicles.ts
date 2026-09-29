@@ -36,6 +36,8 @@ export interface DrivableCar {
   color: number;
   /** another player is driving this one: ours is hidden (theirs is drawn by Remotes) */
   taken: boolean;
+  /** parked by the RPG's streamer (not one of District 03's own) */
+  streamed?: boolean;
 }
 
 /**
@@ -51,8 +53,14 @@ export class Vehicles {
   onImpact: ((strength: number) => void) | null = null;
   private tmp = new THREE.Vector3();
 
-  constructor(ctx: WorldContext) {
-    for (const spec of ctx.cars) {
+  constructor(private ctx: WorldContext) {
+    for (const spec of ctx.cars) this.spawn(spec);
+  }
+
+  /** A car parked somewhere new (the RPG's towns park them as they stream in). */
+  spawn(spec: { pos: THREE.Vector3; yaw: number; color: number; van: boolean; screen: boolean }, streamed = false): DrivableCar {
+    const ctx = this.ctx;
+    {
       const g = new THREE.Group();
       const paint = new THREE.MeshStandardMaterial({ color: spec.color, roughness: 0.3, metalness: 0.3 });
       const tailMat = (ctx.mats.lampRed as THREE.MeshStandardMaterial).clone();
@@ -70,10 +78,25 @@ export class Vehicles {
         ctx.lamp(new THREE.Vector3(), 'red', { pooled: false, cone: false, halo: 0.4, streak: 0.7, ground: 0, gain: 0 }),
       ];
       lamps.forEach((l) => (l.dynamic = true));
-      const car: DrivableCar = { group: g, pos: spec.pos.clone(), yaw: spec.yaw, v: 0, steer: 0, van: spec.van, reach: spec.van ? 1.7 : 1.45, lamps, occupied: false, leaving: false, braking: false, tailMat, screen: spec.screen, color: spec.color, taken: false };
+      // streamed cars don't join the district's fixed list of lamps (they come and go)
+      if (streamed) ctx.lamps.splice(ctx.lamps.length - lamps.length, lamps.length);
+      const car: DrivableCar = { group: g, pos: spec.pos.clone(), yaw: spec.yaw, v: 0, steer: 0, van: spec.van, reach: spec.van ? 1.7 : 1.45, lamps, occupied: false, leaving: false, braking: false, tailMat, screen: spec.screen, color: spec.color, taken: false, streamed };
       this.cars.push(car);
       this.place(car);
+      return car;
     }
+  }
+
+  /** Take a streamed car away again (you drove off and left it far behind, or its street unloaded). */
+  despawn(car: DrivableCar) {
+    const i = this.cars.indexOf(car);
+    if (i < 0 || car.occupied) return;
+    this.cars.splice(i, 1);
+    this.group.remove(car.group);
+    car.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && m.material !== CAR_GLASS) (m.material as THREE.Material).dispose?.();
+    });
   }
 
   /** The car whose body is within `reach` metres of p, nearest first. */

@@ -581,6 +581,7 @@ export class App {
       ui: this.ui,
       environment: (zenith, horizon, ground) => this.makeEnvironment({ zenith, horizon, ground }),
       thunder: (delay, k) => setTimeout(() => this.audio.thunder(k), delay * 1000),
+      vehicles: this.vehicles,
       say: (lines, who) => {
         this.hud.say(lines, who);
         this.sayingUntil = performance.now() + 1800;
@@ -2307,6 +2308,7 @@ export class App {
     // world simulation keeps running under menus — the city doesn't pause for you
     this.obstacles.length = 0;
     this.crowd.obstacles(this.obstacles);
+    if (this.rpg?.active) this.rpg.traffic.obstacles(this.obstacles);
     const veh = this.vehicle;
     this.carScreen.show(veh?.kind === 'drive' && veh.car.screen && inWorld);
     this.carScreen.setVolume(this.settings.data.radio * this.settings.data.master * (this.overlay ? 0.3 : 1));

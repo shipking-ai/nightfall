@@ -66,7 +66,7 @@ export const BIOMES: Record<BiomeId, Biome> = {
     flora: [['oak', 3], ['bush', 4], ['birch', 1], ['rock', 1], ['stump', 0.5]], density: 16, temp: 16, weather: W(5, 4, 4, 1, 2, 0.3, 0), haze: 1, ambience: 'birds',
     wildlife: [['rabbit', 4], ['deer', 3], ['fox', 2], ['crow', 3], ['boar', 1]], warmth: 1, vehicles: [['pickup', 4], ['sedan', 3], ['hatch', 2], ['truck', 2], ['van', 1]],
     prices: { food: 0.8, fuel: 1, timber: 1 }, activities: ['farm work', 'hunting', 'fishing', 'racing', 'trucking'], threats: ['boar', 'storms'],
-    blurb: 'Hedges, fields, a silo on every horizon. The roads are straight and nobody is on them.',
+    blurb: 'Hedges, fields, a silo on every horizon. The roads run straight, and the pickups on them wave with one finger.',
   },
   forest: {
     id: 'forest', name: 'Forest', grass: [0.07, 0.12, 0.04], dirt: [0.16, 0.12, 0.08], rock: [0.26, 0.26, 0.24],

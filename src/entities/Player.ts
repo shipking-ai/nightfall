@@ -342,7 +342,11 @@ export class Player {
     m.steer += (s.steer - m.steer) * Math.min(1, dt * 8);
     m.lookYaw = m.steer * 0.25;
     m.breath += dt * 1.2;
-    this.root.copy(s.m).multiply(_s.makeScale(this.body.height, this.body.height, this.body.height));
+    // a realistic body (RPG) is taller in the trunk than the city figure: sunk into the seat, it clears the roof
+    const k = this.real ? 1 : this.body.height;
+    this.root.copy(s.m);
+    if (this.real) this.root.multiply(_s.makeTranslation(0, -0.12 - (this.body.torsoLen ?? 1) * 0.1, -0.02));
+    this.root.multiply(_s.makeScale(k, k, k));
     this.draw();
   }
 

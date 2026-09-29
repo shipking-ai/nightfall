@@ -21,6 +21,8 @@ import { FarCities } from './world/FarCities';
 import { RealHuman } from './people/RealHuman';
 import { heroSpec } from './people/kit';
 import { Populace } from './sim/Populace';
+import { RoadTraffic } from './sim/RoadTraffic';
+import type { Vehicles, DrivableCar } from '../entities/Vehicles';
 import type { Body, Outfit } from '../entities/Humanoid';
 
 export interface RpgHost {
@@ -42,6 +44,7 @@ export interface RpgHost {
   environment: (zenith: THREE.Color, horizon: THREE.Color, ground: THREE.Color) => THREE.Texture;
   thunder: (delay: number, strength: number) => void;
   say: (lines: string[], who: string) => void;
+  vehicles: Vehicles;
 }
 
 /**
@@ -60,7 +63,11 @@ export class Rpg {
   precip = new Precip();
   far: FarCities;
   populace: Populace;
+  traffic: RoadTraffic;
   hud: RpgHud;
+  /** cars parked along the streets you're near (you can take them) */
+  private parked = new Map<string, DrivableCar>();
+  private parkT = 0;
   group = new THREE.Group();
   /** where you are, in words */
   place = { name: 'District 03', region: 'Merrow', biome: 'temperate' as BiomeId, settlement: null as Settlement | null };
@@ -83,7 +90,8 @@ export class Rpg {
     this.hud = new RpgHud(host.ui);
     this.far = new FarCities(this.gen, this.streamer.towns);
     this.populace = new Populace(this.gen, this.streamer.towns, host.collision);
-    this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group);
+    this.traffic = new RoadTraffic(this.gen, host.mats);
+    this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group);
     this.group.visible = false;
     host.scene.add(this.group);
     this.streamer.onLamps = (all) => {
@@ -146,6 +154,9 @@ export class Rpg {
     this.streamer.clear();
     this.far.clear();
     this.populace.clear();
+    this.traffic.clear();
+    for (const car of this.parked.values()) h.vehicles.despawn(car);
+    this.parked.clear();
     h.player.real = null;
     h.player.hidden = false;
     if (this.hero) this.hero.group.visible = false;
@@ -198,6 +209,12 @@ export class Rpg {
     this.precip.update(h.camera.position, now.snow, now.dust, now.windDir, now.wind, this.atmos.daylight);
     this.far.update(p, h.fog, h.sky.uniforms.uSunCol.value);
     this.populace.update(dt, performance.now() / 1000, this.atmos.minutes, p, h.camera, now.rain);
+    this.traffic.night = 1 - this.atmos.daylight;
+    this.traffic.update(dt, p);
+    if (performance.now() >= this.parkT) {
+      this.parkT = performance.now() + 800;
+      this.park(p);
+    }
     // lamps and lit windows come on as it gets dark
     const dark = 1 - THREE.MathUtils.smoothstep(this.atmos.daylight, 0.15, 0.55);
     worldUniforms.uEmit.value = 0.04 + 0.96 * dark;
@@ -256,6 +273,30 @@ export class Rpg {
     }
   }
 
+  /** Cars parked on the streets near you, ready to take; forgotten once you're well away (unless you're in one). */
+  private park(p: THREE.Vector3) {
+    const spots: { key: string; x: number; y: number; z: number; yaw: number; d: number }[] = [];
+    for (const c of this.streamer.chunks.values()) for (const s of c.cars) {
+      const d = Math.hypot(s.x - p.x, s.z - p.z);
+      if (d < 160) spots.push({ key: `${s.x.toFixed(1)},${s.z.toFixed(1)}`, ...s, d });
+    }
+    spots.sort((a, b) => a.d - b.d);
+    const want = new Set(spots.slice(0, 10).map((s) => s.key));
+    for (const [k, car] of this.parked) {
+      if (want.has(k) || car.occupied) continue;
+      if (car.pos.distanceTo(p) < 200) continue;
+      this.host.vehicles.despawn(car);
+      this.parked.delete(k);
+    }
+    const colors = [0x7a1c16, 0x1c2a44, 0x2c2c2e, 0xb8b4ac, 0x3a4a2a, 0x5a4a36, 0x8a8a86, 0x6a5a2a];
+    for (const s of spots.slice(0, 10)) {
+      if (this.parked.has(s.key)) continue;
+      const k = Math.abs(Math.floor(s.x * 7 + s.z * 13));
+      const car = this.host.vehicles.spawn({ pos: new THREE.Vector3(s.x, s.y, s.z), yaw: s.yaw, color: colors[k % colors.length], van: k % 7 === 0, screen: false }, true);
+      this.parked.set(s.key, car);
+    }
+  }
+
   /** Something to do with what's in front of you (a resident to talk to), for the interact prompt. */
   interaction(pos: THREE.Vector3, fwd: THREE.Vector3): { name: string; verb: string; go: () => void } | null {
     const w = this.populace.nearest(pos, fwd);
@@ -291,7 +332,7 @@ export class Rpg {
 
   get debug() {
     const s = this.streamer.stats;
-    return { people: this.populace.count, about: this.populace.about, chunks: this.streamer.chunks.size, tiles: s.tiles, built: s.built, dropped: s.dropped, ms: +s.lastMs.toFixed(1), plants: this.streamer.flora.total, lamps: this.cityLamps.length, chunkSize: CHUNK };
+    return { people: this.populace.count, about: this.populace.about, traffic: this.traffic.count, parked: this.parked.size, chunks: this.streamer.chunks.size, tiles: s.tiles, built: s.built, dropped: s.dropped, ms: +s.lastMs.toFixed(1), plants: this.streamer.flora.total, lamps: this.cityLamps.length, chunkSize: CHUNK };
   }
 }
 
