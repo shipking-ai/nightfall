@@ -217,7 +217,7 @@ function speciesLow(s: Species): THREE.BufferGeometry | null {
 const LOD_NEAR = 130;
 /** Inside this, the real trees (EZ-Tree). */
 const REAL_NEAR = 75;
-const REAL: Partial<Record<Species, RealKind>> = { oak: 'oak', birch: 'birch', pine: 'pine', spruce: 'spruce', bush: 'bush' };
+const REAL: Partial<Record<Species, RealKind>> = { oak: 'oak', birch: 'birch', pine: 'pine', spruce: 'spruce', bush: 'bush', rock: 'rock', boulder: 'boulder' };
 
 /** How big each species can be, how solid its trunk, and how far it's drawn. */
 const SPEC: Record<Species, { trunk: number; far: number; shadow: boolean }> = {
@@ -276,7 +276,7 @@ export class Flora {
   private lastRebuild = new THREE.Vector3(1e9, 0, 0);
   /** grown on first use (the RPG), not for District 03 */
   real = new RealTrees();
-  private heights: Record<RealKind, number> = { oak: 10, birch: 10, pine: 12, spruce: 12, bush: 1.5 };
+  private heights: Record<RealKind, number> = { oak: 10, birch: 10, pine: 12, spruce: 12, bush: 1.5, rock: 0.8, boulder: 1.8 };
 
   constructor() {
     this.mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 });
@@ -364,15 +364,15 @@ vUp = normal.y;
         const d2 = dx * dx + dz * dz;
         if (d2 > far * far) continue;
         const rk = REAL[pl.s];
-        if (rk && d2 < real2 && this.real.ready) {
-          const vs = this.real.models.get(rk)!;
+        const vs = rk && d2 < real2 && this.real.ready ? this.real.models.get(rk) : undefined;
+        if (vs) {
           const m = vs[Math.abs(Math.floor(pl.x * 13.1 + pl.z * 7.7)) % vs.length];
           const i = realCounts.get(m.bark)!;
           if (i < m.bark.instanceMatrix.count) {
             this.tmpQ.setFromAxisAngle(UP, pl.yaw);
             this.tmpM.compose(this.tmpV.set(pl.x, pl.y - 0.05, pl.z), this.tmpQ, this.tmpS.setScalar(pl.scale * m.fit));
             m.bark.setMatrixAt(i, this.tmpM);
-            m.leaf.setMatrixAt(i, this.tmpM);
+            m.leaf?.setMatrixAt(i, this.tmpM);
             realCounts.set(m.bark, i + 1);
             continue;
           }
@@ -392,8 +392,12 @@ vUp = normal.y;
     }
     if (this.real.ready) for (const list of this.real.models.values()) for (const m of list) {
       const n = realCounts.get(m.bark) ?? 0;
-      m.bark.count = m.leaf.count = n;
-      m.bark.instanceMatrix.needsUpdate = m.leaf.instanceMatrix.needsUpdate = true;
+      m.bark.count = n;
+      m.bark.instanceMatrix.needsUpdate = true;
+      if (m.leaf) {
+        m.leaf.count = n;
+        m.leaf.instanceMatrix.needsUpdate = true;
+      }
     }
   }
 

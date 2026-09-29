@@ -49,6 +49,7 @@ for (const kind of want) {
   for (let i = 0; i < 4; i++) await step(0.5);
   log('atmos', JSON.stringify(await page.evaluate(() => { const r = window.nf.rpg; return { now: r.atmos.now, fog: window.nf.scene.fog?.density, fogc: window.nf.scene.fog?.color.getHexString(), env: window.nf.scene.environmentIntensity, y: window.nf.player.pos.y, cam: window.nf.camera.position.y }; })));
   log(kind, JSON.stringify(at), 'sky', await page.evaluate(() => window.nf.rpg.skyFor()), 'hdri loaded', await page.evaluate(() => [...window.nf.rpg.hdri.keys()].join(',')));
+  log('real', JSON.stringify(await page.evaluate(() => { const f = window.nf.rpg.streamer.flora; const o = {}; for (const [k, l] of f.real.models) o[k] = l.reduce((n, m) => n + m.bark.count, 0); return o; })));
   await shot(`rpg-look-${kind}`);
 }
 log('errors', JSON.stringify(errors));

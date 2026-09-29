@@ -27,6 +27,8 @@ import { Life } from './Life';
 import { Populace } from './sim/Populace';
 import { RoadTraffic, vehicleMesh } from './sim/RoadTraffic';
 import { Wildlife } from './sim/Wildlife';
+import { GroundCover } from './world/GroundCover';
+import { terrainUniforms } from './world/Terrain';
 import { Director } from './sim/Director';
 import type { Vehicles, DrivableCar } from '../entities/Vehicles';
 import type { Body, Outfit } from '../entities/Humanoid';
@@ -106,6 +108,8 @@ export class Rpg {
   /** the character, their things, the screens and the saves */
   life: Life;
   wildlife: Wildlife;
+  /** grass and flowers underfoot */
+  cover: GroundCover;
   /** dread after dark, and things by the road */
   director: Director;
 
@@ -132,7 +136,8 @@ export class Rpg {
       bite: (dmg, by) => host.hurt(dmg, by),
     });
     this.director = new Director(this, host.ui);
-    this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group, this.wildlife.group, this.director.group);
+    this.cover = new GroundCover(this.streamer);
+    this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group, this.wildlife.group, this.director.group, this.cover.group);
     this.group.visible = false;
     host.scene.add(this.group);
     this.streamer.onLamps = (all) => {
@@ -191,6 +196,7 @@ export class Rpg {
     this.traffic.clear();
     this.wildlife.clear();
     this.director.clear();
+    this.cover.clear();
     h.vehicles.grip = 1;
     h.player.canCrouch = false;
     for (const car of this.parked.values()) h.vehicles.despawn(car);
@@ -250,7 +256,10 @@ export class Rpg {
     h.vehicles.grip = this.atmos.now.grip;
     this.traffic.night = 1 - this.atmos.daylight;
     this.traffic.update(dt, p);
-    if (!inD03(p.x, p.z)) this.wildlife.update(dt, this.place.biome, h.camera);
+    if (!inD03(p.x, p.z)) {
+      this.wildlife.update(dt, this.place.biome, h.camera);
+      this.cover.update(p, terrainUniforms.uSnowCover.value);
+    } else this.cover.clear();
     this.director.update(dt, live, h.camera);
     if (performance.now() >= this.parkT) {
       this.parkT = performance.now() + 800;
