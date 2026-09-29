@@ -57,6 +57,9 @@ interface Person {
 const people: Person[] = [];
 for (let i = 0; i < n; i++) {
   const spec = randomSpec(seed * 97 + i * 13, { sex: i % 2 ? 0.1 : 0.9 });
+  // ?hair=long,bun,… tries the cuts in turn
+  const hairs = q.get('hair')?.split(',');
+  if (hairs) spec.hair = hairs[i % hairs.length] as HumanSpec['hair'];
   const body: Body = { height: 0.97 + (i % 3) * 0.03, girth: 1, shoulders: 1, hips: 1, head: 1 };
   const h = new RealHuman(spec, body, { hero: shot === 'face', lods: shot === 'face' ? [0] : [1], mh: q.get('mh') !== '0' });
   scene.add(h.group);
@@ -86,8 +89,12 @@ function frame(now: number) {
   }
   if (shot === 'face') {
     const p = people[0];
-    camera.position.set(p.x + 0.35, 1.62, 0.75);
-    camera.lookAt(p.x, 1.6, 0);
+    // ?view=side|back to see a cut from round the head
+    const a = q.get('view') === 'back' ? Math.PI * 0.85 : q.get('view') === 'side' ? 1.25 : 0.44;
+    const hr = q.get('hair') ? 1.15 : 0.83;
+    const hy = q.get('hair') ? 0.04 : 0;
+    camera.position.set(p.x + Math.sin(a) * hr, 1.62 + hy + (q.get('view') === 'top' ? 0.7 : 0), Math.cos(a) * hr);
+    camera.lookAt(p.x, 1.6 + hy * 0.5, 0);
   } else {
     const r = shot === 'walk' ? 6 : 4.2;
     camera.position.set(Math.sin(0.4) * r, 1.4, Math.cos(0.4) * r);

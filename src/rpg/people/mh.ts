@@ -3,6 +3,7 @@ import type { Body } from '../../entities/Humanoid';
 import { bindPose, type BindAngles } from './bind';
 import { B, headCentre, shoes as sdfShoes, extras as sdfExtras, type HumanSpec, type Joints, type MatKind, type Fabric } from './anatomy';
 import { mesh } from './nets';
+import { hairCards } from './hairCards';
 import type { BuiltPart } from './build';
 import type { V3 } from './sdf';
 
@@ -343,7 +344,7 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
    * let it bridge them (under the chest, the small of the back), and a cut
    * edge is pulled level (a hem, a waistband) so it doesn't zigzag.
    */
-  const drape = (rounds: number, level?: { below: number; y: number }[]) => (pos: number[], idx: number[], nrm: number[], src: number[]) => {
+  const drape = (rounds: number, level?: { below: number; y: number }[], collar?: (x: number, z: number) => number) => (pos: number[], idx: number[], nrm: number[], src: number[]) => {
     // work on the mesh's positions (render vertices split at uv seams share one), then copy back
     const ids = new Map<number, number>();
     const of: number[] = [];
@@ -393,6 +394,12 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
       if (nb[of[v]].size >= 6) continue;
       for (const l of level) if (pos[v * 3 + 1] < l.y + 0.03 && pos[v * 3 + 1] > l.below) pos[v * 3 + 1] = Math.max(pos[v * 3 + 1], l.y);
     }
+    // and the neckline: its edge onto the collar curve (up to it, so no sawtooth of skin shows under it)
+    if (collar) for (let v = 0; v < src.length; v++) {
+      if (nb[of[v]].size >= 6) continue;
+      const cy = collar(pos[v * 3], pos[v * 3 + 2]);
+      if (pos[v * 3 + 1] > cy - 0.035 && pos[v * 3 + 1] > j.chest[1] && Math.hypot(pos[v * 3] - neckC[0], pos[v * 3 + 2] - neckC[1]) < 0.13) pos[v * 3 + 1] = cy;
+    }
   };
 
   // where a vertex is, by the bone it mostly follows (for cutting clothes)
@@ -409,10 +416,59 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
   const t = s.top;
   const long = t.kind !== 'tee' && t.kind !== 'tank' && t.kind !== 'armor';
   const topPush = t.kind === 'coat' || t.kind === 'duster' ? 0.018 : t.kind === 'jacket' || t.kind === 'hoodie' ? 0.013 : t.kind === 'sweater' ? 0.008 : 0.003;
+  // the neckline: a smooth curve round the base of the neck, dipping at the front (deeper for a
+  // shirt's open collar and a coat's lapels), not wherever the skin happens to follow the neck
+  const dip = t.kind === 'shirt' ? 0.075 : t.kind === 'coat' || t.kind === 'duster' || t.kind === 'jacket' ? 0.1 : t.kind === 'tank' ? 0.07 : t.kind === 'hoodie' || t.kind === 'sweater' ? 0.028 : 0.04;
+  // Where the neck meets the shoulders, measured from the mesh: round the neck's axis, the lowest
+  // point that still follows the neck bone, smoothed round the ring.
+  const neckC: [number, number] = [0, 0];
+  const tightsTris = tri('helper-tights');
+  {
+    let n = 0;
+    for (let i = 0; i < tightsTris.length; i++) {
+      const p = rvPos[tightsTris[i]];
+      if (main(p) !== B.neck) continue;
+      neckC[0] += Q[p * 3];
+      neckC[1] += Q[p * 3 + 2];
+      n++;
+    }
+    neckC[0] /= Math.max(1, n);
+    neckC[1] /= Math.max(1, n);
+  }
+  const RING = 24;
+  const ring = new Float32Array(RING).fill(1e9);
+  const angOf = (x: number, z: number) => ((Math.atan2(x - neckC[0], z - neckC[1]) / (Math.PI * 2)) + 1) % 1;
+  for (let i = 0; i < tightsTris.length; i++) {
+    const p = rvPos[tightsTris[i]];
+    if (main(p) !== B.neck || Math.hypot(Q[p * 3] - neckC[0], Q[p * 3 + 2] - neckC[1]) > 0.12) continue;
+    const bi = Math.floor(angOf(Q[p * 3], Q[p * 3 + 2]) * RING) % RING;
+    ring[bi] = Math.min(ring[bi], Q[p * 3 + 1]);
+  }
+  {
+    // fill any empty direction from its neighbours, then smooth
+    const ok = [...ring].filter((y) => y < 1e8);
+    const mean = ok.length ? ok.reduce((a, b) => a + b, 0) / ok.length : j.neck[1];
+    for (let i = 0; i < RING; i++) if (ring[i] > 1e8) ring[i] = mean;
+    for (let r = 0; r < 4; r++) {
+      const c = ring.slice();
+      for (let i = 0; i < RING; i++) ring[i] = (c[(i + RING - 2) % RING] + 2 * c[(i + RING - 1) % RING] + 3 * c[i] + 2 * c[(i + 1) % RING] + c[(i + 2) % RING]) / 9;
+    }
+  }
+  const collarY = (x: number, z: number) => {
+    const a = angOf(x, z) * RING;
+    const i0 = Math.floor(a) % RING, f = a - Math.floor(a);
+    const base = ring[i0] * (1 - f) + ring[(i0 + 1) % RING] * f;
+    // the front (+z) dips by the neckline's depth
+    const front = Math.cos(angOf(x, z) * Math.PI * 2);
+    return base + 0.004 - dip * Math.max(0, front) ** 2.2;
+  };
+  // (the collar only cuts round the neck: out on the shoulders, the cloth goes on up over them)
+  const nearNeck = (x: number, z: number) => Math.hypot(x - neckC[0], (z - neckC[1]) * 0.9) < 0.1;
   const topKeep = (p: number) => {
     const b = main(p);
     if (legBone(b)) return false;
-    if (b === B.neck) return false;
+    if (Q[p * 3 + 1] > collarY(Q[p * 3], Q[p * 3 + 2]) && nearNeck(Q[p * 3], Q[p * 3 + 2])) return false;
+    if (b === B.neck && !nearNeck(Q[p * 3], Q[p * 3 + 2])) return false;
     if (armBone(b)) {
       if (b === B.wrL || b === B.wrR) return false;
       if (!long) return (b === B.shL || b === B.shR) && (t.kind !== 'tank');
@@ -421,7 +477,7 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
     return yOf(p) > pelvisY + (t.kind === 'jacket' || t.kind === 'coat' || t.kind === 'duster' ? -0.02 : 0.03) - 0.015;
   };
   const hemY = pelvisY + (t.kind === 'jacket' || t.kind === 'coat' || t.kind === 'duster' ? -0.02 : 0.03);
-  part('top', 'helper-tights', t.fabric === 'leather' ? 'leather' : 'fabric', t.color, t.fabric, topKeep, topPush + 0.004, drape(4, [{ below: hemY - 0.05, y: hemY + 0.006 }]));
+  part('top', 'helper-tights', t.fabric === 'leather' ? 'leather' : 'fabric', t.color, t.fabric, topKeep, topPush + 0.004, drape(4, [{ below: hemY - 0.05, y: hemY + 0.006 }], collarY));
   // a coat's skirt, from the skirt helper
   if (t.kind === 'coat' || t.kind === 'duster') {
     const kneeY0 = (j.knL[1] + j.knR[1]) / 2;
@@ -497,7 +553,26 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
       const back = THREE.MathUtils.clamp((eyeZ - 0.06 - z) / 0.04, 0, 1);
       return Math.max(front, back);
     };
-    part('hair', 'body', 'hair', s.hairColor, undefined, scalp, (p) => 0.0008 + vol * (0.35 + 0.65 * depth(p)) * (s.hair === 'swept' && Q[p * 3 + 2] > eyeZ - 0.04 ? 1.8 : 1), drape(2));
+    // the cap is the roots and the scalp showing between the locks: darker than the hair itself
+    const cards = s.hair !== 'buzz';
+    const capColor = cards ? new THREE.Color(s.hairColor).multiplyScalar(0.55).getHex() : s.hairColor;
+    part(cards ? 'hairCap' : 'hair', 'body', 'hair', capColor, undefined, scalp, (p) => 0.0008 + (cards ? 0.002 : vol * (0.35 + 0.65 * depth(p))), drape(2));
+    if (cards) {
+      const bt = tri('body');
+      const roots: number[] = [];
+      for (let i = 0; i < bt.length; i += 3) {
+        const a = rvPos[bt[i]], b2 = rvPos[bt[i + 1]], c = rvPos[bt[i + 2]];
+        if (scalp(a) && scalp(b2) && scalp(c)) roots.push(a, b2, c);
+      }
+      // the head's surface (a sample), for the locks to lie over
+      const headVerts: number[] = [];
+      for (let v = 0; v < nv; v += 3) if (main(v) === B.neck && Q[v * 3 + 1] > j.neck[1] + 0.03) headVerts.push(v);
+      const hp = hairCards(s.hair, s.hairColor, (s.hairColor ^ s.skin) & 0xffff, roots, Q, N, j, [(mj('eyeL')[0] + mj('eyeR')[0]) / 2, eyeY, eyeZ], headVerts);
+      if (hp) {
+        tris += hp.index.length / 3;
+        parts.push(hp);
+      }
+    }
   }
   // ── the eyes: MakeHuman's proxy, fitted into the sockets
   const fit = f32(d, 'eyeFit');

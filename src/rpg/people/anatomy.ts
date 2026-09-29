@@ -78,7 +78,7 @@ export interface HumanSpec {
   seed: number;
 }
 
-export type MatKind = 'skin' | 'fabric' | 'hair' | 'leather' | 'rubber' | 'metal' | 'lid' | 'eye';
+export type MatKind = 'skin' | 'fabric' | 'hair' | 'hairCard' | 'leather' | 'rubber' | 'metal' | 'lid' | 'eye';
 
 export interface PartSpec {
   name: string;

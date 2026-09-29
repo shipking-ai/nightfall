@@ -4,7 +4,7 @@ import { bindPose, jointMatrices, BIND_BONES } from './bind';
 import { headCentre, type HumanSpec, type Joints } from './anatomy';
 import type { BuiltHuman, BuiltPart } from './build';
 import type { MHBuilt } from './mh';
-import { skinMaterial, fabricMaterial, hairMaterial, eyeMaterial } from './materials';
+import { skinMaterial, fabricMaterial, hairMaterial, hairCardMaterial, eyeMaterial } from './materials';
 
 /**
  * A person in the RPG: the sculpted meshes, skinned to one skeleton that
@@ -168,7 +168,8 @@ export class RealHuman {
         const brows = h.parts.some((q: BuiltPart) => q.mat === 'eye') ? { eyes: h.eyes as [number, number, number][], r: h.eyeR, color: bc, thick: (s.sex > 0.5 ? 0.8 : 0.35) * (1 - s.age * 0.4) } : undefined;
         mat = skinMaterial(p.color, this.headC, stubble, lip, brows);
       }
-      else if (p.mat === 'hair') mat = hairMaterial(p.color, this.headC.clone().add(new THREE.Vector3(0, 0.1, -0.02)));
+      else if (p.mat === 'hairCard') mat = hairCardMaterial(p.color);
+      else if (p.mat === 'hair') mat = hairMaterial(p.color, this.headC.clone().add(new THREE.Vector3(0, 0.1, -0.02)), p.name === 'hairCap');
       else mat = fabricMaterial(p.color, p.fabric ?? 'cotton', p.mat);
       const mesh = new THREE.SkinnedMesh(geo, mat);
       mesh.bindMode = THREE.DetachedBindMode;

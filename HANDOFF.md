@@ -1,6 +1,6 @@
 # HANDOFF — NIGHTFALL
 
-Last updated: 2026-09-29 (RPG R1–R3 done; R4a wild and R4b dread/roadside done; R4c combat with people, vehicles, minigames next). Read this first, then [README.md](README.md) for architecture and controls.
+Last updated: 2026-09-29 (RPG R1–R4d done, plus realism passes: faces, sky light, trees, grass, rocks, hair cards; R5 next). Read this first, then [README.md](README.md) for architecture and controls.
 
 ## State in one paragraph
 
@@ -92,10 +92,44 @@ The user's brief is a very large "fifth game" addendum: an endless streamed worl
 - **`sim/Figures.ts`:** standalone RealHumans on the rig with looping clips, sitting and watching.
 - **Playtest:** `tools/playtest/rpg-dark.mjs`.
 
+### Done: R4c, violence (commit 25306e1)
+- **`Populace`:** residents have hp; they flee, die, or chase. `hitTest`, `damage`, `scatter`, `witnesses`, `standDown`, plus `gone`, `wanted` and `onCatch`.
+- **`Life`:** `violence()` (witnesses report once, via a `reported` set, costing Watch standing and adding a bounty), `gunfire()`, and `arrest()`.
+- **Playtest:** `tools/playtest/rpg-fight.mjs`.
+
+### Done: R4d, vehicles and cards (commit 7d92b73)
+- **`Vehicles.ts`:** a `Tune` per vehicle (accel, vmax, steer, offroad), seat, reach, surface grip. `spawn(spec)` takes a mesh, tail lights, kind, tune and seat.
+- **`Rpg`:** `parkCar`, `spawnCar`, and `carjack` (from `RoadTraffic.stoppedNear` and `take`), with a `TUNES` table. App's `carName()` and seat override.
+- **Blackjack** at bars (in `dialogue.ts`).
+- **Playtest:** `tools/playtest/rpg-drive.mjs`.
+
+### Done: realism passes (the user's priority: "as realistic and epic as possible")
+- **Faces (a1179d7):**
+  - `tools/mh/textures.py` builds `public/rpg/mh/eye.png` (MakeHuman's eye, CC0) and `regions.png` (lips, lids, nails and thickness masks, from MPFB2, CC0).
+  - Skin: pore normal map, regions, and thin-skin light transmission.
+  - Brows are drawn in the skin shader (`BROW_FN`).
+  - Eye: a real iris texture; the cornea is discarded.
+- **Cloth:** weave, knit and leather normal maps (`normalTex`, `FABRIC_NORMAL`).
+- **Sky light:** Poly Haven HDRIs via `@pmndrs/assets` (CC0), unpacked by `tools/assets/pmndrs.py` into `public/rpg/env/*.exr`. `Rpg.skyFor()` picks one by biome and hour, and `HDRI_GAIN` scales it every frame after the atmosphere.
+- **Terrain micro-normals:** grit, cracked and rock maps in `Terrain.ts`, near material only.
+- **Trees (bc6f694):** `world/RealTrees.ts` grows EZ-Tree trees (`@dgreenheck/ez-tree`, MIT) per kind within 75 m; the stand-ins take over beyond.
+- **Ground cover and rocks (ee289d0):**
+  - `world/GroundCover.ts` lays up to 46k grass blades on a ground-fixed grid within 28 m, with wildflowers. Its models come from the EZ-Tree demo, in `public/rpg/models`.
+  - Scanned rocks replace rocks and boulders within 75 m (`RealTrees.loadRocks`).
+  - `world/gltf.ts` is a shared Draco loader, with the decoder in `public/rpg/draco` (Apache-2.0).
+- **Hair cards (in progress):**
+  - `people/hairCards.ts` grows about 2,000 tapered cards per head from scalp roots, per cut. The ellipsoids are the neck and torso; the head itself uses its real surface via `onHead`. Short cuts hug the scalp; ponytail, bun and braids gather to ties.
+  - `hairCardMaterial` uses a canvas strand texture. The old scalp shell remains as a darker, matte `hairCap` under the cards (still the whole cut for `buzz`).
+  - Test with `SHOTS_LIST=face HAIR=long VIEW=front|side|back|top node tools/playtest/people.mjs`.
+- **Necklines:** tops are cut along a smooth collar curve round the neck (`collarY`/`nearNeck` in `mh.ts`), and the edge is snapped onto it.
+- **Credits:** everything is listed in `public/licenses/README.txt`.
+- **Not reachable from the build container:** api.polyhaven.com, ambientcg.com and MakeHuman's asset servers (hair and clothes packs), so hair and clothes are grown in code.
+
 ### Still to build (the addendum's list)
 - **R2 leftovers:** more landmark kinds.
 - **R3 leftovers:** combat-based jobs (bounties), owned vehicles in saves, the Places tab becomes the atlas in R5.
-- **R4 remaining:** combat with people (residents taking hits, deaths with the `react.death*` clips, witnesses leading to Watch standing and bounty), vehicle types and physics, boats anywhere, parkour, in-world minigames (cards at bars, arcade), more secrets.
+- **R4 remaining:** boats outside District 03, parkour, more minigames (arcade), more secrets.
+- **Realism next:** looser clothes (the tops and trousers are still close to the body), far trees, town street detail.
 - **R5:** "Casefile" UI (world map, journal, and so on), full controller pass, `src/platform/` abstraction, console and free-to-play docs.
 - **R6:** the full playtest checklist and a 60-minute soak.
 

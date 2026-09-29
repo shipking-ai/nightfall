@@ -292,7 +292,7 @@ export function fabricMaterial(color: number, fabric: Fabric, kind: MatKind): TH
 }
 
 /** Hair: strands along the flow (down from the crown), light at the tips, a sheen along them. */
-export function hairMaterial(color: number, crown: THREE.Vector3): THREE.MeshStandardMaterial {
+export function hairMaterial(color: number, crown: THREE.Vector3, matte = false): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0 });
   m.onBeforeCompile = (sh) => {
     common(sh);
@@ -319,7 +319,7 @@ export function hairMaterial(color: number, crown: THREE.Vector3): THREE.MeshSta
 {
   vec3 d = vBind - uCrown;
   float strand = nf_noise(vec2(atan(d.x, d.z) * 260.0, length(d) * 18.0));
-  roughnessFactor = clamp(0.32 + strand * 0.35 - uWetP * 0.15, 0.15, 0.9);
+  roughnessFactor = clamp(${matte ? '0.75' : '0.32'} + strand * 0.35 - uWetP * 0.15, 0.15, 0.95);
 }`,
       )
       .replace(
@@ -333,7 +333,66 @@ export function hairMaterial(color: number, crown: THREE.Vector3): THREE.MeshSta
       );
     sh.fragmentShader = aoPass(sh.fragmentShader);
   };
-  m.customProgramCacheKey = () => 'nf-rpg-hair';
+  m.customProgramCacheKey = () => `nf-rpg-hair${matte ? '-matte' : ''}`;
+  return m;
+}
+
+let strands: THREE.CanvasTexture | null = null;
+/**
+ * The strands a hair card carries, drawn once: a couple of hundred fine
+ * hairs across the card, each its own length and shade, darker at the root,
+ * thinning to nothing at the tip (alpha).
+ */
+function strandTexture() {
+  if (strands) return strands;
+  const W = 256, H = 512;
+  const cv = document.createElement('canvas');
+  cv.width = W;
+  cv.height = H;
+  const g = cv.getContext('2d')!;
+  g.clearRect(0, 0, W, H);
+  let seed = 7;
+  const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < 260; i++) {
+    const x = r() * W;
+    const len = H * (0.55 + r() * 0.45);
+    const drift = (r() - 0.5) * 10;
+    const shade = 150 + r() * 105;
+    const w = 0.8 + r() * 1.4;
+    // a hair: dark at the root, its own shade along, fading out at the tip
+    const grad = g.createLinearGradient(0, 0, 0, len);
+    grad.addColorStop(0, `rgba(${shade * 0.55},${shade * 0.55},${shade * 0.55},1)`);
+    grad.addColorStop(0.25, `rgba(${shade},${shade},${shade},1)`);
+    grad.addColorStop(0.8, `rgba(${shade},${shade},${shade},0.9)`);
+    grad.addColorStop(1, `rgba(${shade},${shade},${shade},0)`);
+    g.strokeStyle = grad;
+    g.lineWidth = w;
+    g.beginPath();
+    g.moveTo(x, 0);
+    g.bezierCurveTo(x + drift * 0.3, len * 0.33, x + drift * 0.7, len * 0.66, x + drift, len);
+    g.stroke();
+  }
+  strands = new THREE.CanvasTexture(cv);
+  strands.flipY = false;
+  strands.colorSpace = THREE.SRGBColorSpace;
+  strands.anisotropy = 8;
+  strands.wrapS = THREE.RepeatWrapping;
+  return strands;
+}
+
+/**
+ * Hair cards: the strand texture, cut out by its alpha, with a soft sheen.
+ */
+export function hairCardMaterial(color: number): THREE.MeshPhysicalMaterial {
+  const m = new THREE.MeshPhysicalMaterial({
+    color, map: strandTexture(), alphaTest: 0.42, side: THREE.DoubleSide,
+    roughness: 0.58, metalness: 0, specularIntensity: 0.3,
+  });
+  m.onBeforeCompile = (sh) => {
+    // both faces of a card are the outside of the hair: no flipping the normal round for the back
+    sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\n normal = normalize(vNormal);');
+  };
+  m.customProgramCacheKey = () => 'nf-rpg-haircard';
   return m;
 }
 
