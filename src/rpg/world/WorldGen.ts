@@ -449,7 +449,9 @@ export class WorldGen {
         h[i] = Math.min(h[i + 1] + grade * ds, Math.max(h[i + 1] - grade * ds, h[i]));
       }
     }
-    // over water and across valleys: bridges, never below the water's reach
+    // over water and across real valleys: bridges, never below the water's reach. A dip the road
+    // simply crosses gets an embankment (the ground is built up to it), not a viaduct over a field.
+    const overWater = new Uint8Array(m);
     for (let i = 0; i < m; i++) {
       const xx = pts[i * 2], zz = pts[i * 2 + 1];
       const river = this.riverAt(xx, zz);
@@ -458,7 +460,20 @@ export class WorldGen {
         const surf = river ? river.surface : lk ? lk.level : SEA_Y;
         h[i] = Math.max(h[i], surf + 5.5);
         bridge[i] = 1;
-      } else if (raw[i] < h[i] - 7) bridge[i] = 1;
+        overWater[i] = 1;
+      } else if (raw[i] < h[i] - 30) bridge[i] = 1;
+    }
+    // (a short run of bridge over dry ground is filled in instead)
+    for (let i = 0; i < m; ) {
+      if (!bridge[i]) {
+        i++;
+        continue;
+      }
+      let j = i;
+      let anyWet = false;
+      for (; j < m && bridge[j]; j++) if (overWater[j]) anyWet = true;
+      if (!anyWet && j - i < 4) for (let k = i; k < j; k++) bridge[k] = 0;
+      i = j;
     }
     // smooth ramps onto the bridges
     for (let pass = 0; pass < 3; pass++) for (let i = 1; i < m - 1; i++) if (bridge[i]) {
@@ -633,7 +648,8 @@ export class WorldGen {
       if (x < rd.x0 || x > rd.x1 || z < rd.z0 || z > rd.z1) continue;
       const P = rd.pts, m = P.length / 2;
       const half = rd.width / 2;
-      const reach = half + 26;
+      // (an embankment is as wide as it needs to be: a high one spreads further)
+      const reach = half + 26 + 40;
       for (let i = 0; i < m - 1; i++) {
         const ax = P[i * 2], az = P[i * 2 + 1], bx = P[i * 2 + 2], bz = P[i * 2 + 3];
         // cheap reject
@@ -647,12 +663,15 @@ export class WorldGen {
         if (d > reach) continue;
         const onBridge = rd.bridge[i] && rd.bridge[i + 1];
         const hr = rd.h[i] + (rd.h[i + 1] - rd.h[i]) * t;
-        const w = 1 - smooth(half + 1.2, reach, d);
+        const bank = half + 26 + Math.min(40, Math.abs(hr - h) * 1.3);
+        if (d > bank) continue;
+        const w = 1 - smooth(half + 1.2, bank, d);
         if (w > bestW) {
           bestW = w;
           if (!onBridge || d > half + 3) {
-            // embankment: the ground meets the road just below its surface
-            h = lerp(h, hr - 0.12, onBridge ? 0 : w);
+            // embankment: the ground meets the road's edge just below its surface, and is sunk well
+            // under the carriageway itself (so it can't show through between its samples)
+            h = lerp(h, hr - (d < half + 0.4 ? 0.55 : 0.12), onBridge ? 0 : w);
           }
           if (d < half + 0.3 && !onBridge) {
             road = 1;

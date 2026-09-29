@@ -3,7 +3,7 @@ import type { Rpg, RpgHost } from './Rpg';
 import { Game, newState, type GameState, type Tone } from './game/Game';
 import { Saves, type SlotId } from './game/saves';
 import { poiTalk, residentTalk, staffOf, type Node, type TalkCtx } from './game/dialogue';
-import { advanceMain, current, fail, MAIN_ID, mainPlaces, startMain, type QuestWorld } from './game/quests';
+import { advanceMain, current, fail, informant, MAIN_ID, mainPlaces, startMain, type QuestWorld } from './game/quests';
 import { heroSpec } from './people/kit';
 import type { HumanSpec } from './people/anatomy';
 import type { Walker } from './sim/Populace';
@@ -787,6 +787,7 @@ export class Life {
     const g = this.game;
     if (!g) {
       this.rpg.hud.setGoal(null);
+      this.rpg.goal = null;
       return;
     }
     g.s.playtime += dt;
@@ -872,7 +873,10 @@ export class Life {
     return this.panel === 'casefile' && this.atlas.input(dt, input);
   }
 
-  /** Point the compass at your pin, or whatever the tracked job wants next. */
+  /**
+   * Point the compass, and the marker in the world, at your pin or at whatever
+   * the tracked job wants next: a place, or a person (wherever they are now).
+   */
   private goal(p: THREE.Vector3) {
     const g = this.game!;
     const w = this.waypoint;
@@ -883,21 +887,64 @@ export class Life {
         this.rpg.hud.toast('You’re at your pin.');
       } else {
         this.rpg.hud.setGoal({ dx: w.x - p.x, dz: w.z - p.z, title: 'Pin', text: 'The place you marked on the map', dist });
+        this.rpg.goal = { x: w.x, y: this.rpg.streamer.heightAt(w.x, w.z), z: w.z, person: false, title: 'Pin', text: 'Your pin' };
         return;
       }
     }
+    // anyone a job sends you to stays findable (out of doors) while it's open
+    const pins = this.rpg.populace.pinned;
+    pins.clear();
+    for (const qq of g.s.quests) if (qq.state === 'active') for (const oo of qq.objectives) if (!oo.done && oo.who) pins.add(oo.who);
     const q = g.s.quests.find((x) => x.id === g.s.track && x.state === 'active');
-    const o = q && current(q);
+    let o = q && current(q);
+    // (a story from before the story named someone to ask: name them now)
+    if (q && o && q.id === MAIN_ID && Number(q.data.stage) === 1 && !o.who) {
+      const P = mainPlaces(this.world);
+      const who = informant(this.world, P.first);
+      if (who) {
+        o.who = who.id;
+        o.text = `Ask ${who.name} about “the ferryman”`;
+        q.data = { ...q.data, informant: who.id, informantName: who.name };
+        pins.add(who.id);
+      }
+      o = current(q);
+    }
     if (!q || !o) {
       this.rpg.hud.setGoal(null);
+      this.rpg.goal = null;
       return;
     }
-    let x = o.at?.x ?? p.x, z = o.at?.z ?? p.z;
+    let x = o.at?.x ?? p.x, z = o.at?.z ?? p.z, y: number | null = null, person = false;
     if (o.who) {
-      const w = this.rpg.populace.find(o.who);
-      if (w) (x = w.pos.x), (z = w.pos.z);
+      const wk = this.rpg.populace.find(o.who);
+      if (wk) {
+        x = wk.pos.x;
+        z = wk.pos.z;
+        y = wk.pos.y;
+        person = true;
+      } else {
+        const at = this.whereIs(o.who, o.at);
+        if (at) {
+          x = at.x;
+          z = at.z;
+          person = true;
+        }
+      }
     }
     const dist = Math.hypot(x - p.x, z - p.z);
     this.rpg.hud.setGoal({ dx: x - p.x, dz: z - p.z, title: q.title, text: o.text, dist });
+    this.rpg.goal = { x, y: y ?? this.rpg.streamer.heightAt(x, z), z, person, title: q.title, text: o.text };
+  }
+
+  private whereV = new THREE.Vector3();
+  /** Where a resident is right now by their hours (they needn't be anywhere near you). */
+  private whereIs(id: string, near?: { x: number; z: number }): { x: number; z: number } | null {
+    if (!near) return null;
+    const s = this.rpg.gen.placeAt(near.x, near.z, 400);
+    if (!s) return null;
+    const r = this.rpg.populace.residents(s).find((x) => x.id === id);
+    if (!r) return null;
+    const plan = this.rpg.streamer.towns.plan(s);
+    return this.rpg.populace.where(r, plan, this.rpg.atmos.minutes, this.whereV) ? { x: this.whereV.x, z: this.whereV.z } : null;
   }
 }

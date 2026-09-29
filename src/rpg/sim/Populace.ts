@@ -143,6 +143,20 @@ export class Populace {
    * walking between home and work, out at lunch, wandering in the evening.
    */
   where(r: Resident, plan: TownPlan, minutes: number, out: THREE.Vector3): boolean {
+    if (this.whereByHours(r, plan, minutes, out)) return true;
+    // someone a job is sending you to is always findable: when they'd be indoors, they wait outside their door
+    if (this.pinned.has(r.id) && plan.walk.length) {
+      const home = plan.walk[r.home];
+      out.set(home.x + 0.8, home.y, home.z + 0.8);
+      return true;
+    }
+    return false;
+  }
+
+  /** residents a job needs you to find (kept out of doors) */
+  pinned = new Set<string>();
+
+  private whereByHours(r: Resident, plan: TownPlan, minutes: number, out: THREE.Vector3): boolean {
     const out2 = out;
     const W = plan.walk;
     if (!W.length) return false;

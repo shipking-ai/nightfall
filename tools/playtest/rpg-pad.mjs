@@ -1,6 +1,6 @@
 // R5: every RPG screen with only a controller. For each: is something focused (with the ring), do the
 // d-pad, A, B and the shoulders do what they should, and can you always get back out.
-import { launch } from './lib.mjs';
+import { launch, enterRpg } from './lib.mjs';
 const t = await launch({ pad: 'xbox', w: 1280, h: 720 });
 const { page, shot, tap, waitState, focused, errors, step, press } = t;
 const until = async (fn, secs = 60) => { for (let i = 0; i < secs * 2; i++) { if (await fn()) return true; await t.wait(500); } return false; };
@@ -23,16 +23,7 @@ const seek = async (dir, re, max = 30) => {
 await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('nightfall.rpg.save')) localStorage.removeItem(k); });
 await waitState('landing');
 await t.wait(3000);
-await until(async () => (await focused()).includes('Enter'), 8);
-for (let i = 0; i < 6 && !(await focused()).includes('Enter'); i++) { await tap(i < 3 ? 'Down' : 'Up'); await t.wait(700); }
-await tap('A');
-await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 20);
-await t.wait(1200);
-for (let i = 0; i < 8 && !(await focused()).includes('RPG'); i++) { await tap('Down'); await t.wait(800); }
-await t.wait(2000);
-await tap('A');
-await until(async () => ['playing', 'overlay'].includes(await page.evaluate(() => window.nf.state)), 240);
-await until(() => page.evaluate(() => window.nf.rpg.life.panel === 'creator'), 60);
+await enterRpg(t, { creator: 'keep' });
 await step(1);
 
 // ── the mirror

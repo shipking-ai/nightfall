@@ -40,3 +40,33 @@ export async function launch({ pad = 'xbox', w = 960, h = 540, url = 'http://loc
   };
   return { browser, page, errors, state, waitState, shot, tap, hold, stick, focused, step, press, wait: (ms) => page.waitForTimeout(ms) };
 }
+
+/**
+ * Into the RPG, checked: open the mode select from the title, choose RPG, and make sure it really started
+ * (a missed tap used to leave a test running on the title screen). Retries; throws if it can't.
+ * `creator`: 'begin' starts a life with the defaults, 'keep' leaves the mirror open.
+ */
+export async function enterRpg(t, { creator = 'begin' } = {}) {
+  const { page, tap, focused, waitState } = t;
+  const until = async (fn, secs = 60) => { for (let i = 0; i < secs * 2; i++) { if (await fn().catch(() => false)) return true; await t.wait(500); } return false; };
+  const st = () => page.evaluate(() => window.nf.state);
+  let entered = false;
+  for (let attempt = 0; attempt < 3 && !entered; attempt++) {
+    await waitState('landing');
+    await t.wait(2500);
+    await until(async () => (await focused()).includes('Enter'), 8);
+    for (let i = 0; i < 6 && !(await focused()).includes('Enter'); i++) { await tap(i < 3 ? 'Down' : 'Up'); await t.wait(700); }
+    await tap('A');
+    if (!(await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 20))) continue;
+    await t.wait(1200);
+    // (the item itself, rather than counting d-pad presses to it)
+    await page.evaluate(() => document.querySelector('.modes__item--rpg')?.focus());
+    await t.wait(600);
+    await tap('A');
+    entered = await until(async () => ['playing', 'overlay', 'entering'].includes(await st()), 60) && (await until(async () => ['playing', 'overlay'].includes(await st()), 240));
+    if (!entered) console.log(`(enterRpg: attempt ${attempt + 1} did not start the RPG; state ${await st()})`);
+  }
+  if (!entered) throw new Error('could not enter the RPG');
+  await until(() => page.evaluate(() => window.nf.rpg.life.panel === 'creator' || !!window.nf.rpg.life.game), 60);
+  if (creator === 'begin' && (await page.evaluate(() => window.nf.rpg.life.panel === 'creator'))) await page.evaluate(() => document.querySelector('.cr__begin').click());
+}

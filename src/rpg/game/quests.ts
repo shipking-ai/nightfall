@@ -228,6 +228,14 @@ export function startMain(w: QuestWorld, g: Game) {
   g.note('Found a letter in my coat, signed M.');
 }
 
+/** Someone in town who'd know the ferryman: a talker (behind a counter, on the beat), not the ferryman themself. */
+export function informant(w: QuestWorld, town: Settlement) {
+  const people = w.residents(town);
+  const ferry = people.find((p) => p.job === 'driver') ?? people.find((p) => p.job === 'retired') ?? people[0];
+  const good = ['bartender', 'shopkeeper', 'police', 'mechanic', 'nurse', 'teacher'];
+  return people.find((p) => p.id !== ferry?.id && good.includes(p.job)) ?? people.find((p) => p.id !== ferry?.id && p.job !== 'drifter') ?? null;
+}
+
 /** Move the story on a stage: new objectives, a line in the journal. */
 export function advanceMain(w: QuestWorld, g: Game, q: Quest, stage: number, extra: Record<string, string | number> = {}) {
   const P = mainPlaces(w);
@@ -235,8 +243,12 @@ export function advanceMain(w: QuestWorld, g: Game, q: Quest, stage: number, ext
   q.data = { ...q.data, ...extra, stage };
   const at = (s: Settlement) => ({ x: s.x, z: s.z, r: s.radius, label: s.name });
   if (stage === 1) {
-    q.objectives.push({ text: `Ask around ${P.first.name} for “the ferryman”`, done: false, at: at(P.first) });
-    g.note(`${P.first.name}. Now to find whoever “the ferryman” is.`);
+    const who = informant(w, P.first);
+    if (who) q.data = { ...q.data, informant: who.id, informantName: who.name };
+    q.objectives.push(who
+      ? { text: `Ask ${who.name} about “the ferryman”`, done: false, who: who.id, at: at(P.first) }
+      : { text: `Ask around ${P.first.name} for “the ferryman”`, done: false, at: at(P.first) });
+    g.note(`${P.first.name}. Now to find whoever “the ferryman” is.${who ? ` ${who.name} might know.` : ''}`);
   } else if (stage === 2) {
     q.objectives.push({ text: `Talk to ${q.data.ferryName}`, done: false, who: String(q.data.ferry), at: at(P.first) });
   } else if (stage === 3) {

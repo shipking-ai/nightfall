@@ -55,6 +55,19 @@
   opacity: 0; transition: opacity var(--t-med) var(--ease); text-shadow: 0 0 2px rgba(0, 0, 0, .95), 0 1px 10px rgba(0, 0, 0, .75); }
 .rpgg.is-on { opacity: 1; }
 .rpgg__title { color: #e6b25c; }
+
+/* ── the goal in the world: a label that rides the marker (and holds at the screen's edge) ── */
+.rpgmk { position: fixed; left: 0; top: 0; z-index: 4; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  opacity: 0; transition: opacity .4s; will-change: transform; text-align: center; max-width: 42vw; }
+.rpgmk.is-on { opacity: 1; }
+.rpgmk__gem { width: 10px; height: 10px; transform: rotate(45deg); background: #ffc46a; box-shadow: 0 0 10px rgba(255, 176, 74, .9); margin-bottom: 4px; }
+.rpgmk__label { font-family: var(--f-display, Georgia, serif); font-size: 15px; color: #f3e6c8; text-shadow: 0 1px 3px rgba(0, 0, 0, .9), 0 0 12px rgba(0, 0, 0, .6); line-height: 1.2; }
+.rpgmk__dist { font-size: 11px; letter-spacing: .14em; color: #e6b25c; text-shadow: 0 1px 2px rgba(0, 0, 0, .9); font-variant-numeric: tabular-nums; }
+.rpgmk__arrow { display: none; color: #ffc46a; font-size: 14px; text-shadow: 0 0 8px rgba(0, 0, 0, .8); }
+/* off screen: just the arrow, the distance and a short label, at the edge */
+.rpgmk.is-off .rpgmk__arrow { display: block; }
+.rpgmk.is-off .rpgmk__gem { display: none; }
+.rpgmk.is-off .rpgmk__label { font-size: 12px; opacity: .85; }
 .rpgg__text { font-size: 13px; color: var(--paper); text-overflow: ellipsis; overflow: hidden; }
 .rpgs__cond { color: #ff9a7a; letter-spacing: 0.16em; }
 

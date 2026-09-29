@@ -1,5 +1,5 @@
 // R5: the atlas. Open the Map tab, zoom out with a trigger, pan with the stick, drop a pin with A, and check the compass follows it.
-import { launch } from './lib.mjs';
+import { launch, enterRpg } from './lib.mjs';
 const t = await launch({ pad: 'xbox', w: 1280, h: 720 });
 const { page, shot, tap, hold, stick, waitState, focused, errors } = t;
 const until = async (fn, secs = 60) => { for (let i = 0; i < secs * 2; i++) { if (await fn()) return true; await t.wait(500); } return false; };
@@ -8,17 +8,7 @@ const fail = (m) => { log('FAIL', m); process.exitCode = 1; };
 await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('nightfall.rpg.save')) localStorage.removeItem(k); });
 await waitState('landing');
 await t.wait(3000);
-await until(async () => (await focused()).includes('Enter'), 8);
-for (let i = 0; i < 6 && !(await focused()).includes('Enter'); i++) { await tap(i < 3 ? 'Down' : 'Up'); await t.wait(700); }
-await tap('A');
-await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 20);
-await t.wait(1200);
-for (let i = 0; i < 8 && !(await focused()).includes('RPG'); i++) { await tap('Down'); await t.wait(800); }
-await t.wait(2000);
-await tap('A');
-await until(async () => ['playing', 'overlay'].includes(await page.evaluate(() => window.nf.state)), 240);
-await until(() => page.evaluate(() => window.nf.rpg.life.panel === 'creator'), 30);
-await page.evaluate(() => document.querySelector('.cr__begin').click());
+await enterRpg(t);
 await t.wait(2000);
 // chart a stretch of country as if we'd walked it: a band from here to the first town
 const info = await page.evaluate(() => {

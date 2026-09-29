@@ -124,6 +124,8 @@ export function roadGeometry(roads: Road[], x0: number, z0: number, size: number
         const cross = (pos[base * 3 + 3] - pos[base * 3]) * (pos[base * 3 + 8] - pos[base * 3 + 2]) - (pos[base * 3 + 5] - pos[base * 3 + 2]) * (pos[base * 3 + 6] - pos[base * 3]);
         if (cross < 0) idx.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
         else idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+        // the road surface is what you stand and drive on (the ground under it is sunk out of sight)
+        if (!rd.bridge[i] && !rd.bridge[i + 1]) decks.push({ ax, az, bx, bz, ha: rd.h[i] + 0.04, hb: rd.h[i + 1] + 0.04, half: half + 0.3 });
         if (rd.bridge[i] || rd.bridge[i + 1]) {
           decks.push({ ax, az, bx, bz, ha: rd.h[i], hb: rd.h[i + 1], half: half + 0.6 });
           rails.push({ ax: ax - nax * (half + 0.4), az: az - naz * (half + 0.4), bx: bx - nbx * (half + 0.4), bz: bz - nbz * (half + 0.4), ha: rd.h[i], hb: rd.h[i + 1] });

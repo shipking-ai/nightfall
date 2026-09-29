@@ -29,6 +29,7 @@ import { RoadTraffic, vehicleMesh } from './sim/RoadTraffic';
 import { Wildlife } from './sim/Wildlife';
 import { GroundCover } from './world/GroundCover';
 import { setWarmer } from './world/warm';
+import { GoalMarker, type Goal } from './ui/GoalMarker';
 import { terrainUniforms } from './world/Terrain';
 import { Director } from './sim/Director';
 import type { Vehicles, DrivableCar } from '../entities/Vehicles';
@@ -95,6 +96,9 @@ export class Rpg {
   private parkT = 0;
   group = new THREE.Group();
   /** where you are, in words */
+  /** where the tracked job (or your pin) wants you: shown in the world and on screen */
+  goal: Goal | null = null;
+  marker: GoalMarker;
   place = { name: 'District 03', region: 'Merrow', biome: 'temperate' as BiomeId, settlement: null as Settlement | null };
   private envT = 0;
   private envTex: THREE.Texture | null = null;
@@ -122,6 +126,8 @@ export class Rpg {
     this.atmos = new Atmosphere(this.gen, host.sky, host.fog, host.lighting, host.weather, host.scene);
     this.atmos.onThunder = (d, s) => host.thunder(d, s);
     this.hud = new RpgHud(host.ui);
+    this.marker = new GoalMarker(host.ui);
+    this.group.add(this.marker.group);
     this.far = new FarCities(this.gen, this.streamer.towns);
     this.populace = new Populace(this.gen, this.streamer.towns, host.collision);
     this.traffic = new RoadTraffic(this.gen, host.mats);
@@ -191,6 +197,8 @@ export class Rpg {
 
   stop() {
     const h = this.host;
+    this.goal = null;
+    this.marker.clear();
     this.life.autosave();
     this.life.closeAll();
     this.life.creator.close();
@@ -310,6 +318,7 @@ export class Rpg {
     h.scene.environmentIntensity *= this.envGain;
     this.life.update(dt, live);
     this.hud.update(dt, h.follow.yaw, this.atmos.label, this.atmos.describe(), this.place.name, this.place.region);
+    this.marker.update(dt, performance.now() / 1000, this.goal, h.camera, h.player.pos, this.hud.shown && !this.life.panel);
   }
 
   /**

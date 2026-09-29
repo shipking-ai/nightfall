@@ -55,7 +55,10 @@ export class RpgHud {
     root.append(this.el);
   }
 
+  shown = false;
+
   show(on: boolean) {
+    this.shown = on;
     setOn(this.el, on);
   }
 

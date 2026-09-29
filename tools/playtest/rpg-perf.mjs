@@ -1,7 +1,7 @@
 // Freezes: where does the main thread go while you travel? Updates only (no drawing, which SwiftShader
 // makes meaningless), the player carried along at driving speed from the start through the first town.
 // Reports the slowest frames, long tasks between frames, and a CPU profile by function.
-import { launch } from './lib.mjs';
+import { launch, enterRpg } from './lib.mjs';
 import { writeFileSync } from 'node:fs';
 const t = await launch({ pad: 'xbox', w: 960, h: 540 });
 const { page, tap, waitState, focused, step } = t;
@@ -10,17 +10,7 @@ const log = (...a) => console.log(...a);
 await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('nightfall.rpg.save')) localStorage.removeItem(k); });
 await waitState('landing');
 await t.wait(3000);
-await until(async () => (await focused()).includes('Enter'), 8);
-for (let i = 0; i < 6 && !(await focused()).includes('Enter'); i++) { await tap(i < 3 ? 'Down' : 'Up'); await t.wait(700); }
-await tap('A');
-await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 20);
-await t.wait(1200);
-for (let i = 0; i < 8 && !(await focused()).includes('RPG'); i++) { await tap('Down'); await t.wait(800); }
-await t.wait(2000);
-await tap('A');
-await until(async () => ['playing', 'overlay'].includes(await page.evaluate(() => window.nf.state)), 240);
-await until(() => page.evaluate(() => window.nf.rpg.life.panel === 'creator'), 30);
-await page.evaluate(() => document.querySelector('.cr__begin').click());
+await enterRpg(t);
 await step(1);
 const FRAMES = Number(process.env.FRAMES ?? 4400);
 const cdp = await page.context().newCDPSession(page);
