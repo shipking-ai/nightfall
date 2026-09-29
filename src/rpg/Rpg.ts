@@ -12,6 +12,7 @@ import type { Lamp } from '../world/WorldContext';
 import { districtAt } from '../world/layout';
 import { WorldGen, DISTRICT_03, type Settlement } from './world/WorldGen';
 import { Streamer, CHUNK } from './world/Streamer';
+import { doorMat, signMats } from './world/Signs';
 import { BIOMES, CITY_STYLES, type BiomeId } from './world/biomes';
 import { Atmosphere } from './env/Atmosphere';
 import { Sea, createSeaMaterial } from './env/Sea';
@@ -19,7 +20,8 @@ import { Precip } from './env/Precip';
 import { RpgHud } from './ui/RpgHud';
 import { FarCities } from './world/FarCities';
 import { RealHuman } from './people/RealHuman';
-import { heroSpec } from './people/kit';
+import type { HumanSpec } from './people/anatomy';
+import { Life } from './Life';
 import { Populace } from './sim/Populace';
 import { RoadTraffic } from './sim/RoadTraffic';
 import type { Vehicles, DrivableCar } from '../entities/Vehicles';
@@ -45,6 +47,13 @@ export interface RpgHost {
   thunder: (delay: number, strength: number) => void;
   say: (lines: string[], who: string) => void;
   vehicles: Vehicles;
+  /** open or close the App's overlay for an RPG screen (menus take the controller, the game pauses) */
+  panel: (open: boolean, from?: 'playing' | 'pause') => void;
+  /** fade to black and back (sleeping, searching, travelling, loading) */
+  curtain: (on: boolean) => Promise<void>;
+  inVehicle: () => boolean;
+  /** River Road, where every life starts */
+  spawn: { x: number; z: number; yaw: number };
 }
 
 /**
@@ -80,7 +89,11 @@ export class Rpg {
   private tmp = new THREE.Vector3();
   /** you, as the RPG draws you */
   private hero: RealHuman | null = null;
+  /** a new look being built (it replaces the old one once it's ready) */
+  private heroNext: RealHuman | null = null;
   private saved: { body: Body; outfit: Outfit } | null = null;
+  /** the character, their things, the screens and the saves */
+  life: Life;
 
   constructor(private host: RpgHost) {
     this.streamer = new Streamer(this.gen, host.collision, host.mats, createSeaMaterial(host.sky, host.fog));
@@ -91,6 +104,7 @@ export class Rpg {
     this.far = new FarCities(this.gen, this.streamer.towns);
     this.populace = new Populace(this.gen, this.streamer.towns, host.collision);
     this.traffic = new RoadTraffic(this.gen, host.mats);
+    this.life = new Life(this, host);
     this.group.add(this.streamer.group, this.sea.mesh, this.precip.points, this.far.mesh, this.populace.group, this.traffic.group);
     this.group.visible = false;
     host.scene.add(this.group);
@@ -122,24 +136,12 @@ export class Rpg {
     h.camera.far = Math.max(h.camera.far, 6000);
     h.camera.updateProjectionMatrix();
     this.savedEnv = h.scene.environment;
-    // you: a real person, not the city's figure (built in a worker while the world loads)
+    // you: a real person, not the city's figure (built in a worker while the world loads).
+    // A save puts you back where (and when, and who) you were; otherwise the mirror opens once the world is up.
     const pl = h.player;
     this.saved = { body: pl.body, outfit: pl.outfit };
-    if (!this.hero) {
-      this.hero = new RealHuman(heroSpec(0.9, 7), pl.body, { hero: true });
-      this.group.add(this.hero.group);
-    }
-    const hero = this.hero;
-    const wear = () => {
-      pl.body = { ...hero.body };
-      pl.outfit = { ...pl.outfit, bulk: 1 };
-      pl.real = hero;
-      hero.group.visible = true;
-    };
-    if (hero.ready) wear();
-    else hero.onReady = () => {
-      if (this.active) wear();
-    };
+    const spec = this.life.resume();
+    this.setHero(spec, true);
     await this.streamer.preload(at, progress);
     this.locate(at);
     this.atmos.settle(at, this.place.biome);
@@ -149,6 +151,10 @@ export class Rpg {
 
   stop() {
     const h = this.host;
+    this.life.autosave();
+    this.life.closeAll();
+    this.life.creator.close();
+    this.life.panel = null;
     this.active = false;
     this.group.visible = false;
     this.streamer.clear();
@@ -223,6 +229,8 @@ export class Rpg {
     (m.lampWarm as THREE.MeshStandardMaterial).emissiveIntensity = 0.15 + 4.05 * dark;
     (m.lampCold as THREE.MeshStandardMaterial).emissiveIntensity = 0.15 + 3.35 * dark;
     this.streamer.glow.uniforms.uNight.value = dark;
+    for (const sm of signMats) sm.emissiveIntensity = 0.35 + 1.9 * dark;
+    doorMat.emissiveIntensity = 0.04 + 1.4 * dark;
     for (const l of this.cityLamps) if (!l.flicker) l.gain = dark;
     // the environment (reflections, ambient on shiny things) follows the sky every so often
     this.envT -= dt;
@@ -234,7 +242,43 @@ export class Rpg {
       this.envTex = tex;
       h.scene.environment = tex;
     }
+    this.life.update(dt, live);
     this.hud.update(dt, h.follow.yaw, this.atmos.label, this.atmos.describe(), this.place.name, this.place.region);
+  }
+
+  /**
+   * Dress the player in a realistic body made from this spec. The first
+   * time (or `now`) it's worn as soon as it's built; a change keeps the old
+   * body on until the new one is ready, then swaps.
+   */
+  setHero(spec: HumanSpec, now = false) {
+    const pl = this.host.player;
+    const body = this.saved?.body ?? pl.body;
+    const next = new RealHuman(JSON.parse(JSON.stringify(spec)), body, { hero: true });
+    next.group.visible = false;
+    this.group.add(next.group);
+    if (this.heroNext) this.drop(this.heroNext);
+    this.heroNext = next;
+    const wear = () => {
+      if (this.heroNext !== next) return;
+      this.heroNext = null;
+      const old = this.hero;
+      this.hero = next;
+      if (old && old !== next) this.drop(old);
+      if (!this.active) return;
+      pl.body = { ...next.body };
+      pl.outfit = { ...pl.outfit, bulk: 1 };
+      pl.real = next;
+      next.group.visible = true;
+    };
+    if (next.ready) wear();
+    else next.onReady = wear;
+    void now;
+  }
+
+  private drop(r: RealHuman) {
+    this.group.remove(r.group);
+    r.dispose();
   }
 
   /** Name the place: a town, a district of Merrow, or the open country and what it's like. */
@@ -297,22 +341,13 @@ export class Rpg {
     }
   }
 
-  /** Something to do with what's in front of you (a resident to talk to), for the interact prompt. */
+  /** Something to do with what's in front of you (a person, a door, a place to search), for the interact prompt. */
   interaction(pos: THREE.Vector3, fwd: THREE.Vector3): { name: string; verb: string; go: () => void } | null {
-    const w = this.populace.nearest(pos, fwd);
-    if (!w) return null;
-    return {
-      name: w.r.met ? w.r.name : 'Stranger',
-      verb: 'Talk',
-      go: () => {
-        const lines = this.populace.talk(w, { hour: this.atmos.hours, weather: this.atmos.describe(), place: this.place.name, rumour: this.rumour(pos) });
-        this.host.say(lines, w.r.name);
-      },
-    };
+    return this.life.interaction(pos, fwd);
   }
 
   /** What people say about the places around here: true things, if you go and look. */
-  private rumour(p: THREE.Vector3): string | null {
+  rumourAt(p: THREE.Vector3): string | null {
     const r = Math.random();
     const near = this.gen.settlementsNear(p.x, p.z, 2).filter((s) => s.id !== this.place.settlement?.id && s.kind !== 'junction');
     if (!near.length) return null;

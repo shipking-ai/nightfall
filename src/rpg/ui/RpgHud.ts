@@ -17,6 +17,12 @@ export class RpgHud {
   private banner: HTMLElement;
   private bannerT = 0;
   private marks: { el: HTMLElement; yaw: number }[] = [];
+  /** the tracked job: a mark on the compass and a line under it */
+  private goal: HTMLElement;
+  private goalLine: HTMLElement;
+  private goalYaw: number | null = null;
+  private toasts: HTMLElement;
+  private cond: HTMLElement;
 
   constructor(root: HTMLElement) {
     this.strip = h('div', { class: 'rpgc__strip' });
@@ -26,7 +32,12 @@ export class RpgHud {
       this.strip.append(el);
       this.marks.push({ el, yaw: (d * Math.PI) / 180 });
     }
+    this.goal = h('span', { class: 'rpgc__goal' }, '◆');
+    this.strip.append(this.goal);
     this.compass = h('div', { class: 'rpgc', 'aria-hidden': 'true' }, this.strip, h('span', { class: 'rpgc__needle' }));
+    this.goalLine = h('div', { class: 'rpgg' });
+    this.toasts = h('div', { class: 'rpgt', 'aria-live': 'polite' });
+    this.cond = h('span', { class: 'rpgs__cond meta' });
     this.place = h('span', { class: 'rpgs__place' });
     this.region = h('span', { class: 'rpgs__region meta' });
     this.clock = h('span', { class: 'rpgs__clock' });
@@ -36,8 +47,10 @@ export class RpgHud {
       'div',
       { class: 'rpghud' },
       this.compass,
-      h('div', { class: 'rpgs' }, h('div', { class: 'rpgs__row' }, this.clock, this.sky), h('div', { class: 'rpgs__row' }, this.place, this.region)),
+      this.goalLine,
+      h('div', { class: 'rpgs' }, h('div', { class: 'rpgs__row' }, this.clock, this.sky), h('div', { class: 'rpgs__row' }, this.place, this.region), h('div', { class: 'rpgs__row' }, this.cond)),
       this.banner,
+      this.toasts,
     );
     root.append(this.el);
   }
@@ -58,6 +71,15 @@ export class RpgHud {
       m.el.style.transform = `translateX(${d * px}px)`;
       m.el.style.opacity = vis ? String(1 - Math.abs(d) / 80) : '0';
     }
+    if (this.goalYaw === null) this.goal.style.opacity = '0';
+    else {
+      let d = (this.goalYaw * 180) / Math.PI - bearing;
+      d = ((d + 540) % 360) - 180;
+      const cl = Math.max(-72, Math.min(72, d));
+      this.goal.style.transform = `translateX(${cl * px}px)`;
+      this.goal.style.opacity = '1';
+      this.goal.classList.toggle('is-edge', cl !== d);
+    }
     if (this.clock.textContent !== clock) this.clock.textContent = clock;
     if (this.sky.textContent !== sky) this.sky.textContent = sky;
     if (this.place.textContent !== place) this.place.textContent = place;
@@ -66,6 +88,42 @@ export class RpgHud {
       this.bannerT -= dt;
       if (this.bannerT <= 0) this.banner.classList.remove('is-on');
     }
+  }
+
+  /**
+   * Where the tracked job wants you: a bearing (world yaw, north = −z) for
+   * the compass mark, and a line under it. Null clears both.
+   */
+  setGoal(g: { dx: number; dz: number; title: string; text: string; dist: number } | null) {
+    if (!g) {
+      this.goalYaw = null;
+      this.goalLine.classList.remove('is-on');
+      return;
+    }
+    // compass degrees: 0 = north (−z), 90 = east (+x)
+    this.goalYaw = Math.atan2(g.dx, -g.dz);
+    const d = g.dist < 60 ? 'here' : g.dist < 1000 ? `${Math.round(g.dist / 10) * 10} m` : `${(g.dist / 1000).toFixed(1)} km`;
+    const text = `${g.text} · ${d}`;
+    if (this.goalLine.dataset.t !== g.title + text) {
+      this.goalLine.dataset.t = g.title + text;
+      this.goalLine.replaceChildren(h('span', { class: 'meta rpgg__title' }, g.title), h('span', { class: 'rpgg__text' }, text));
+    }
+    this.goalLine.classList.add('is-on');
+  }
+
+  /** How you're doing, in words, only when it matters. */
+  condition(words: string[]) {
+    const t = words.join(' · ');
+    if (this.cond.textContent !== t) this.cond.textContent = t;
+  }
+
+  /** A line in the corner: an item, some XP, standing going up or down. */
+  toast(text: string, tone = 'info') {
+    const el = h('p', { class: `rpgt__line rpgt__line--${tone}` }, text);
+    this.toasts.append(el);
+    while (this.toasts.children.length > 5) this.toasts.firstElementChild!.remove();
+    setTimeout(() => el.classList.add('is-out'), 3600);
+    setTimeout(() => el.remove(), 4400);
   }
 
   /** Arriving somewhere with a name: the name, large, then gone. */

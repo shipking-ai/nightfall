@@ -60,7 +60,7 @@ const MAX_EMBODIED = 12;
 const NEAR = 110;
 const FAR = 130;
 
-interface Walker {
+export interface Walker {
   r: Resident;
   human: RealHuman;
   rig: Rig;
@@ -327,6 +327,11 @@ export class Populace {
 
   get count() {
     return this.walkers.size;
+  }
+
+  /** The body of a resident, if they're near enough to have one. */
+  find(id: string): Walker | null {
+    return this.walkers.get(id) ?? null;
   }
 
   clear() {

@@ -4,11 +4,12 @@ import type { Action } from '../input/actions';
 import { glyph, hintRow } from '../input/glyphs';
 
 /** What the player is doing, for the controls strip: only what applies is shown. */
-export type ControlContext = 'foot' | 'armed' | 'car' | 'taxi' | 'boat' | 'swim' | 'afterhours';
+export type ControlContext = 'foot' | 'armed' | 'car' | 'taxi' | 'boat' | 'swim' | 'afterhours' | 'rpg';
 
 const CONTROL_SETS: Record<ControlContext, [Action | 'moveStick' | 'lookStick', string][]> = {
   foot: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['jump', 'Jump'], ['interact', 'Interact'], ['emote', 'Emotes'], ['map', 'Map'], ['pause', 'Pause']],
   afterhours: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['interact', 'Interact'], ['photo', 'Photo mode'], ['radioNext', 'Headphones'], ['emote', 'Emotes · say'], ['map', 'Map'], ['pause', 'Pause']],
+  rpg: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['jump', 'Jump'], ['interact', 'Talk · go in · search'], ['map', 'Casefile'], ['pause', 'Pause']],
   armed: [['aim', 'Aim'], ['attack', 'Fire'], ['reload', 'Reload'], ['nextWeapon', 'Switch weapon']],
   car: [['throttle', 'Accelerate'], ['brake', 'Brake · reverse'], ['moveStick', 'Steer'], ['handbrake', 'Handbrake'], ['horn', 'Horn'], ['radioNext', 'Radio'], ['exitVehicle', 'Get out']],
   taxi: [['lookStick', 'Look around'], ['radioNext', 'Radio'], ['exitVehicle', 'Ask to stop']],

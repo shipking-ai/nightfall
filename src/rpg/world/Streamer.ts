@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { signsFor, type SignSet } from './Signs';
 import { WorldContext, type Lamp } from '../../world/WorldContext';
 import type { Materials } from '../../world/materials';
 import type { Collision, Box } from '../../world/Collision';
@@ -36,6 +37,8 @@ export interface Chunk {
   cars: TownOut['cars'];
   decks: Deck[];
   plants: number;
+  /** shop signs and lit doors (their own group: the plane geometry is shared) */
+  signs: SignSet | null;
 }
 
 interface Tile {
@@ -234,8 +237,10 @@ export class Streamer {
     group.updateMatrixWorld(true);
     this.group.add(group);
     this.flora.add(key, plants);
+    const signs = out.pois.length ? signsFor(out.pois) : null;
+    if (signs) this.group.add(signs.group);
     const chunk: Chunk = {
-      key, ci, cj, x0, z0, group, field: f, boxes: this.collision.boxes.slice(before), lamps: ctx.lamps, pois: out.pois, spots: out.spots, cars: out.cars, decks: rg.decks, plants: plants.length,
+      key, ci, cj, x0, z0, group, field: f, boxes: this.collision.boxes.slice(before), lamps: ctx.lamps, pois: out.pois, spots: out.spots, cars: out.cars, decks: rg.decks, plants: plants.length, signs,
     };
     this.chunks.set(key, chunk);
     if (ctx.lamps.length) this.lampsDirty = true;
@@ -280,6 +285,10 @@ export class Streamer {
     });
     this.collision.remove(c.boxes);
     this.flora.remove(c.key);
+    if (c.signs) {
+      this.group.remove(c.signs.group);
+      c.signs.dispose();
+    }
     if (c.lamps.length) this.lampsDirty = true;
     this.stats.dropped++;
     this.onChunk?.(c, false);

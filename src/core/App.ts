@@ -86,7 +86,7 @@ interface NoteRow {
   body: string;
 }
 
-type Overlay = 'pause' | 'map' | 'archive' | 'settings' | 'wardrobe' | null;
+type Overlay = 'pause' | 'map' | 'archive' | 'settings' | 'wardrobe' | 'rpg' | null;
 
 /**
  * NIGHTFALL — the application. Owns the loop and the state machine:
@@ -586,7 +586,16 @@ export class App {
         this.hud.say(lines, who);
         this.sayingUntil = performance.now() + 1800;
       },
+      panel: (open, from = 'playing') => {
+        if (open) {
+          if (this.overlay !== 'rpg') this.openOverlay('rpg', from);
+        } else if (this.overlay === 'rpg') this.closeOverlay();
+      },
+      curtain: (on) => this.fade(on, on ? 500 : 700),
+      inVehicle: () => !!this.vehicle || !!this.boat,
+      spawn: SPAWN,
     });
+    for (const el of this.rpg.life.panels) this.nav.scope(el, { back: () => this.back(), tab: (d) => this.rpg.life.panel === 'casefile' && this.rpg.life.cf.flip(d) });
     this.interaction = new Interaction(this.world.interact);
     this.quests = new Quests(this.save, new Map(this.world.interact.map((s) => [s.id, s.pos])));
     this.quests.onEvent = (e) => this.onQuest(e);
@@ -889,7 +898,11 @@ export class App {
     await this.fade(false, 1800);
     if (fight || this.warzone.active) return;
     this.hud.show(true);
-    if (rpgMode) this.rpg.hud.show(true);
+    if (rpgMode) {
+      this.rpg.hud.show(true);
+      // a first life: the mirror, before anything else
+      if (this.rpg.life.pendingCreator) this.rpg.life.openCreator();
+    }
     if (this.inside) this.hud.location(this.inside.name, this.inside.code);
     else this.discovery.update(this.player.pos.x, this.player.pos.z);
     if (!this.save.hasProgress) {
@@ -1015,6 +1028,11 @@ export class App {
   /* ─────────────────────────── overlays ─────────────────────── */
 
   private openOverlay(o: Exclude<Overlay, null>, from: 'pause' | 'landing' | 'playing') {
+    // out in the wider world, the map and the archive are the Casefile
+    if ((o === 'map' || o === 'archive') && this.rpg.active && from !== 'landing') {
+      if (this.rpg.life.game) this.rpg.life.openCasefile(undefined, from === 'pause' ? 'pause' : 'playing');
+      return;
+    }
     this.audio.uiTick();
     if (this.state === 'playing') {
       this.intentionalUnlock = true;
@@ -1027,6 +1045,7 @@ export class App {
     this.closeAllPanels();
     this.overlay = o;
     this.overlayReturn = from;
+    if (this.rpg.active) this.rpg.hud.show(o !== 'rpg' || this.rpg.life.panel === 'talk');
     this.audio.setMuffled(true);
     this.hud.show(false);
     if (o === 'pause') {
@@ -1092,6 +1111,8 @@ export class App {
   }
 
   private closeAllPanels() {
+    // (an RPG screen closes itself only when the overlay it lives in is closing, not while it's opening)
+    if (this.overlay === 'rpg') this.rpg.life.closeAll();
     this.wardrobe.close();
     if (this.previewing) {
       this.previewing = false;
@@ -1106,6 +1127,7 @@ export class App {
   /** Esc / close: step back one level. */
   private back() {
     if (!this.overlay) return;
+    if (this.overlay === 'rpg' && this.rpg.life.back()) return;
     this.audio.uiTick();
     // leaving the Wardrobe without Done puts the old look back
     if (this.overlay === 'wardrobe') this.player.setLook(this.look);
@@ -1127,6 +1149,7 @@ export class App {
   private closeOverlay() {
     this.closeAllPanels();
     this.overlay = null;
+    if (this.rpg.active) this.rpg.hud.show(true);
     this.audio.setMuffled(false);
     if (this.state === 'overlay') {
       this.state = 'playing';
@@ -1193,7 +1216,7 @@ export class App {
           if (this.overlay === 'pause' && performance.now() - this.pausedAt < 300) return;
           e.preventDefault();
           this.back();
-        } else if ((is('map') && this.overlay === 'map') || (is('archive') && this.overlay === 'archive')) {
+        } else if ((is('map') && this.overlay === 'map') || (is('archive') && this.overlay === 'archive') || ((is('map') || is('archive')) && this.overlay === 'rpg' && this.rpg.life.panel === 'casefile')) {
           if (this.overlayReturn === 'playing') this.closeOverlay();
           else this.back();
         }
@@ -1224,7 +1247,7 @@ export class App {
   private padMenus(dt: number) {
     const pad = this.input.pad;
     if (!pad || !this.input.isPad) return;
-    if (this.overlay && this.overlayReturn !== 'landing' && pad.peek('Menu')) {
+    if (this.overlay && this.overlayReturn !== 'landing' && pad.peek('Menu') && !(this.overlay === 'rpg' && this.rpg.life.panel === 'creator')) {
       pad.pressed('Menu');
       this.closeOverlay();
       return;
@@ -1243,7 +1266,7 @@ export class App {
     else if (this.boat) ctx = 'boat';
     else if (this.player.swimming) ctx = 'swim';
     else if (this.rules.combat === 'street' && this.combat.w.id !== 'fists') ctx = 'armed';
-    else ctx = this.mode === 'afterhours' ? 'afterhours' : 'foot';
+    else ctx = this.mode === 'afterhours' ? 'afterhours' : this.rpg.active ? 'rpg' : 'foot';
     if (ctx === this.controlCtx) return;
     this.controlCtx = ctx;
     const seen = this.controlSeen.get(ctx) ?? 0;
@@ -2245,7 +2268,8 @@ export class App {
     const inWorld = playing || this.state === 'overlay' || this.state === 'leaving' || (this.state === 'entering' && this.player.group.visible);
 
     // camera
-    if (this.overlay === 'wardrobe' && this.player.group.visible) {
+    const creating = this.overlay === 'rpg' && this.rpg.life.fitting;
+    if ((this.overlay === 'wardrobe' && this.player.group.visible) || creating) {
       // a fitting: face the figure, framed left of centre so the panel (on the right) doesn't cover it.
       // (fz, -fx) is the camera's right when it looks back at the figure.
       const p = this.player.pos, f = this.player.facing;
@@ -2256,7 +2280,7 @@ export class App {
       this.camera.lookAt(p.x + fz * side * 1.25, p.y + 1.0 + lift, p.z - fx * side * 1.25);
       this.fitLight.position.set(p.x + fx * 2.2 - fz * 0.8, p.y + 2.2, p.z + fz * 2.2 + fx * 0.8);
       this.fitLight.intensity = 9;
-      if (this.previewing) this.player.update(dt, null, f, this.world.collision, []);
+      if (this.previewing || creating) this.player.update(dt, null, f, this.world.collision, []);
     } else if (this.state === 'landing' || (this.state === 'entering' && !this.player.group.visible) || this.state === 'boot') {
       this.fitLight.intensity = 0;
       this.cine.update(dt, t);
@@ -2477,7 +2501,7 @@ export class App {
     for (const u of this.world.updaters) u(t, dt);
     if (this.rpg.active) {
       // the wider world keeps its own day
-      this.rpg.atmos.speed = this.player.sitting ? 8 : 1;
+      this.rpg.atmos.speed = this.overlay ? 0 : this.player.sitting ? 8 : 1;
       this.rpg.update(dt, playing && !this.overlay);
     } else {
       this.time.speed = this.clockHeld ? 0 : this.player.sitting ? 8 : 1;
