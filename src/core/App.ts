@@ -581,6 +581,10 @@ export class App {
       ui: this.ui,
       environment: (zenith, horizon, ground) => this.makeEnvironment({ zenith, horizon, ground }),
       thunder: (delay, k) => setTimeout(() => this.audio.thunder(k), delay * 1000),
+      say: (lines, who) => {
+        this.hud.say(lines, who);
+        this.sayingUntil = performance.now() + 1800;
+      },
     });
     this.interaction = new Interaction(this.world.interact);
     this.quests = new Quests(this.save, new Map(this.world.interact.map((s) => [s.id, s.pos])));
@@ -2522,8 +2526,12 @@ export class App {
         if (this.input.pressed('interact')) car.go();
       } else {
         // nothing to look at here, but someone to talk to
-        const who = !cur || busy ? this.crowd.nearestTalker(this.player.pos, fwd) : null;
-        if (who && !this.player.sitting) {
+        const rp = this.rpg.active && !this.player.sitting && !busy ? this.rpg.interaction(this.player.pos, fwd) : null;
+        const who = !rp && (!cur || busy) ? this.crowd.nearestTalker(this.player.pos, fwd) : null;
+        if (rp) {
+          this.hud.setPrompt(rp.name, rp.verb);
+          if (this.input.pressed('interact')) rp.go();
+        } else if (who && !this.player.sitting) {
           this.hud.setPrompt(this.whoIs(who), 'Talk');
           if (this.input.pressed('interact')) this.crowd.talk(who, this.player.pos);
         } else {
