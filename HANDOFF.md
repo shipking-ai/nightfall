@@ -125,6 +125,21 @@ The user's brief is a very large "fifth game" addendum: an endless streamed worl
 - **Credits:** everything is listed in `public/licenses/README.txt`.
 - **Not reachable from the build container:** api.polyhaven.com, ambientcg.com and MakeHuman's asset servers (hair and clothes packs), so hair and clothes are grown in code.
 
+### R5 (in progress)
+- **Atlas (the Casefile's Map tab, and the map key in the RPG):** `rpg/ui/Atlas.ts`.
+  - Land tiles are drawn in a worker (`atlas.worker.ts` + `atlasTile.ts`) straight from `WorldGen`: relief, water, forest, sand, rock, snow and towns. Cached per zoom, filled from the middle out.
+  - Roads are drawn as vector lines on top. Settlements show once you've seen them and are named once you've been there.
+  - Unexplored land is veiled. `mem.seen` holds the 400 m cells within one cell of wherever you've been (`Life.chart`).
+  - Markers: jobs (diamonds), the story (a star), you (an arrow), and a pin.
+  - The pin (`Life.waypoint`, saved in `mem.flags.wp`) takes over the compass until you're within 25 m.
+  - Controls: stick, d-pad, drag or arrows to pan; LT/RT, wheel or +/− to zoom; A, click or Enter to pin; X to clear; Y or C to recentre.
+  - The input arrives through the Nav scope's `pad` hook, which now runs for keys too.
+- **Platform layer:** `src/platform/Platform.ts` with a web implementation only.
+  - Save storage, milestones (`ACHIEVEMENTS`, toasts on the web), presence, suspend, and the account name.
+  - `docs/platforms.md` covers the port plan through the official programs (no invented SDKs or costs) and the free-to-play fairness rules.
+- **Playtest:** `tools/playtest/rpg-map.mjs`. Under SwiftShader the RPG draws about 1 fps, so the test holds buttons for seconds rather than tapping. `__stick` takes a stick number (0 or 1).
+- **Next:** the full controller pass over every RPG screen, then R6.
+
 ### Still to build (the addendum's list)
 - **R2 leftovers:** more landmark kinds.
 - **R3 leftovers:** combat-based jobs (bounties), owned vehicles in saves, the Places tab becomes the atlas in R5.

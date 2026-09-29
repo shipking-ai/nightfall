@@ -5,6 +5,7 @@ import { item, KIND_LABEL, type ItemKind } from '../game/items';
 import { current, type Quest } from '../game/quests';
 import { SLOTS, type SaveEnvelope, type SlotId } from '../game/saves';
 import type { Game, Stack } from '../game/Game';
+import type { Atlas } from './Atlas';
 
 /**
  * The Casefile: your life on paper. What you're working on and what you've
@@ -13,8 +14,8 @@ import type { Game, Stack } from '../game/Game';
  * tabs across the top (the shoulder buttons flip them).
  */
 
-export type Tab = 'case' | 'you' | 'pockets' | 'people' | 'places' | 'saves';
-const TABS: [Tab, string][] = [['case', 'Case'], ['you', 'You'], ['pockets', 'Pockets'], ['people', 'People'], ['places', 'Places'], ['saves', 'Saves']];
+export type Tab = 'case' | 'map' | 'you' | 'pockets' | 'people' | 'places' | 'saves';
+const TABS: [Tab, string][] = [['case', 'Case'], ['map', 'Map'], ['you', 'You'], ['pockets', 'Pockets'], ['people', 'People'], ['places', 'Places'], ['saves', 'Saves']];
 
 export interface CasefileHooks {
   pos(): { x: number; z: number };
@@ -28,6 +29,8 @@ export interface CasefileHooks {
   /** strike the lighter: a campfire where you stand */
   makeFire(): string;
   toast(text: string): void;
+  /** the atlas (drawn by the world generator) */
+  atlas: Atlas;
 }
 
 export class Casefile {
@@ -69,6 +72,7 @@ export class Casefile {
   close() {
     setOn(this.el, false);
     this.confirmNew = false;
+    this.hk.atlas.hide();
   }
 
   flip(dir: -1 | 1) {
@@ -83,6 +87,14 @@ export class Casefile {
       b.setAttribute('aria-selected', String(id === tab));
     }
     const g = this.g;
+    this.el.classList.toggle('is-map', tab === 'map');
+    if (tab === 'map') {
+      this.body.replaceChildren(this.hk.atlas.el);
+      this.hk.atlas.show();
+      if (focus) requestAnimationFrame(() => this.hk.atlas.el.querySelector<HTMLElement>('canvas')?.focus({ preventScroll: true }));
+      return;
+    }
+    this.hk.atlas.hide();
     const view = tab === 'case' ? this.caseView(g) : tab === 'you' ? this.youView(g) : tab === 'pockets' ? this.pocketsView(g) : tab === 'people' ? this.peopleView(g) : tab === 'places' ? this.placesView(g) : this.savesView();
     this.body.replaceChildren(view);
     this.body.scrollTop = 0;
@@ -289,7 +301,7 @@ export class Casefile {
     };
     return h('div', { class: 'cf__col cf__places' },
       h('h3', { class: 'cf__h' }, 'Places you’ve been'),
-      h('p', { class: 'cf__hint' }, 'The full map comes with the atlas. For now: where, how far, which way.'),
+      h('p', { class: 'cf__hint' }, 'Where, how far, which way. The Map tab has the atlas.'),
       ...list.map(({ v, d }) => h('p', { class: 'cf__place' }, h('span', {}, v.name), h('span', { class: 'meta' }, `${v.kind} · ${v.biome}`), h('span', { class: 'cf__num meta' }, d < 300 ? 'here' : `${(d / 1000).toFixed(1)} km ${dir(v.x - p.x, v.z - p.z)}`))),
       list.length ? null : h('p', { class: 'cf__empty' }, 'Nowhere yet.'),
     );

@@ -37,6 +37,8 @@ export interface Memory {
   pois: Record<string, { n: number; name: string; kind: string; town: string; x: number; z: number }>;
   flags: Record<string, number | string | boolean>;
   secrets: string[];
+  /** the atlas: 400 m cells you've been near ("i,j") */
+  seen: Record<string, 1>;
   /** unpaid fines, by settlement */
   bounty: Record<string, number>;
 }
@@ -94,7 +96,7 @@ export function newState(name: string, bg: Background, attrs: Record<Attr, numbe
     equipped: bg.items.find(([id]) => item(id).weapon)?.[0] ?? null,
     rep,
     towns: {},
-    mem: { visited: {}, met: {}, gone: [], searched: {}, pois: {}, flags: {}, secrets: [], bounty: {} },
+    mem: { visited: {}, met: {}, gone: [], searched: {}, pois: {}, flags: {}, secrets: [], bounty: {}, seen: {} },
     quests: [],
     track: null,
     journal: [],

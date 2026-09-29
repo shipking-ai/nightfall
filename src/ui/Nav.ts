@@ -18,7 +18,7 @@ const FOCUSABLE =
 interface ScopeHandlers {
   back?: () => void;
   tab?: (dir: -1 | 1) => void;
-  /** a scope that wants the pad itself (the map pans with the stick) */
+  /** a scope that wants the pad (or the keys) itself: the map pans with the stick. True if it used them. */
   pad?: (dt: number) => boolean;
 }
 
@@ -88,7 +88,8 @@ export class Nav {
     if (!scope) return false;
     if (this.osk.isOpen) return this.osk.update(this.input, dt, this);
     const h = this.handlers.get(scope);
-    if (pad && h?.pad?.(dt)) return true;
+    // (a scope that wants the controls itself: the pad, or keys when it has them)
+    if (h?.pad?.(dt)) return true;
 
     const act = document.activeElement as HTMLElement | null;
     let cur = act && scope.contains(act) && act !== scope ? act : null;

@@ -11,6 +11,9 @@ import type { Poi } from './world/Towns';
 import type { Settlement } from './world/WorldGen';
 import { Talk } from './ui/Talk';
 import { Casefile, type Tab } from './ui/Casefile';
+import { Atlas, SEEN_CELL } from './ui/Atlas';
+import type { Input } from '../core/Input';
+import { ACHIEVEMENTS, platform } from '../platform/Platform';
 import { Shop } from './ui/Shop';
 import { Creator } from './ui/Creator';
 import { Fishing, type Catch } from './ui/Fishing';
@@ -35,8 +38,9 @@ const AUTOSAVE_S = 150;
 
 export class Life {
   game: Game | null = null;
-  saves = new Saves();
+  saves = new Saves(platform.storage);
   talk: Talk;
+  atlas: Atlas;
   cf: Casefile;
   shop: Shop;
   creator: Creator;
@@ -54,7 +58,34 @@ export class Life {
   constructor(private rpg: Rpg, private host: RpgHost) {
     this.talk = new Talk(host.ui);
     this.talk.onEnd = () => this.closePanel();
+    // on the web, a milestone is a toast (a platform build shows its own)
+    platform.onAchievement?.((id) => rpg.hud.toast(`Milestone · ${ACHIEVEMENTS[id]}`, 'good'));
+    this.atlas = new Atlas({
+      gen: rpg.gen,
+      pos: () => host.player.pos,
+      facing: () => host.player.facing,
+      seen: (i, j) => !!this.game?.s.mem.seen[`${i},${j}`],
+      visited: () => Object.values(this.game?.s.mem.visited ?? {}),
+      goals: () => {
+        const g = this.game;
+        if (!g) return [];
+        const out: { x: number; z: number; label: string; kind: 'job' | 'story' }[] = [];
+        for (const q of g.s.quests) {
+          if (q.state !== 'active') continue;
+          const o = current(q);
+          if (!o?.at) continue;
+          out.push({ x: o.at.x, z: o.at.z, label: q.kind === 'main' ? q.title : o.at.label ?? q.title, kind: q.kind === 'main' ? 'story' : 'job' });
+        }
+        return out;
+      },
+      waypoint: () => this.waypoint,
+      setWaypoint: (p) => {
+        this.waypoint = p;
+        rpg.hud.toast(p ? 'Pinned. The compass will take you there.' : 'Pin taken off the map.');
+      },
+    });
     this.cf = new Casefile(host.ui, {
+      atlas: this.atlas,
       pos: () => host.player.pos,
       track: (id) => this.game && (this.game.s.track = id),
       save: (slot) => this.save(slot),
@@ -485,6 +516,7 @@ export class Life {
     }
     if (!good) this.rpg.hud.toast('A messy job. You ruined some of it.', 'info');
     g.xp(10, 'butchering');
+    platform.achievement('hunter');
     await this.host.curtain(false);
     this.busy = false;
   }
@@ -605,6 +637,7 @@ export class Life {
     g.practice('survival', 2 + c.weight);
     g.xp(8 + c.weight * 6, 'a catch');
     this.rpg.hud.toast(`${c.name}, ${c.weight} kg`, 'item');
+    platform.achievement('angler');
     if (!g.s.mem.flags[`fish:${c.name}`]) {
       g.s.mem.flags[`fish:${c.name}`] = true;
       g.note(`Caught my first ${c.name.toLowerCase()} (${c.weight} kg), ${BIOMES[this.rpg.place.biome].name.toLowerCase()}.`);
@@ -759,6 +792,7 @@ export class Life {
     const dm = clock - this.lastClock;
     this.lastClock = clock;
     const pl = this.host.player;
+    this.chart(g, pl.pos);
     if (this.fire && !this.fire.update(dt, Math.max(0, dm))) this.putOut();
     if (dm > 0 && dm < 24 * 60) {
       const n = a.now;
@@ -790,9 +824,64 @@ export class Life {
     this.goal(pl.pos);
   }
 
-  /** Point the compass at whatever the tracked job wants next. */
+  /** The atlas: the cells round you are charted as you go (a 3×3 of 400 m cells). */
+  private chartKey = '';
+  private chart(g: Game, p: THREE.Vector3) {
+    const i = Math.floor(p.x / SEEN_CELL), j = Math.floor(p.z / SEEN_CELL);
+    const key = `${i},${j}`;
+    if (key === this.chartKey) return;
+    this.chartKey = key;
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) g.s.mem.seen[`${i + a},${j + b}`] = 1;
+    this.milestones(g);
+  }
+
+  /** Milestones the state already knows about (checked as you move, not every frame). */
+  private milestones(g: Game) {
+    if (g.s.stats.jobs > 0) platform.achievement('first-job');
+    if (g.s.mem.secrets.includes('the-watcher')) platform.achievement('the-watcher');
+    const main = g.s.quests.find((q) => q.id === MAIN_ID);
+    if (main && Number(main.data.stage) >= 1) platform.achievement('first-town');
+    if (main?.state === 'done') platform.achievement('long-night');
+    // 100 km² is 625 cells of 400 m
+    if (Object.keys(g.s.mem.seen).length >= 625) platform.achievement('cartographer');
+    const place = this.rpg.place;
+    platform.presence(place ? `In ${place.name}` : null);
+  }
+
+  /** The pin you dropped on the atlas (the compass follows it until you get there). */
+  get waypoint(): { x: number; z: number } | null {
+    const w = this.game?.s.mem.flags.wp;
+    if (typeof w !== 'string') return null;
+    const [x, z] = w.split(',').map(Number);
+    return Number.isFinite(x) && Number.isFinite(z) ? { x, z } : null;
+  }
+
+  set waypoint(p: { x: number; z: number } | null) {
+    const g = this.game;
+    if (!g) return;
+    if (p) g.s.mem.flags.wp = `${Math.round(p.x)},${Math.round(p.z)}`;
+    else delete g.s.mem.flags.wp;
+  }
+
+  /** The stick and keys, while the atlas is showing. */
+  mapInput(dt: number, input: Input) {
+    return this.panel === 'casefile' && this.atlas.input(dt, input);
+  }
+
+  /** Point the compass at your pin, or whatever the tracked job wants next. */
   private goal(p: THREE.Vector3) {
     const g = this.game!;
+    const w = this.waypoint;
+    if (w) {
+      const dist = Math.hypot(w.x - p.x, w.z - p.z);
+      if (dist < 25) {
+        this.waypoint = null;
+        this.rpg.hud.toast('You’re at your pin.');
+      } else {
+        this.rpg.hud.setGoal({ dx: w.x - p.x, dz: w.z - p.z, title: 'Pin', text: 'The place you marked on the map', dist });
+        return;
+      }
+    }
     const q = g.s.quests.find((x) => x.id === g.s.track && x.state === 'active');
     const o = q && current(q);
     if (!q || !o) {

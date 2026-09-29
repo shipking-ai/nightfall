@@ -102,6 +102,23 @@
 .cf__tab.is-on { background: var(--paper-cf); color: var(--ink); border-color: var(--rule); margin-bottom: -1px; }
 .cf__tab:hover { color: var(--ink); }
 .cf__body { flex: 1; overflow: auto; padding: 22px 28px 28px; }
+
+/* ── the atlas (the Map tab): a surveyor's sheet pinned into the folder ── */
+.cf.is-map .cf__body { display: flex; overflow: hidden; padding: 14px 18px 16px; }
+.atlas { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.atlas__frame { position: relative; flex: 1; min-height: 320px; border: 1px solid rgba(31, 28, 23, .45); box-shadow: 0 0 0 4px var(--paper-cf), 0 0 0 5px var(--rule), inset 0 0 40px rgba(60, 40, 10, .22); overflow: hidden; }
+.atlas__map { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+.atlas__map:focus-visible { outline: none; }
+.atlas__cross { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; pointer-events: none; opacity: .6;
+  background: linear-gradient(var(--ink), var(--ink)) center / 1px 100% no-repeat, linear-gradient(var(--ink), var(--ink)) center / 100% 1px no-repeat; }
+body:not(.input-pad) .atlas__cross { opacity: .25; }
+.atlas__north { position: absolute; top: 10px; right: 12px; padding: 4px 7px; background: rgba(231, 224, 207, .88); border: 1px solid var(--rule); color: var(--ink); letter-spacing: .2em; }
+.atlas__foot { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: center; color: var(--ink-2); }
+.atlas__scale { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.atlas__bar { display: inline-block; height: 5px; border: 1px solid var(--ink); border-top: 0; }
+.atlas__readout { font-variant-numeric: tabular-nums; }
+.atlas__keys { margin-left: auto; }
+body.input-pad .atlas__keys .kbm-only, body:not(.input-pad) .atlas__keys .pad-only { display: none; }
 .cf__cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px 40px; align-items: start; }
 .cf__col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .cf__h { margin: 14px 0 2px; font-family: var(--f-meta); font-weight: 500; font-size: 11px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--ink-2); display: flex; gap: 10px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }

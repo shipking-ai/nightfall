@@ -612,7 +612,7 @@ export class App {
       },
       spawn: SPAWN,
     });
-    for (const el of this.rpg.life.panels) this.nav.scope(el, { back: () => this.back(), tab: (d) => this.rpg.life.panel === 'casefile' && this.rpg.life.cf.flip(d) });
+    for (const el of this.rpg.life.panels) this.nav.scope(el, { back: () => this.back(), tab: (d) => this.rpg.life.panel === 'casefile' && this.rpg.life.cf.flip(d), pad: (dt) => this.rpg.life.mapInput(dt, this.input) });
     this.interaction = new Interaction(this.world.interact);
     this.quests = new Quests(this.save, new Map(this.world.interact.map((s) => [s.id, s.pos])));
     this.quests.onEvent = (e) => this.onQuest(e);
@@ -1047,7 +1047,7 @@ export class App {
   private openOverlay(o: Exclude<Overlay, null>, from: 'pause' | 'landing' | 'playing') {
     // out in the wider world, the map and the archive are the Casefile
     if ((o === 'map' || o === 'archive') && this.rpg.active && from !== 'landing') {
-      if (this.rpg.life.game) this.rpg.life.openCasefile(undefined, from === 'pause' ? 'pause' : 'playing');
+      if (this.rpg.life.game) this.rpg.life.openCasefile(o === 'map' ? 'map' : undefined, from === 'pause' ? 'pause' : 'playing');
       return;
     }
     this.audio.uiTick();

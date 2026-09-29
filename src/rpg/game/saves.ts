@@ -127,7 +127,8 @@ export class Saves {
 
 /** Fill anything a save is missing (a field added without a version bump), so a load never crashes. */
 function repair(s: GameState): GameState {
-  s.mem ??= { visited: {}, met: {}, gone: [], searched: {}, pois: {}, flags: {}, secrets: [], bounty: {} };
+  s.mem ??= { visited: {}, met: {}, gone: [], searched: {}, pois: {}, flags: {}, secrets: [], bounty: {}, seen: {} };
+  s.mem.seen ??= {};
   s.mem.visited ??= {};
   s.mem.met ??= {};
   s.mem.gone ??= [];
