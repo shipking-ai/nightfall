@@ -31,6 +31,8 @@ export interface CasefileHooks {
   toast(text: string): void;
   /** the atlas (drawn by the world generator) */
   atlas: Atlas;
+  /** put the pin on a place (the compass follows it) */
+  pin(x: number, z: number, name: string): void;
 }
 
 export class Casefile {
@@ -156,9 +158,9 @@ export class Casefile {
         g.raise(a.id);
         this.refresh();
       });
-      return h('div', { class: 'cf__attr' }, h('span', { class: 'cf__attr-n' }, String(c.attrs[a.id])), h('span', { class: 'cf__attr-name' }, a.name, h('small', {}, a.desc)), c.attrPoints > 0 ? plus : null);
+      return h('div', { class: 'cf__attr', tabindex: '0' }, h('span', { class: 'cf__attr-n' }, String(c.attrs[a.id])), h('span', { class: 'cf__attr-name' }, a.name, h('small', {}, a.desc)), c.attrPoints > 0 ? plus : null);
     });
-    const skills = SKILLS.map((s) => h('div', { class: 'cf__skill' }, h('span', {}, s.name), h('span', { class: 'cf__track' }, h('span', { class: 'cf__fill', style: `width:${Math.round(c.skills[s.id])}%` })), h('span', { class: 'cf__num meta' }, String(Math.floor(c.skills[s.id])))));
+    const skills = SKILLS.map((s) => h('div', { class: 'cf__skill', tabindex: '0' }, h('span', {}, s.name), h('span', { class: 'cf__track' }, h('span', { class: 'cf__fill', style: `width:${Math.round(c.skills[s.id])}%` })), h('span', { class: 'cf__num meta' }, String(Math.floor(c.skills[s.id])))));
     const have = c.perks.map((id) => PERKS.find((p) => p.id === id)!).filter(Boolean);
     const open = PERKS.filter((p) => perkAvailable(c, p));
     const perkBtn = (p: (typeof PERKS)[number]) => {
@@ -186,7 +188,7 @@ export class Casefile {
         h('p', { class: 'cf__hint' }, 'Skills grow by doing: talk your way out, pick the lock, drive the long road.'),
         ...skills,
         h('h3', { class: 'cf__h' }, 'Perks', c.perkPoints ? h('span', { class: 'cf__badge meta' }, `${c.perkPoints} to choose`) : null),
-        have.length ? h('div', { class: 'cf__perks' }, ...have.map((p) => h('div', { class: 'cf__perk is-have' }, h('span', { class: 'cf__perk-name' }, p.name), h('small', {}, p.desc)))) : null,
+        have.length ? h('div', { class: 'cf__perks' }, ...have.map((p) => h('div', { class: 'cf__perk is-have', tabindex: '0' }, h('span', { class: 'cf__perk-name' }, p.name), h('small', {}, p.desc)))) : null,
         c.perkPoints > 0 ? h('div', { class: 'cf__perks' }, ...open.map(perkBtn)) : h('p', { class: 'cf__hint' }, 'A new perk every level.'),
       ),
     );
@@ -284,7 +286,7 @@ export class Casefile {
         ...Object.entries(g.s.mem.visited).map(([id, v]) => rep(v.name, g.s.towns[id] ?? 0)),
         Object.keys(g.s.mem.visited).length ? null : h('p', { class: 'cf__empty' }, 'Nowhere yet.'),
         h('h3', { class: 'cf__h' }, 'People you’ve met'),
-        ...met.map(([, m]) => h('p', { class: 'cf__person' }, h('span', {}, m.name), h('span', { class: 'meta' }, `${m.job} · ${g.s.mem.visited[m.town]?.name ?? ''}`), h('span', { class: `meta${m.disp < -10 ? ' is-bad' : m.disp > 20 ? ' is-good' : ''}` }, m.disp > 40 ? 'Friend' : m.disp > 10 ? 'Warm' : m.disp < -40 ? 'Enemy' : m.disp < -10 ? 'Cold' : 'Neutral'))),
+        ...met.map(([, m]) => h('p', { class: 'cf__person', tabindex: '0' }, h('span', {}, m.name), h('span', { class: 'meta' }, `${m.job} · ${g.s.mem.visited[m.town]?.name ?? ''}`), h('span', { class: `meta${m.disp < -10 ? ' is-bad' : m.disp > 20 ? ' is-good' : ''}` }, m.disp > 40 ? 'Friend' : m.disp > 10 ? 'Warm' : m.disp < -40 ? 'Enemy' : m.disp < -10 ? 'Cold' : 'Neutral'))),
         met.length ? null : h('p', { class: 'cf__empty' }, 'Nobody yet. Walk up to someone and talk.'),
       ),
     );
@@ -301,8 +303,12 @@ export class Casefile {
     };
     return h('div', { class: 'cf__col cf__places' },
       h('h3', { class: 'cf__h' }, 'Places you’ve been'),
-      h('p', { class: 'cf__hint' }, 'Where, how far, which way. The Map tab has the atlas.'),
-      ...list.map(({ v, d }) => h('p', { class: 'cf__place' }, h('span', {}, v.name), h('span', { class: 'meta' }, `${v.kind} · ${v.biome}`), h('span', { class: 'cf__num meta' }, d < 300 ? 'here' : `${(d / 1000).toFixed(1)} km ${dir(v.x - p.x, v.z - p.z)}`))),
+      h('p', { class: 'cf__hint' }, 'Where, how far, which way. Choose one to pin it: the compass takes you there.'),
+      ...list.map(({ v, d }) => {
+        const b = h('button', { class: 'cf__place', type: 'button', title: `Pin ${v.name} on the map` }, h('span', {}, v.name), h('span', { class: 'meta' }, `${v.kind} · ${v.biome}`), h('span', { class: 'cf__num meta' }, d < 300 ? 'here' : `${(d / 1000).toFixed(1)} km ${dir(v.x - p.x, v.z - p.z)}`));
+        b.addEventListener('click', () => this.hk.pin(v.x, v.z, v.name));
+        return b;
+      }),
       list.length ? null : h('p', { class: 'cf__empty' }, 'Nowhere yet.'),
     );
   }

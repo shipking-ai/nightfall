@@ -138,7 +138,17 @@ The user's brief is a very large "fifth game" addendum: an endless streamed worl
   - Save storage, milestones (`ACHIEVEMENTS`, toasts on the web), presence, suspend, and the account name.
   - `docs/platforms.md` covers the port plan through the official programs (no invented SDKs or costs) and the free-to-play fairness rules.
 - **Playtest:** `tools/playtest/rpg-map.mjs`. Under SwiftShader the RPG draws about 1 fps, so the test holds buttons for seconds rather than tapping. `__stick` takes a stick number (0 or 1).
-- **Next:** the full controller pass over every RPG screen, then R6.
+- **Controller pass:** `tools/playtest/rpg-pad.mjs` drives every RPG screen with the virtual pad alone (creator, all Casefile tabs, pockets, a conversation, a shop, the pause menu and Archive). It checks for focus with the ring, that the d-pad moves, that A acts and that B gets out.
+  - **Found and fixed:** the Nav ignored a layer while it faded in (`checkVisibility` with opacity), so an A pressed during the fade was lost. That's why "Let's trade" did nothing on the pad. Screens now take the pad from their first frame.
+  - The Casefile's You and People rows are focusable. Places rows are buttons: A pins the place and the compass follows it.
+- **Freezes (see the "Fix freezes" commit):** `tools/playtest/rpg-perf.mjs` profiles travel (updates only, long tasks, CPU profile, mid-trip shader compiles). Set `RENDER_EVERY=45` to also catch compiles.
+  - Terrain fields are sampled in workers (`field.worker.ts`).
+  - Chunks are built a block at a time.
+  - GeoBatch appends into arrays.
+  - Grass is tiled and cached.
+  - Trees, rocks and grass are compiled with `compileAsync` and prepared behind the loading card.
+  - Journal plates use an async readback and are encoded in `plate.worker.ts`.
+- **Next:** R6.
 
 ### Still to build (the addendum's list)
 - **R2 leftovers:** more landmark kinds.

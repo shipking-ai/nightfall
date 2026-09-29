@@ -86,6 +86,10 @@ export class Life {
     });
     this.cf = new Casefile(host.ui, {
       atlas: this.atlas,
+      pin: (x, z, name) => {
+        this.waypoint = { x, z };
+        rpg.hud.toast(`${name} is pinned. The compass will take you there.`);
+      },
       pos: () => host.player.pos,
       track: (id) => this.game && (this.game.s.track = id),
       save: (slot) => this.save(slot),

@@ -190,6 +190,11 @@ body.input-pad .atlas__keys .kbm-only, body:not(.input-pad) .atlas__keys .pad-on
 .cf .is-bad { color: var(--stamp) !important; }
 .cf .is-good { color: #2f6a38 !important; }
 .cf__person, .cf__place { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 14px; padding: 7px 0; border-bottom: 1px dotted var(--rule); font-size: 15px; align-items: baseline; }
+/* a place is a button (it pins the place on the map) that still reads as a line in the ledger */
+button.cf__place { width: 100%; background: none; border: 0; border-bottom: 1px dotted var(--rule); color: inherit; font: inherit; font-size: 15px; text-align: left; cursor: pointer; }
+button.cf__place:hover { background: rgba(31, 28, 23, .05); }
+/* rows the pad (or Tab) walks through: a soft highlight where you are */
+.cf__person:focus, .cf__place:focus, .cf__attr:focus, .cf__skill:focus, .cf__perk.is-have:focus { outline: none; background: rgba(154, 47, 34, .08); box-shadow: inset 3px 0 0 var(--stamp); }
 .cf__places, .cf__saves { max-width: 760px; }
 .cf__slot { display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 0; border-bottom: 1px dotted var(--rule); }
 .cf__slot-what { display: flex; flex-direction: column; gap: 2px; font-family: var(--f-display); font-size: 20px; }
