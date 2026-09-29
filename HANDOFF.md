@@ -1,6 +1,6 @@
 # HANDOFF — NIGHTFALL
 
-Last updated: 2026-09-29 (RPG R1, realistic people, R2 populace and traffic done; R3 next). Read this first, then [README.md](README.md) for architecture and controls.
+Last updated: 2026-09-29 (RPG R1, realistic people, R2 living world and R3 character/jobs/story/saves done; R4 next). Read this first, then [README.md](README.md) for architecture and controls.
 
 ## State in one paragraph
 
@@ -46,9 +46,29 @@ The user's brief is a very large "fifth game" addendum: an endless streamed worl
 - **Parked cars:** the `chunk.cars` spots within 160 m become real `DrivableCar`s via `Vehicles.spawn(spec, streamed=true)` / `despawn()` (`Rpg.park()`).
 - **Playtest:** `tools/playtest/rpg-roads.mjs` covers highway traffic, a town's parked cars, and getting in and driving off. Note that `t.step()` switches the game to manual stepping, so after the first `step()`, advance time with `step()` rather than `wait()`.
 
+### Done: R3, a life (commit fdeee63)
+- **`src/rpg/game/`:** plain-data rules, no three.js.
+  - `character.ts`: 6 attributes, 12 skills that grow by use, levels (`xpFor`), 24 perks, 6 backgrounds. `chance()` is the odds shown on every check.
+  - `items.ts`: about 57 item definitions. Stacks can carry a one-off `name`, `desc` and `quest`.
+  - `factions.ts`: 7 factions with rivals; `standing()` gives the words.
+  - `Game.ts`: `GameState` (serialisable) and the `Game` rules: inventory, XP, practice/check, money, prices, reputation, memory (visited, met, pois, flags, bounty), needs `tick()` against the weather and your clothes, `sleep()`.
+  - `quests.ts`: `offerFrom(resident)` makes jobs deterministically per resident every two days: missing (search a spot), debt, delivery, fetch. The main story is `startMain`/`advanceMain` (stages 0–6) over `mainPlaces()` (first town, a ruin, a city bank, a cold town's church).
+  - `dialogue.ts`: node trees. `residentTalk`, `poiTalk` (services by door kind) and `staffOf(poi)`. A choice's `go()` returns a node, `null` (end) or `undefined` (handed off to the shop).
+  - `economy.ts`: stock per door kind and day, what each buys, opening hours.
+  - `saves.ts`: slots auto/1/2/3, a versioned envelope, `MIGRATIONS`, `repair()`, and the `SaveStore` interface (the platform layer swaps in console storage).
+- **`src/rpg/Life.ts`:** owns the Game and the screens.
+  - `resume()` loads the latest save before the world preloads, else sets `pendingCreator`.
+  - Also: interactions (search, talk, go in), sleep, trains, autosave (150 s, new town, sleeping, searching), and the compass goal.
+- **UI (`src/rpg/ui/`):**
+  - `Creator` (live MH rebuild via `Rpg.setHero`, debounced), `Talk`, `Casefile` (tabs, LB/RB), `Shop`.
+  - HUD: toasts, a goal marker and line, condition words.
+  - Signs: `world/Signs.ts` puts enamel signs and lit doors on every POI (their own group per chunk, disposed on drop).
+- **App:** overlay `'rpg'` (`host.panel(open, from)`). In RPG, map/archive open the Casefile. The creator uses the wardrobe's fitting camera and blocks back/Menu. The RPG clock pauses under any overlay. The controls strip has an `rpg` set.
+- **Playtest:** `tools/playtest/rpg-life.mjs`. After a page reload the title focuses "Sound on", so the test moves to Enter, and waits 2 s on the mode select before confirming.
+
 ### Still to build (the addendum's list)
 - **R2 leftovers:** more landmark kinds.
-- **R3:** character creation, attributes, skills, perks, items, inventory, factions, quests with multiple solutions, dialogue, economy, versioned save slots, world memory.
+- **R3 leftovers:** combat-based jobs (bounties), owned vehicles in saves, the Places tab becomes the atlas in R5.
 - **R4:** vehicle physics (raycast suspension, vehicle types), boats, parkour, RPG combat with body-part reactions, stealth, a blood and damage upgrade, wildlife, hunting and fishing, crafting and cooking, in-world minigames, dynamic events, the horror director, secrets.
 - **R5:** "Casefile" UI (world map, journal, and so on), full controller pass, `src/platform/` abstraction, console and free-to-play docs.
 - **R6:** the full playtest checklist and a 60-minute soak.
