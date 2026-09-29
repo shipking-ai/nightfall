@@ -1,6 +1,6 @@
 # HANDOFF — NIGHTFALL
 
-Last updated: 2026-09-28 (RPG R1 + realistic RPG people in progress). Read this first, then [README.md](README.md) for architecture and controls.
+Last updated: 2026-09-29 (RPG R1, realistic people, R2 populace and traffic done; R3 next). Read this first, then [README.md](README.md) for architecture and controls.
 
 ## State in one paragraph
 
@@ -32,23 +32,22 @@ The user's brief is a very large "fifth game" addendum: an endless streamed worl
   - `Outskirts.limit` and `Outskirts.follow`.
 - **Playtest:** `tools/playtest/rpg.mjs` selects RPG with the virtual pad, visits every biome and town type, drives out of District 03, and fails on errors.
 
-### In progress: realistic RPG people (the user's priority: "look totally different, as realistic and epic as possible")
-- **`src/rpg/people/`:** people sculpted as signed distance fields (`sdf.ts`, `anatomy.ts`), meshed by surface nets (`nets.ts`) in a worker (`human.worker.ts`, `build.ts`), and skinned to the shared rig's joints (`bind.ts` A-pose bind; `RealHuman.pose()` copies `J` into the bones after `solve()`).
-- **Detail levels:** three, at about 117k, 40k and 9.5k triangles.
-- **Materials (`materials.ts`):** skin (wrap scattering, pores, flush zones, stubble), fabric (weave, sheen, wear), hair (strands), eyes (wet coat).
-- **`kit.ts`:** makes varied specs per climate and job.
-- **Viewer:** `dev/human.html?shot=full|face|walk` (dev server only); `tools/playtest/people.mjs` photographs it.
-- **Status:** works, but the result is still "clay", not realistic. **Not yet wired into the game** (the RPG player still uses the city figure).
-- **Recommended next step: switch to MakeHuman's bundled assets.**
-  - Licence: CC0 1.0, confirmed in the repo's LICENSE.md section C.
-  - What they give: a realistic base mesh, macro morph targets (sex, age, muscle, weight, ethnicity), face targets, `game_engine.mhskel` with its weights, skins, eyebrows, eyelashes, hair and clothes proxies.
-  - Where: `raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data/...`, which is reachable from the sandbox (base.obj fetched fine).
-  - Needs the repo attached with `add_repo` to list the tree through the API.
-  - Plan: preconvert a curated subset to compact binary and JPEG in `public/rpg/people/`, then map the game_engine bones onto the rig joints (the same `RealHuman` skinning path).
-  - Hook-up point: `Player.draw()` (hide `batch`, call `realHuman.pose()` right after `solve()`), plus RPG NPCs.
+### Done: realistic RPG people (the user's priority), commit 4c85461
+- **MakeHuman (CC0 1.0, LICENSE.md section C):** `tools/mh/convert.py` packs the base mesh, macro and face targets, and the default skeleton's weights into `public/rpg/mh/mh.bin` plus `mh.json` (6.1 MB; credit in `public/rpg/mh/LICENSE.txt`). The source clone was `/home/user/makehumancommunity/makehuman`. The skins, hair and clothes packs weren't reachable (the host needs auth), so clothes and hair are grown from the body and its helper meshes in `mh.ts`.
+- **`src/rpg/people/mh.ts`:** morphs a person from a `HumanSpec`, retargets bone-frame by bone-frame onto the game rig's bind pose, and cuts and drapes top, coat skirt, trousers and scalp hair. Shoes and extras stay SDF (`anatomy.ts`). The eye proxy is fitted from mhclo.
+- **`RealHuman`:** a SkinnedMesh whose bones copy the shared rig's `J` after `solve()`. It's built in a worker. The far LOD is the SDF person.
+- **Hero:** `heroSpec()` in `kit.ts` (charcoal wool coat, scarf, stubble). `Player.real` draws it in place of the city figure. It sits lower in car seats (the MH trunk is longer).
+- **Viewer:** `dev/human.html?shot=full|face|walk&mh=0|1`.
+- **To polish:** brows, better hair styles, NPC variety.
+
+### Done: R2, the living world (commits d4e0937 and ba907d6)
+- **`src/rpg/sim/Populace.ts`:** each town's residents have a name, job, home, workplace and daily schedule. Where someone is is a function of the time: commute, lunch, errands, evenings out, bed. Up to 12 within 110 m are embodied as `RealHuman`s (a pool of 28). Press interact to talk; the lines depend on their job, the weather and a rumour.
+- **`src/rpg/sim/RoadTraffic.ts`:** vehicles on the road polylines, chosen by biome, in the right-hand lane. They slow for the car ahead and for you, and have headlights and brake lights. They spawn 160–520 m away along the road where it passes you (projected, by wall time, not capped dt) and drop past 700 m. `obstacles()` feeds App's collision circles.
+- **Parked cars:** the `chunk.cars` spots within 160 m become real `DrivableCar`s via `Vehicles.spawn(spec, streamed=true)` / `despawn()` (`Rpg.park()`).
+- **Playtest:** `tools/playtest/rpg-roads.mjs` covers highway traffic, a town's parked cars, and getting in and driving off. Note that `t.step()` switches the game to manual stepping, so after the first `step()`, advance time with `step()` rather than `wait()`.
 
 ### Still to build (the addendum's list)
-- **R2:** traffic, residents with schedules and simulation LOD, more landmarks.
+- **R2 leftovers:** more landmark kinds.
 - **R3:** character creation, attributes, skills, perks, items, inventory, factions, quests with multiple solutions, dialogue, economy, versioned save slots, world memory.
 - **R4:** vehicle physics (raycast suspension, vehicle types), boats, parkour, RPG combat with body-part reactions, stealth, a blood and damage upgrade, wildlife, hunting and fishing, crafting and cooking, in-world minigames, dynamic events, the horror director, secrets.
 - **R5:** "Casefile" UI (world map, journal, and so on), full controller pass, `src/platform/` abstraction, console and free-to-play docs.
