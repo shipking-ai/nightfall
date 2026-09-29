@@ -13,7 +13,8 @@ import { districtAt } from '../world/layout';
 import { WorldGen, DISTRICT_03, type Settlement } from './world/WorldGen';
 import { Streamer, CHUNK } from './world/Streamer';
 import { doorMat, signMats } from './world/Signs';
-import { BIOMES, CITY_STYLES, type BiomeId } from './world/biomes';
+import { BIOMES, CITY_STYLES, type BiomeId, type VehicleKind } from './world/biomes';
+import type { Tune } from '../entities/Vehicles';
 import { Atmosphere } from './env/Atmosphere';
 import { Sea, createSeaMaterial } from './env/Sea';
 import { Precip } from './env/Precip';
@@ -23,7 +24,7 @@ import { RealHuman } from './people/RealHuman';
 import type { HumanSpec } from './people/anatomy';
 import { Life } from './Life';
 import { Populace } from './sim/Populace';
-import { RoadTraffic } from './sim/RoadTraffic';
+import { RoadTraffic, vehicleMesh } from './sim/RoadTraffic';
 import { Wildlife } from './sim/Wildlife';
 import { Director } from './sim/Director';
 import type { Vehicles, DrivableCar } from '../entities/Vehicles';
@@ -57,6 +58,8 @@ export interface RpgHost {
   /** something hurt you (an animal, the cold) */
   hurt: (dmg: number, by: string) => void;
   rumble?: (k: number) => void;
+  /** put you in the driver's seat of this car */
+  enterCar: (car: DrivableCar) => void;
   /** River Road, where every life starts */
   spawn: { x: number; z: number; yaw: number };
 }
@@ -185,6 +188,7 @@ export class Rpg {
     this.traffic.clear();
     this.wildlife.clear();
     this.director.clear();
+    h.vehicles.grip = 1;
     h.player.canCrouch = false;
     for (const car of this.parked.values()) h.vehicles.despawn(car);
     this.parked.clear();
@@ -240,6 +244,7 @@ export class Rpg {
     this.precip.update(h.camera.position, now.snow, now.dust, now.windDir, now.wind, this.atmos.daylight);
     this.far.update(p, h.fog, h.sky.uniforms.uSunCol.value);
     this.populace.update(dt, performance.now() / 1000, this.atmos.minutes, p, h.camera, now.rain);
+    h.vehicles.grip = this.atmos.now.grip;
     this.traffic.night = 1 - this.atmos.daylight;
     this.traffic.update(dt, p);
     if (!inD03(p.x, p.z)) this.wildlife.update(dt, this.place.biome, h.camera);
@@ -359,13 +364,53 @@ export class Rpg {
       this.host.vehicles.despawn(car);
       this.parked.delete(k);
     }
-    const colors = [0x7a1c16, 0x1c2a44, 0x2c2c2e, 0xb8b4ac, 0x3a4a2a, 0x5a4a36, 0x8a8a86, 0x6a5a2a];
     for (const s of spots.slice(0, 10)) {
       if (this.parked.has(s.key)) continue;
       const k = Math.abs(Math.floor(s.x * 7 + s.z * 13));
-      const car = this.host.vehicles.spawn({ pos: new THREE.Vector3(s.x, s.y, s.z), yaw: s.yaw, color: colors[k % colors.length], van: k % 7 === 0, screen: false }, true);
+      const car = this.parkCar(s, k);
       this.parked.set(s.key, car);
     }
+  }
+
+  /** A car parked here: what the region drives (pickups in farm country, off-roaders in the hills). */
+  private parkCar(s: { x: number; y: number; z: number; yaw: number }, k: number): DrivableCar {
+    const colors = [0x7a1c16, 0x1c2a44, 0x2c2c2e, 0xb8b4ac, 0x3a4a2a, 0x5a4a36, 0x8a8a86, 0x6a5a2a];
+    const biome = this.gen.ground(s.x, s.z).biome;
+    const list = BIOMES[biome].vehicles.filter(([v]) => v !== 'bus' && v !== 'moto' && v !== 'taxi' && v !== 'police' && v !== 'ambulance');
+    let kind: VehicleKind = 'sedan';
+    if (list.length) {
+      let sum = 0;
+      for (const [, w] of list) sum += w;
+      let r = ((k * 2654435761) >>> 0) / 4294967296 * sum;
+      for (const [v, w] of list) if ((r -= w) <= 0) {
+        kind = v;
+        break;
+      }
+    }
+    return this.spawnCar(kind, new THREE.Vector3(s.x, s.y, s.z), s.yaw, colors[k % colors.length], k);
+  }
+
+  /** A drivable car of this kind: the city's own model for cars and vans, the road's for the rest. */
+  spawnCar(kind: VehicleKind, pos: THREE.Vector3, yaw: number, color: number, k = 0, mesh?: { mesh: THREE.Group; tails: THREE.MeshStandardMaterial }): DrivableCar {
+    const t = TUNES[kind] ?? TUNES.sedan;
+    const own = kind === 'sedan' || kind === 'hatch' || kind === 'van';
+    const m = own ? null : mesh ?? vehicleMesh(kind, this.host.mats);
+    const car = this.host.vehicles.spawn({ pos, yaw, color, van: kind === 'van', screen: false, mesh: m?.mesh, tails: m?.tails, kind, tune: t!.tune, seat: t!.seat, reach: t!.reach }, true);
+    car.surface = (x, z) => {
+      const g = this.gen.ground(x, z);
+      return g.road > 0 || g.urban > 0.3 ? 1 : 0;
+    };
+    void k;
+    return car;
+  }
+
+  /** Pull the driver out of a stopped car and take it. */
+  carjack(p: THREE.Vector3): DrivableCar | null {
+    const got = this.traffic.take(p);
+    if (!got) return null;
+    const car = this.spawnCar(got.kind, got.pos, got.yaw, 0x444444, 0, got);
+    this.parked.set(`jack:${Date.now()}`, car);
+    return car;
   }
 
   /** Any street lamp within r of p (for the lights to stutter). */
@@ -446,6 +491,17 @@ export class Rpg {
     return { people: this.populace.count, about: this.populace.about, traffic: this.traffic.count, parked: this.parked.size, chunks: this.streamer.chunks.size, tiles: s.tiles, built: s.built, dropped: s.dropped, ms: +s.lastMs.toFixed(1), plants: this.streamer.flora.total, lamps: this.cityLamps.length, chunkSize: CHUNK };
   }
 }
+
+/** How each kind handles, where you sit in it, and how long it is (half, from the middle to the axle circles). */
+const TUNES: Partial<Record<VehicleKind, { tune: Tune; seat?: { x: number; y: number; z: number }; reach?: number }>> = {
+  sedan: { tune: { accel: 1, vmax: 1, steer: 1, offroad: 0.55 } },
+  hatch: { tune: { accel: 1.05, vmax: 0.95, steer: 1.08, offroad: 0.5 } },
+  van: { tune: { accel: 0.85, vmax: 0.9, steer: 0.9, offroad: 0.5 } },
+  sports: { tune: { accel: 1.55, vmax: 1.35, steer: 1.1, offroad: 0.35 }, seat: { x: -0.4, y: 0.34, z: -0.2 } },
+  pickup: { tune: { accel: 1, vmax: 0.95, steer: 0.9, offroad: 0.82 }, seat: { x: -0.42, y: 0.72, z: 0.45 }, reach: 1.9 },
+  offroad: { tune: { accel: 1.05, vmax: 0.9, steer: 0.95, offroad: 1 }, seat: { x: -0.42, y: 0.66, z: 0.05 }, reach: 1.6 },
+  truck: { tune: { accel: 0.55, vmax: 0.75, steer: 0.7, offroad: 0.6 }, seat: { x: -0.55, y: 1.25, z: 3.0 }, reach: 3.4 },
+};
 
 export function inD03(x: number, z: number) {
   const d = DISTRICT_03;

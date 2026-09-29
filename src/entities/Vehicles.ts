@@ -38,6 +38,21 @@ export interface DrivableCar {
   taken: boolean;
   /** parked by the RPG's streamer (not one of District 03's own) */
   streamed?: boolean;
+  /** RPG: what kind (a pickup, a truck…), how it handles, where the driver sits */
+  kind?: string;
+  tune?: Tune;
+  seat?: { x: number; y: number; z: number };
+  /** RPG: 1 on a road, 0 off it (how much off-road slows it depends on the tune) */
+  surface?: (x: number, z: number) => number;
+}
+
+/** Handling, as multipliers on the city car's. */
+export interface Tune {
+  accel: number;
+  vmax: number;
+  steer: number;
+  /** top speed off the road, as a fraction of on it */
+  offroad: number;
 }
 
 /**
@@ -51,6 +66,8 @@ export class Vehicles {
   /** 0..1, how hard the last impact was (the camera shakes, audio thumps) */
   impact = 0;
   onImpact: ((strength: number) => void) | null = null;
+  /** the road's grip (RPG weather: rain, snow, ice); 1 = dry tarmac */
+  grip = 1;
   private tmp = new THREE.Vector3();
 
   constructor(private ctx: WorldContext) {
@@ -58,13 +75,13 @@ export class Vehicles {
   }
 
   /** A car parked somewhere new (the RPG's towns park them as they stream in). */
-  spawn(spec: { pos: THREE.Vector3; yaw: number; color: number; van: boolean; screen: boolean }, streamed = false): DrivableCar {
+  spawn(spec: { pos: THREE.Vector3; yaw: number; color: number; van: boolean; screen: boolean; mesh?: THREE.Group; tails?: THREE.MeshStandardMaterial; kind?: string; tune?: Tune; seat?: { x: number; y: number; z: number }; reach?: number }, streamed = false): DrivableCar {
     const ctx = this.ctx;
     {
-      const g = new THREE.Group();
+      const g = spec.mesh ?? new THREE.Group();
       const paint = new THREE.MeshStandardMaterial({ color: spec.color, roughness: 0.3, metalness: 0.3 });
-      const tailMat = (ctx.mats.lampRed as THREE.MeshStandardMaterial).clone();
-      for (const part of carParts(spec.color, spec.van, true)) {
+      const tailMat = spec.tails ?? (ctx.mats.lampRed as THREE.MeshStandardMaterial).clone();
+      if (!spec.mesh) for (const part of carParts(spec.color, spec.van, true)) {
         const mesh = new THREE.Mesh(part.geo, part.kind === 'paint' ? paint : part.kind === 'tail' ? tailMat : part.kind === 'glass' ? CAR_GLASS : part.mat(ctx));
         mesh.applyMatrix4(part.m);
         mesh.castShadow = part.kind === 'paint';
@@ -80,7 +97,7 @@ export class Vehicles {
       lamps.forEach((l) => (l.dynamic = true));
       // streamed cars don't join the district's fixed list of lamps (they come and go)
       if (streamed) ctx.lamps.splice(ctx.lamps.length - lamps.length, lamps.length);
-      const car: DrivableCar = { group: g, pos: spec.pos.clone(), yaw: spec.yaw, v: 0, steer: 0, van: spec.van, reach: spec.van ? 1.7 : 1.45, lamps, occupied: false, leaving: false, braking: false, tailMat, screen: spec.screen, color: spec.color, taken: false, streamed };
+      const car: DrivableCar = { group: g, pos: spec.pos.clone(), yaw: spec.yaw, v: 0, steer: 0, van: spec.van, reach: spec.reach ?? (spec.van ? 1.7 : 1.45), lamps, occupied: false, leaving: false, braking: false, tailMat, screen: spec.screen, color: spec.color, taken: false, streamed, kind: spec.kind, tune: spec.tune, seat: spec.seat };
       this.cars.push(car);
       this.place(car);
       return car;
@@ -129,16 +146,24 @@ export class Vehicles {
     if (car.leaving) handbrake = true;
     car.braking = (throttle < -0.04 && car.v > 0.2) || (throttle > 0.04 && car.v < -0.2) || (handbrake && Math.abs(car.v) > 0.1);
 
-    // longitudinal
+    // longitudinal (per kind of vehicle, and slower off the road unless it's built for it)
+    const t = car.tune;
+    const grip = this.grip;
+    const onRoad = car.surface ? car.surface(car.pos.x, car.pos.z) : 1;
+    const vmax = VMAX * (t?.vmax ?? 1) * (onRoad + (1 - onRoad) * (t?.offroad ?? 0.6));
+    const accel = ACCEL * (t?.accel ?? 1) * (0.6 + 0.4 * grip);
+    const brake = BRAKE * (0.35 + 0.65 * grip);
     const tp = Math.abs(throttle);
-    if (throttle > 0.04) car.v += (car.v < -0.2 ? BRAKE * tp : ACCEL * tp * (1 - Math.max(0, car.v) / VMAX)) * dt;
-    else if (throttle < -0.04) car.v -= (car.v > 0.2 ? BRAKE * tp : REVERSE * tp * (1 - Math.max(0, -car.v) / VREV)) * dt;
+    if (throttle > 0.04) car.v += (car.v < -0.2 ? brake * tp : accel * tp * (1 - Math.max(0, car.v) / vmax)) * dt;
+    else if (throttle < -0.04) car.v -= (car.v > 0.2 ? brake * tp : REVERSE * tp * (1 - Math.max(0, -car.v) / VREV)) * dt;
     else car.v -= Math.sign(car.v) * Math.min(Math.abs(car.v), DRAG * dt);
-    if (handbrake) car.v -= Math.sign(car.v) * Math.min(Math.abs(car.v), 12 * dt);
-    car.v = THREE.MathUtils.clamp(car.v, -VREV, VMAX);
+    if (handbrake) car.v -= Math.sign(car.v) * Math.min(Math.abs(car.v), 12 * grip * dt);
+    // over the limit (off the road now): scrub speed
+    if (car.v > vmax) car.v -= Math.min(car.v - vmax, 9 * dt);
+    car.v = THREE.MathUtils.clamp(car.v, -VREV, VMAX * (t?.vmax ?? 1));
 
-    // steering: full lock at a crawl, gentle at speed, wheels self-centre
-    const lock = 0.62 / (1 + Math.abs(car.v) * 0.07);
+    // steering: full lock at a crawl, gentle at speed, wheels self-centre (and less bite on snow and ice)
+    const lock = (0.62 * (t?.steer ?? 1) * (0.55 + 0.45 * grip)) / (1 + Math.abs(car.v) * 0.07);
     car.steer += (steer * lock - car.steer) * Math.min(1, dt * (Math.abs(steer) > 0.05 ? 5 : 8));
     car.yaw = wrap(car.yaw + (car.v * Math.tan(car.steer) / WHEELBASE) * dt);
 
@@ -229,7 +254,7 @@ export class Vehicles {
     const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
     const dx = x - car.pos.x, dz = z - car.pos.z;
     const along = dx * fx + dz * fz, side = dx * fz - dz * fx;
-    const hl = car.van ? 2.5 : 2.2, hw = 0.95;
+    const hl = car.reach + 0.75, hw = 0.95;
     const ex = Math.max(0, Math.abs(along) - hl), ez = Math.max(0, Math.abs(side) - hw);
     return Math.hypot(ex, ez);
   }
@@ -240,7 +265,7 @@ export class Vehicles {
     g.rotation.y = car.yaw;
     g.updateMatrixWorld();
     const m = g.matrixWorld;
-    const L = car.van ? 2.5 : 2.2;
+    const L = car.reach + 0.75;
     car.lamps[0].pos.set(-0.62, 0.66, L + 0.2).applyMatrix4(m);
     car.lamps[1].pos.set(0.62, 0.66, L + 0.2).applyMatrix4(m);
     car.lamps[2].pos.set(-0.68, 0.74, -L - 0.1).applyMatrix4(m);

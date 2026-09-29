@@ -169,6 +169,28 @@ export class RoadTraffic {
     this.cars.push(v);
   }
 
+  /** A car stopped (or crawling) beside you: the one you could pull the driver out of. */
+  stoppedNear(p: THREE.Vector3, r = 3.2): { kind: VehicleKind; pos: THREE.Vector3; yaw: number } | null {
+    let best: Vehicle | null = null, bd = r;
+    for (const v of this.cars) {
+      if (v.v > 1.5 || v.kind === 'bus' || v.kind === 'moto') continue;
+      const d = Math.hypot(v.pos.x - p.x, v.pos.z - p.z);
+      if (d < bd) (bd = d), (best = v);
+    }
+    return best && { kind: best.kind, pos: best.pos, yaw: best.yaw };
+  }
+
+  /** Take it off the road (it's yours now): returns its mesh and lights, and forgets it. */
+  take(p: THREE.Vector3): { kind: VehicleKind; pos: THREE.Vector3; yaw: number; mesh: THREE.Group; tails: THREE.MeshStandardMaterial } | null {
+    const s = this.stoppedNear(p);
+    if (!s) return null;
+    const v = this.cars.find((c) => c.pos === s.pos)!;
+    this.cars = this.cars.filter((c) => c !== v);
+    this.group.remove(v.mesh);
+    v.mesh.rotation.set(0, 0, 0);
+    return { kind: v.kind, pos: v.pos.clone(), yaw: v.yaw, mesh: v.mesh, tails: v.tails };
+  }
+
   /** Solid circles for walkers (and your car). */
   obstacles(out: { x: number; z: number; r: number }[]) {
     for (const v of this.cars) {

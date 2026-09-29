@@ -323,6 +323,9 @@ export class Life {
         },
       };
     }
+    // a car stopped beside you, someone else at the wheel
+    const jack = !this.host.inVehicle() ? this.rpg.traffic.stoppedNear(pos) : null;
+    if (jack) return { name: jack.kind === 'truck' ? 'Truck' : jack.kind === 'pickup' ? 'Pickup' : jack.kind === 'offroad' ? '4×4' : 'Car', verb: 'Pull the driver out', go: () => this.carjack() };
     // water in front of you, and a rod
     if (g.count('rod') && !this.host.inVehicle() && this.waterAhead(pos, fwd)) return { name: 'Water', verb: 'Fish', go: () => this.cast() };
     const poi = this.doorAt(pos, fwd);
@@ -690,6 +693,23 @@ export class Life {
     this.busy = false;
     this.host.say(lines, 'The Watch');
     this.autosave();
+  }
+
+  /** Take a car off the road: the driver stumbles off shouting; if anyone saw, it's a crime. */
+  private carjack() {
+    const g = this.game;
+    const p = this.host.player.pos;
+    const car = this.rpg.carjack(p);
+    if (!g || !car) return;
+    const s = this.rpg.place.settlement;
+    const seen = this.rpg.populace.witnesses(p, 40).length > 0;
+    g.rep('union', -3);
+    if (s && seen) {
+      g.s.mem.bounty[s.id] = (g.s.mem.bounty[s.id] ?? 0) + 150;
+      this.rpg.hud.toast(`Seen. $${g.s.mem.bounty[s.id]} on your head in ${s.name}.`, 'bad');
+    } else this.rpg.hud.toast('The driver scrambles out and runs. Nobody else around.', 'info');
+    g.practice('driving', 1);
+    this.host.enterCar(car);
   }
 
   /**

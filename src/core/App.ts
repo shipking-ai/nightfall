@@ -596,6 +596,7 @@ export class App {
       curtain: (on) => this.fade(on, on ? 500 : 700),
       inVehicle: () => !!this.vehicle || !!this.boat,
       rumble: (k) => this.input.rumble('bump', k),
+      enterCar: (car) => this.enterVehicle({ kind: 'drive', car }),
       hurt: (dmg, by) => {
         if (this.dying || this.combat.god) return;
         this.hud.hurt(Math.min(0.6, dmg / 30));
@@ -1416,7 +1417,7 @@ export class App {
     const taxi = this.traffic.waitingTaxi(this.player.pos);
     if (taxi) return { verb: 'Ride along', name: 'Taxi', d: 0, go: () => this.enterVehicle({ kind: 'ride', car: taxi }) };
     const near = this.vehicles.nearest(this.player.pos, 1.4);
-    if (near) return { verb: 'Get in', name: near.car.van ? 'Van' : near.car.screen ? 'Electric car' : 'Car', d: near.d, go: () => this.enterVehicle({ kind: 'drive', car: near.car }) };
+    if (near) return { verb: 'Get in', name: carName(near.car), d: near.d, go: () => this.enterVehicle({ kind: 'drive', car: near.car }) };
     return null;
   }
 
@@ -2420,7 +2421,8 @@ export class App {
         this.player.pos.copy(veh.car.pos);
         this.player.facing = veh.car.yaw;
         veh.car.group.updateMatrixWorld();
-        this.seatM.copy(veh.car.group.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.driver.x, SEATS.driver.y, SEATS.driver.z));
+        const sd = veh.car.seat ?? SEATS.driver;
+        this.seatM.copy(veh.car.group.matrixWorld).multiply(this.tmpM.makeTranslation(sd.x, sd.y, sd.z));
         this.player.seat = { m: this.seatM, drive: true, steer: veh.car.steer / 0.62 };
         this.player.update(dt, null, this.follow.yaw, this.world.collision, []);
         if (veh.car.leaving && Math.abs(veh.car.v) < 0.3) this.leaveVehicle(true);
@@ -2578,7 +2580,7 @@ export class App {
       if (this.vehicle) {
         const v = this.vehicle;
         const stopping = v.kind === 'drive' ? v.car.leaving : !!v.car.taxi?.stopping;
-        this.hud.setPrompt(v.kind === 'drive' ? (v.car.van ? 'Van' : v.car.screen ? 'Electric car' : 'Car') : 'Taxi', stopping ? 'Stopping…' : v.kind === 'ride' ? 'Ask to stop' : 'Get out', 'exitVehicle');
+        this.hud.setPrompt(v.kind === 'drive' ? carName(v.car) : 'Taxi', stopping ? 'Stopping…' : v.kind === 'ride' ? 'Ask to stop' : 'Get out', 'exitVehicle');
         if (this.carScreen.isOpen) this.hud.setPrompt(null);
         if (this.input.pressed('exitVehicle')) this.leaveVehicle();
         if (v.kind === 'drive' && v.car.screen && this.input.pressed('screen')) this.carScreen.open();
@@ -2702,4 +2704,10 @@ function easeOut(x: number) {
 function clockText(sec: number) {
   const s = Math.max(0, Math.ceil(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/** What to call a car in a prompt. */
+function carName(c: DrivableCar) {
+  const k: Record<string, string> = { pickup: 'Pickup', offroad: '4×4', truck: 'Truck', sports: 'Sports car', hatch: 'Hatchback', van: 'Van' };
+  return (c.kind && k[c.kind]) ?? (c.van ? 'Van' : c.screen ? 'Electric car' : 'Car');
 }

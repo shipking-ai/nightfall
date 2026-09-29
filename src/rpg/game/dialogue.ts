@@ -271,6 +271,7 @@ export function poiTalk(ctx: TalkCtx, poi: Poi, staff: Resident): Node {
       case 'bar':
       case 'club':
         out.push(buy('A drink', 6, () => (g.c.warmth = Math.min(100, g.c.warmth + 15), g.c.rest = Math.max(0, g.c.rest - 3), ctx.pass(20), 'It burns the right way.')));
+        out.push({ label: 'Sit in on a hand of cards', go: () => cards(ctx, poi.name, root) });
         out.push(buy('Stand a round and listen', 15, () => {
           g.practice('investigation', 2);
           g.townRep(poi.town, 2);
@@ -433,6 +434,99 @@ function mainDoor(ctx: TalkCtx, q: Quest, poi: Poi): Node | null {
     ], 'The Long Night');
   }
   return null;
+}
+
+/* ── cards: blackjack at the back table ─────────────────── */
+
+const SUITS = ['♠', '♥', '♦', '♣'];
+const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+
+function handValue(h: number[]) {
+  let v = 0, aces = 0;
+  for (const c of h) {
+    const r = c % 13;
+    v += r === 0 ? 11 : r >= 9 ? 10 : r + 1;
+    if (r === 0) aces++;
+  }
+  while (v > 21 && aces--) v -= 10;
+  return v;
+}
+
+const cardName = (c: number) => `${RANKS[c % 13]}${SUITS[Math.floor(c / 13) % 4]}`;
+
+/** A few hands at the back table. Wits lets you keep count of what's gone. */
+function cards(ctx: TalkCtx, where: string, back: () => Node): Node {
+  const g = ctx.g;
+  const speaker = `${where}, the back table`;
+  let deck: number[] = [];
+  const shuffle = () => {
+    deck = Array.from({ length: 104 }, (_, i) => i % 52);
+    for (let i = deck.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [deck[i], deck[j]] = [deck[j], deck[i]];
+    }
+  };
+  shuffle();
+  let count = 0;
+  const draw = () => {
+    if (deck.length < 15) {
+      shuffle();
+      count = 0;
+    }
+    const c = deck.pop()!;
+    const r = c % 13;
+    count += r >= 1 && r <= 5 ? 1 : r === 0 || r >= 9 ? -1 : 0;
+    return c;
+  };
+  const table = (bet: number): Node => {
+    if (g.c.money < bet) return node(speaker, ['You can’t cover the bet.'], [{ label: 'Leave the table.', go: back }]);
+    g.pay(bet);
+    ctx.pass(4);
+    const you = [draw(), draw()], dealer = [draw(), draw()];
+    return turn(bet, you, dealer);
+  };
+  const shown = (hand: number[]) => `${hand.map(cardName).join(' ')} (${handValue(hand)})`;
+  const hint = () => (g.c.attrs.wits >= 6 || g.c.perks.includes('hunch') ? [count > 3 ? 'You’ve been counting. The deck’s running rich with tens.' : count < -3 ? 'You’ve been counting. Too many tens gone; the deck’s thin.' : 'You’ve been counting. Nothing in it either way.'] : []);
+  const turn = (bet: number, you: number[], dealer: number[]): Node => {
+    const v = handValue(you);
+    if (v > 21) return settle(bet, you, dealer, 'bust');
+    if (v === 21 && you.length === 2) return settle(bet, you, dealer, 'blackjack');
+    return node(speaker, [`You: ${shown(you)}. The dealer shows ${cardName(dealer[0])}.`, ...hint()], [
+      { label: 'Hit.', go: () => turn(bet, [...you, draw()], dealer) },
+      { label: 'Stand.', go: () => settle(bet, you, dealer, 'stand') },
+      { label: `Double down ($${bet} more).`, disabled: you.length !== 2 ? 'Only on your first two' : g.c.money < bet ? 'Not enough money' : undefined, go: () => (g.pay(bet), settle(bet * 2, [...you, draw()], dealer, 'stand')) },
+    ]);
+  };
+  const settle = (bet: number, you: number[], dealer: number[], how: 'bust' | 'blackjack' | 'stand'): Node => {
+    const d = [...dealer];
+    if (how === 'stand') while (handValue(d) < 17) d.push(draw());
+    const pv = handValue(you), dv = handValue(d);
+    let lines: string[];
+    let won = 0;
+    if (how === 'bust') lines = [`${shown(you)}. Bust.`, 'The dealer rakes it in without looking up.'];
+    else if (how === 'blackjack') {
+      won = Math.round(bet * 2.5);
+      lines = [`${shown(you)}. Blackjack.`, 'A murmur round the table.'];
+    } else if (dv > 21 || pv > dv) {
+      won = bet * 2;
+      lines = [`You: ${shown(you)}. Dealer: ${shown(d)}.`, dv > 21 ? 'The dealer busts.' : 'Yours.'];
+    } else if (pv === dv) {
+      won = bet;
+      lines = [`You: ${shown(you)}. Dealer: ${shown(d)}.`, 'A push. Your money back.'];
+    } else lines = [`You: ${shown(you)}. Dealer: ${shown(d)}.`, 'The house.'];
+    if (won) g.c.money += won;
+    g.s.mem.flags['cards:net'] = ((g.s.mem.flags['cards:net'] as number) ?? 0) + won - bet;
+    return node(speaker, lines, [
+      { label: 'Deal me in again ($10).', disabled: g.c.money < 10 ? 'Not enough money' : undefined, go: () => table(10) },
+      { label: 'Raise it: $50.', disabled: g.c.money < 50 ? 'Not enough money' : undefined, go: () => table(50) },
+      { label: 'Leave the table.', go: back },
+    ]);
+  };
+  return node(speaker, ['A felt table under a green lamp, three regulars and a dealer who doesn’t smile.', 'Ten a hand. Blackjack pays three to two.'], [
+    { label: 'Deal me in ($10).', disabled: g.c.money < 10 ? 'Not enough money' : undefined, go: () => table(10) },
+    { label: 'High table ($50).', disabled: g.c.money < 50 ? 'Not enough money' : undefined, go: () => table(50) },
+    { label: 'Not tonight.', go: back },
+  ]);
 }
 
 function maxHp(g: Game) {
