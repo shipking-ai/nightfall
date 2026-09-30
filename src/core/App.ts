@@ -18,6 +18,8 @@ import { Crowd } from '../entities/Crowd';
 import { Traffic, type Car as TrafficCar } from '../entities/Traffic';
 import { Vehicles, exitBeside, type DrivableCar } from '../entities/Vehicles';
 import { wrap } from '../entities/Player';
+import { Cinematics, subject, type Shot } from '../cine/Cinematics';
+import { CineUi } from '../cine/CineUi';
 import { bloody } from '../vehicles/model';
 import { Player } from '../entities/Player';
 import { FollowCamera } from '../camera/FollowCamera';
@@ -227,6 +229,14 @@ export class App {
   private emoteSeq = 0;
   /** getting into or out of a vehicle: a short animation at the door first */
   private boarding: { t: number; go: () => void; tick?: (dt: number) => void } | null = null;
+  /** in-engine scenes (cine/Cinematics.ts): the camera takes over from play and hands it back */
+  scenes!: Cinematics;
+  private sceneUi!: CineUi;
+  private skipHeld = 0;
+  /** a scene is playing (not handing back): play input waits */
+  get sceneBusy() {
+    return !!this.scenes?.active && !this.scenes.handingBack;
+  }
   /** a car door to swing shut in a moment (after getting in or out) */
   private doorClose: { car: DrivableCar; t: number } | null = null;
   private controlSeen = new Map<ControlContext, number>();
@@ -295,6 +305,8 @@ export class App {
     };
     this.follow = new FollowCamera(this.camera);
     this.cine = new CinematicCamera(this.camera);
+    this.scenes = new Cinematics(this.camera);
+    this.scenes.occlude = (from, dir, max) => this.world.collision.raycast(from, dir, max);
     this.discovery = new Discovery(this.save);
 
     this.ui.append(this.boxTop, this.boxBottom);
@@ -314,6 +326,7 @@ export class App {
     });
     this.nav.scope(this.joinView.el, { back: () => this.joinView.close() });
     this.hud = new Hud(this.ui);
+    this.sceneUi = new CineUi(this.ui);
     this.modeSelect = new ModeSelect(this.ui, {
       preview: (id) => this.previewMode(id),
       choose: (id) => this.chooseMode(id),
@@ -573,6 +586,7 @@ export class App {
       aimAssist: () => this.settings.data.aimAssist,
       hurtFlash: (k) => this.warzone.hud.hurt(k),
       onModes: () => this.fightToModes(),
+      scene: (s) => this.scenes.play(s),
       onLeave: () => this.leave(),
     });
     this.scene.add(this.warzone.group);
@@ -622,6 +636,8 @@ export class App {
       inVehicle: () => !!this.vehicle || !!this.boat,
       rumble: (k) => this.input.rumble('bump', k),
       enterCar: (car) => this.enterVehicle({ kind: 'drive', car }),
+      talkScene: (who, cut) => this.talkScene(who, cut),
+      storyBeat: (caption) => this.storyBeat(caption),
       hurt: (dmg, by) => {
         if (this.dying || this.combat.god) return;
         this.hud.hurt(Math.min(0.6, dmg / 30));
@@ -770,6 +786,7 @@ export class App {
     this.follow.invertY = d.invertY;
     this.follow.reducedMotion = d.reducedMotion;
     this.cine.reducedMotion = d.reducedMotion;
+    this.scenes.reducedMotion = d.reducedMotion;
     this.audio.setVolumes(d.master, d.ambience, d.music);
     this.radio.setVolume(d.radio);
     // controller
@@ -1326,7 +1343,7 @@ export class App {
 
   /** The emote wheel (hold, point, release) and photo mode. */
   private emotesAndPhotos() {
-    const onFoot = !this.vehicle && !this.boat && !this.player.swimming && !this.dying && !this.boarding && !this.chat?.isOpen && !this.admin?.isOpen;
+    const onFoot = !this.vehicle && !this.boat && !this.player.swimming && !this.dying && !this.boarding && !this.chat?.isOpen && !this.admin?.isOpen && !this.sceneBusy;
     if (this.rules.emotes && onFoot && !this.photoOn) {
       if (!this.wheel.isOpen && this.input.pressed('emote')) this.wheel.open();
       if (this.wheel.isOpen) {
@@ -1513,6 +1530,52 @@ export class App {
     }
     this.audio.footstep(0.9, false);
     this.input.rumble('bump', 0.6);
+  }
+
+  /* ─────────────────────────── scenes ─────────────────────────── */
+
+  private talkWho: { pos: THREE.Vector3; yaw: number; height: number } | null = null;
+
+  /**
+   * A conversation, filmed: a two-shot as it starts, then over your shoulder
+   * onto them while they talk (closer as it matters), a reverse onto you when
+   * you answer, and back to play when it's done. No bars: it's still play.
+   */
+  private talkScene(who: { pos: THREE.Vector3; yaw: number; height: number } | null, cut?: 'them' | 'me' | 'close') {
+    if (!who && !cut) {
+      if (this.talkWho) {
+        this.talkWho = null;
+        this.scenes.skip();
+      }
+      return;
+    }
+    if (who) this.talkWho = who;
+    const w = this.talkWho;
+    if (!w) return;
+    // face each other
+    this.player.facing = Math.atan2(w.pos.x - this.player.pos.x, w.pos.z - this.player.pos.z);
+    const them = subject(() => w.pos, () => w.yaw, 1.6 * w.height);
+    const me = subject(() => this.player.pos, () => this.player.facing, 1.6 * this.player.body.height);
+    const onThem: Shot = { kind: 'overShoulder', a: them, b: me, side: -1, dur: 9999 };
+    const shot: Shot = cut === 'me' ? { kind: 'overShoulder', a: me, b: them, side: 1, dur: 2.2 } : cut === 'close' ? { kind: 'closeUp', a: them, side: -1, dur: 9999 } : onThem;
+    if (!this.scenes.active || this.scenes.handingBack) {
+      this.scenes.play({ bars: false, skippable: false, blendIn: 0.9, blendOut: 0.8, shots: [{ kind: 'twoShot', a: them, b: me, side: -1, dur: 1.5 }, shot] });
+    } else this.scenes.cut(shot, cut === 'me' ? onThem : undefined);
+  }
+
+  /** The story moved: where you are, what's next, and a push in on you. */
+  private storyBeat(caption: string) {
+    if (this.scenes.active) return;
+    const me = subject(() => this.player.pos, () => this.player.facing, 1.6 * this.player.body.height);
+    this.scenes.play({
+      blendIn: 1.4,
+      blendOut: 1.2,
+      shots: [
+        { kind: 'establish', a: me, dur: 4, caption, dist: 26, height: 10 },
+        { kind: 'pushIn', a: me, dur: 3, side: -1, dist: 4.5 },
+      ],
+      beats: [{ at: 4.2, do: () => this.player.act('idle.lookAround') }],
+    });
   }
 
   /** Make (or reuse) a room and put its link on the clipboard. */
@@ -2397,7 +2460,8 @@ export class App {
     this.input.poll(now);
     this.clock.update(now);
     // clamp both ways: tab switches produce huge deltas, clock resets can produce negative ones
-    const dt = Math.max(0, Math.min(this.clock.getDelta(), 0.05));
+    // (a scene can run time slow: the last moment of a match)
+    const dt = Math.max(0, Math.min(this.clock.getDelta(), 0.05)) * (this.scenes?.active ? this.scenes.timeScale : 1);
     this.t += dt;
     if (dt > 0) this.fpsDt += (dt - this.fpsDt) * 0.05;
     const t = this.t;
@@ -2481,7 +2545,7 @@ export class App {
     this.carScreen.show(veh?.kind === 'drive' && veh.car.screen && inWorld);
     this.carScreen.setVolume(this.settings.data.radio * this.settings.data.master * (this.overlay ? 0.3 : 1));
     if (inWorld) {
-      const move = playing && this.input.enabled && !this.carScreen.isOpen && !this.admin?.isOpen && !this.chat?.isOpen && !this.dying && !this.photoOn && !this.boarding;
+      const move = playing && this.input.enabled && !this.carScreen.isOpen && !this.admin?.isOpen && !this.chat?.isOpen && !this.dying && !this.photoOn && !this.boarding && !this.sceneBusy;
       if (this.boat) {
         const b = this.boat;
         const r = this.boats.drive(b, dt, move ? this.input : null);
@@ -2770,6 +2834,17 @@ export class App {
       const roof = this.world.collision.raycast(head, UP, 14) < 14;
       this.audio.setShelter(roof ? 1 : 0);
     }
+    // a scene in progress has the camera (it blends in from, and back out to, where play put it)
+    if (this.scenes.active && !this.scenes.handingBack && this.scenes.scene?.skippable !== false && (this.input.held('confirm') || this.input.held('cancel'))) {
+      this.skipHeld += dt / 0.8;
+      if (this.skipHeld >= 1) {
+        this.skipHeld = 0;
+        this.scenes.skip();
+      }
+    } else this.skipHeld = Math.max(0, this.skipHeld - dt * 3);
+    this.scenes.update(dt);
+    this.renderer.cinema(this.scenes.bars, this.scenes.dofFocus, this.scenes.dofAperture);
+    this.sceneUi.update(this.scenes, this.skipHeld);
     this.audio.update(dt, this.camera, this.weather.intensity);
     this.input.endFrame();
     if (this.noRender) return;

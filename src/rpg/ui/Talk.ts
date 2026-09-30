@@ -38,6 +38,7 @@ export class Talk {
       return;
     }
     setOn(this.el, true);
+    this.onShow?.(n);
     this.who.textContent = n.speaker;
     this.sub.textContent = n.sub ?? '';
     this.sub.hidden = !n.sub;
@@ -63,11 +64,18 @@ export class Talk {
       c.tag ? h('span', { class: 'talk__tag meta' }, c.tag) : null,
       c.disabled ? h('span', { class: 'talk__tag talk__tag--off meta' }, c.disabled) : null,
     );
-    b.addEventListener('click', () => this.show(c.go()));
+    b.addEventListener('click', () => {
+      this.onPick?.();
+      this.show(c.go());
+    });
     return h('li', {}, b);
   }
 
   close() {
     setOn(this.el, false);
   }
+
+  /** a line is on screen (the speaker's turn) / you answered (yours) */
+  onShow?: (n: Node) => void;
+  onPick?: () => void;
 }

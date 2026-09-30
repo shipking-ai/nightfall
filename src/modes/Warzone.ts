@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { subject, type Scene } from '../cine/Cinematics';
 import { FigureBatch } from '../entities/FigureBatch';
 import { makePerson } from '../data/people';
 import { mulberry32 } from '../world/rng';
@@ -72,6 +73,8 @@ export interface WarzoneHost {
   hurtFlash(k: number): void;
   onModes(): void;
   onLeave(): void;
+  /** play an in-engine scene (the match opening, its end) */
+  scene?(s: Scene): void;
 }
 
 /** You, as the match sees you. */
@@ -386,6 +389,7 @@ export class Warzone {
   /** Into the fight with the chosen loadout. */
   private deploy() {
     const lo = this.loadout;
+    const firstDrop = this.phase === 'loadout';
     this.held = [lo.primary, lo.secondary];
     this.slot = 0;
     this.mag = [GUNS[lo.primary].mag, GUNS[lo.secondary].mag];
@@ -408,6 +412,19 @@ export class Warzone {
     this.phase = 'play';
     this.switchT = 0.45;
     p.act('gun.switch');
+    // the match's opening: the yard from above, your squad going in, into your eyes
+    if (firstDrop) {
+      const me = subject(() => p.pos, () => p.facing, 1.6);
+      this.host.scene?.({
+        blendIn: 0.6,
+        blendOut: 0.9,
+        shots: [
+          { kind: 'establish', a: me, dur: 3.2, dist: 38, height: 18, caption: 'Pier 9 Yard · Domination' },
+          { kind: 'track', a: me, dur: 2.2, side: 1, dist: 3.2 },
+          { kind: 'pushIn', a: me, dur: 1.4, side: -1, dist: 3 },
+        ],
+      });
+    }
   }
 
   /* ─────────────────────────── a frame ─────────────────────────── */
@@ -941,6 +958,10 @@ export class Warzone {
     const [b, r] = this.score;
     const won = b > r, draw = b === r;
     const me = this.me;
+    // the end of it, on camera: round you slowly, time running slow, before the numbers
+    const p = this.host.player;
+    const you = subject(() => p.pos, () => p.facing, 1.6);
+    this.host.scene?.({ slow: 0.4, blendIn: 0.8, blendOut: 0.6, shots: [{ kind: 'low', a: you, dur: 1.8, side: 1 }, { kind: 'orbit', a: you, dur: 3.6, side: -1, dist: 3.8 }] });
     this.hud.showEnd({
       title: draw ? 'Draw' : won ? 'Victory' : 'Defeat',
       lines: [`Blue ${b} – ${r} Red`, `${me.kills} kills · ${me.deaths} deaths · ${me.caps} captures`],

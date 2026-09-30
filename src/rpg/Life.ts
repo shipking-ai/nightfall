@@ -50,6 +50,8 @@ export class Life {
   private autoT = AUTOSAVE_S;
   private lastClock = -1;
   private talkingTo: Walker | null = null;
+  /** the main story's stage when we last looked (-1: not yet) */
+  private storyStage = -1;
   private busy = false;
   private visitedKey = '';
   private heroT = 0;
@@ -58,6 +60,23 @@ export class Life {
   constructor(private rpg: Rpg, private host: RpgHost) {
     this.talk = new Talk(host.ui);
     this.talk.onEnd = () => this.closePanel();
+    // a conversation plays like one: their face and hands as they talk, the camera cutting between you
+    let lines = 0;
+    this.talk.onShow = (n) => {
+      const w = this.talkingTo;
+      if (!w) return;
+      lines++;
+      w.m.face.talk = 1;
+      window.setTimeout(() => this.talkingTo === w && (w.m.face.talk = 0), 1400 + n.lines.join(' ').length * 45);
+      if (!w.anim.playing('social')) w.anim.play('emote.talk', { group: 'social', fadeIn: 0.4, speed: 0.9 + 0.2 * w.persona.energy });
+      this.host.talkScene?.({ pos: w.pos, yaw: w.yaw, height: w.human.body.height }, lines % 3 === 0 ? 'close' : 'them');
+    };
+    this.talk.onPick = () => {
+      if (!this.talkingTo) return;
+      this.talkingTo.anim.stop('social', 0.4);
+      this.host.player.act(Math.random() < 0.5 ? 'emote.nod' : 'emote.talk');
+      this.host.talkScene?.(null, 'me');
+    };
     // on the web, a milestone is a toast (a platform build shows its own)
     platform.onAchievement?.((id) => rpg.hud.toast(`Milestone · ${ACHIEVEMENTS[id]}`, 'good'));
     this.atlas = new Atlas({
@@ -308,8 +327,20 @@ export class Life {
     this.shop.close();
     this.fishing.close();
     if (this.panel !== 'creator') this.creator.close();
-    if (this.talkingTo) this.talkingTo.talk = 2.5;
+    if (this.talkingTo) {
+      this.talkingTo.talk = 2.5;
+      this.talkingTo.m.face.talk = 0;
+      this.host.talkScene?.(null);
+    }
     this.talkingTo = null;
+    // did the story move on while we talked? then it gets its moment
+    const main = this.game?.s.quests.find((q) => q.kind === 'main');
+    const stage = Number(main?.data.stage ?? 0);
+    if (main && stage > this.storyStage) {
+      const o = current(main);
+      if (this.storyStage >= 0 && o) window.setTimeout(() => this.host.storyBeat?.(o.text), 900);
+    }
+    if (main) this.storyStage = stage;
     if (this.panel !== 'creator') this.panel = null;
   }
 

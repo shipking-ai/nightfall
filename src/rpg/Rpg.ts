@@ -69,6 +69,10 @@ export interface RpgHost {
   rumble?: (k: number) => void;
   /** put you in the driver's seat of this car */
   enterCar: (car: DrivableCar) => void;
+  /** a conversation on camera: coverage on who you're talking to (and cuts as it goes), or null to hand back */
+  talkScene?: (who: { pos: THREE.Vector3; yaw: number; height: number } | null, cut?: 'them' | 'me' | 'close') => void;
+  /** a moment in the story, on camera: a place, a caption, a push in on you */
+  storyBeat?: (caption: string) => void;
   /** River Road, where every life starts */
   spawn: { x: number; z: number; yaw: number };
 }

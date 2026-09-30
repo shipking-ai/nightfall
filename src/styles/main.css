@@ -607,3 +607,19 @@ input[type='range']:hover::-webkit-slider-thumb { background: var(--accent); }
   .pause__foot dl { gap: 12px 28px; }
 }
 .is-touch .pause__foot > .meta { display: none; }
+
+/* ── cinematics (cine/CineUi.ts) ─────────────────────────── */
+.cine { pointer-events: none; }
+.cine__sub { position: absolute; left: 50%; bottom: 14vh; transform: translateX(-50%); width: min(880px, calc(100vw - 64px)); margin: 0; text-align: center;
+  font-family: var(--serif, Georgia, serif); font-size: clamp(18px, 2vw, 26px); line-height: 1.35; color: #f1ece2; text-shadow: 0 1px 3px rgba(0,0,0,.9), 0 0 18px rgba(0,0,0,.6);
+  opacity: 0; transition: opacity .35s; }
+.cine__sub.is-on { opacity: 1; }
+.cine__who { display: block; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: #c9a86a; margin-bottom: 6px; }
+.cine__who:empty { display: none; }
+.cine__cap { position: absolute; left: 6vw; top: 16vh; margin: 0; font-family: var(--serif, Georgia, serif); font-size: clamp(22px, 2.6vw, 38px); color: #f1ece2; opacity: 0; transition: opacity 1s; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+.cine__cap.is-on { opacity: 1; }
+.cine__skip { position: absolute; right: 4vw; bottom: 7vh; display: flex; align-items: center; gap: 8px; font-family: var(--mono, ui-monospace, monospace); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: rgba(241,236,226,.55); opacity: 0; transition: opacity .6s; }
+.cine__skip.is-on { opacity: 1; }
+.cine__skip b { display: block; width: 60px; height: 2px; background: rgba(241,236,226,.2); }
+.cine__skip b i { display: block; height: 100%; width: 0; background: #c9a86a; }
+body.is-cine .hud, body.is-cine .rpgc, body.is-cine .rpgg, body.is-cine .wzhud, body.is-cine .rpg-hud { opacity: 0 !important; transition: opacity .5s; }
