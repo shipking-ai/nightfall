@@ -2,6 +2,19 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { SPECS, classFor } from '../../vehicles/specs';
 import { buildVehicle, type VehicleModel } from '../../vehicles/model';
+import { FigureBatch } from '../../entities/FigureBatch';
+import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from '../../entities/Humanoid';
+import { makePerson, type ArchetypeId } from '../../data/people';
+import { mulberry32 } from '../../world/rng';
+
+const RNG = mulberry32(90210);
+function weighted(r: { next(): number }, list: [ArchetypeId, number][]): ArchetypeId {
+  let sum = 0;
+  for (const [, w] of list) sum += w;
+  let x = r.next() * sum;
+  for (const [k, w] of list) if ((x -= w) <= 0) return k;
+  return list[0][0];
+}
 import type { Materials } from '../../world/materials';
 import type { WorldContext } from '../../world/WorldContext';
 import { BIOMES, type VehicleKind } from '../world/biomes';
@@ -29,6 +42,10 @@ interface Vehicle {
   pos: THREE.Vector3;
   yaw: number;
   alive: boolean;
+  /** the person driving it (a figure in the drivers' batch), and where they sit */
+  slot: number;
+  driver: { body: Body; outfit: Outfit; motion: Motion; rig: Rig; lastYaw: number };
+  seat: { x: number; y: number; z: number };
 }
 
 const MAX = 16;
@@ -41,8 +58,15 @@ export class RoadTraffic {
   private spawnAt = 0;
   private tmp = new THREE.Vector3();
   night = 0;
+  /** everyone at a wheel: drawn close up, sat in, hands on it, turning it with the road */
+  private drivers = new FigureBatch(MAX, { shadows: false });
+  private free: number[] = Array.from({ length: MAX }, (_, i) => MAX - 1 - i);
+  private seatM = new THREE.Matrix4();
+  private tmpM = new THREE.Matrix4();
 
-  constructor(private gen: WorldGen, private mats: Materials) {}
+  constructor(private gen: WorldGen, private mats: Materials) {
+    this.group.add(this.drivers.group);
+  }
 
   private cum(road: Road): Float64Array {
     let c = this.lengths.get(road);
@@ -148,8 +172,46 @@ export class RoadTraffic {
       v.tails.emissiveIntensity = (braking ? 8 : 0.4) + this.night * 3;
       if (v.pos.distanceTo(player) > DROP) v.alive = false;
     }
-    for (const v of this.cars) if (!v.alive) this.forget(v.mesh);
+    for (const v of this.cars) if (!v.alive) this.drop(v);
     this.cars = this.cars.filter((v) => v.alive);
+    this.drawDrivers(dt, player);
+  }
+
+  /** The drivers, near enough to see: in their seats, steering with the road, glancing about. */
+  private drawDrivers(dt: number, player: THREE.Vector3) {
+    const t = performance.now() / 1000;
+    for (const v of this.cars) {
+      const d = v.pos.distanceTo(player);
+      if (d > 70 || v.slot < 0) {
+        if (v.slot >= 0) this.drivers.hide(v.slot);
+        continue;
+      }
+      const p = v.driver, m = p.motion;
+      const turn = Math.atan2(Math.sin(v.yaw - p.lastYaw), Math.cos(v.yaw - p.lastYaw)) / Math.max(dt, 1e-3);
+      p.lastYaw = v.yaw;
+      m.steer += (THREE.MathUtils.clamp(turn * 1.6, -1, 1) - m.steer) * Math.min(1, dt * 5);
+      // eyes on the road, into the bend, now and then the mirror
+      const mirror = Math.sin(t * 0.37 + v.slot * 1.7) > 0.93 ? 0.75 : 0;
+      m.lookYaw += (m.steer * 0.4 + mirror - m.lookYaw) * Math.min(1, dt * 3);
+      m.speed = 0;
+      stepPhase(m, dt);
+      v.mesh.updateMatrixWorld();
+      const md = v.mesh.userData.model as VehicleModel | undefined;
+      this.seatM.copy(md ? md.body.matrixWorld : v.mesh.matrixWorld).multiply(this.tmpM.makeTranslation(v.seat.x, v.seat.y, v.seat.z));
+      this.seatM.multiply(this.tmpM.makeScale(p.body.height, p.body.height, p.body.height));
+      solve(p.rig, this.seatM, p.body, p.outfit, m, t);
+      this.drivers.write(v.slot, p.rig, visibleParts(p.outfit, d), false);
+    }
+    this.drivers.flush();
+  }
+
+  private drop(v: Vehicle) {
+    this.forget(v.mesh);
+    if (v.slot >= 0) {
+      this.drivers.hide(v.slot);
+      this.free.push(v.slot);
+      v.slot = -1;
+    }
   }
 
   private add(road: Road, s: number, dir: 1 | -1) {
@@ -166,9 +228,18 @@ export class RoadTraffic {
     }
     if (road.kind === 'highway' && Math.random() < 0.08) kind = 'bus';
     if (road.kind === 'track' && (kind === 'bus' || kind === 'sports')) kind = 'pickup';
-    const { mesh, lights, tails } = vehicleMesh(kind, this.mats);
+    const { mesh, lights, tails, seat } = vehicleMesh(kind, this.mats);
+    // who's driving: an ordinary person of these parts
+    const slot = this.free.pop() ?? -1;
+    const who = makePerson(RNG, weighted(RNG, [['commuter', 3], ['worker', 3], ['office', 1], ['elder', 1], ['drifter', 0.5], ['courier', 1]]));
+    who.outfit.umbrella = false;
+    who.outfit.backpack = null;
+    const motion = newMotion();
+    motion.sit = 1;
+    motion.armL = motion.armR = 'wheel';
+    if (slot >= 0) this.drivers.dress(slot, who.outfit, 0x9fc4ff, who.body);
     const vmax = (road.kind === 'highway' ? 27 : road.kind === 'road' ? 18 : 10) * (kind === 'truck' || kind === 'bus' ? 0.8 : kind === 'sports' ? 1.15 : 1) * (0.85 + Math.random() * 0.25);
-    const v: Vehicle = { kind, road, s, dir, v: vmax, vmax, mesh, lights, tails, pos: new THREE.Vector3(), yaw: 0, alive: true };
+    const v: Vehicle = { kind, road, s, dir, v: vmax, vmax, mesh, lights, tails, pos: new THREE.Vector3(), yaw: 0, alive: true, slot, driver: { body: who.body, outfit: who.outfit, motion, rig: newRig(), lastYaw: 0 }, seat };
     this.group.add(mesh);
     this.cars.push(v);
   }
@@ -191,6 +262,12 @@ export class RoadTraffic {
     const v = this.cars.find((c) => c.pos === s.pos)!;
     this.cars = this.cars.filter((c) => c !== v);
     this.group.remove(v.mesh);
+    if (v.slot >= 0) {
+      // the driver's out of it now (pulled out: they run off in the fiction; their figure goes)
+      this.drivers.hide(v.slot);
+      this.free.push(v.slot);
+      v.slot = -1;
+    }
     v.mesh.rotation.set(0, 0, 0);
     return { kind: v.kind, pos: v.pos.clone(), yaw: v.yaw, mesh: v.mesh, tails: v.tails };
   }
@@ -204,8 +281,9 @@ export class RoadTraffic {
   }
 
   clear() {
-    for (const v of this.cars) this.forget(v.mesh);
+    for (const v of this.cars) this.drop(v);
     this.cars = [];
+    this.drivers.flush();
   }
 
   /** Off the road for good: its own geometry and paint go back to the GPU (the shared materials stay). */
@@ -223,14 +301,14 @@ export class RoadTraffic {
 
 const PAINT = [0x7a1c16, 0x1c2a44, 0x2c2c2e, 0xb8b4ac, 0x3a4a2a, 0x5a4a36, 0x8a8a86, 0x1a1a1c, 0x6a5a2a, 0x2a4a5a, 0xd8d4cc];
 
-export function vehicleMesh(kind: VehicleKind, mats: Materials): { mesh: THREE.Group; lights: THREE.MeshStandardMaterial; tails: THREE.MeshStandardMaterial; model: VehicleModel } {
+export function vehicleMesh(kind: VehicleKind, mats: Materials): { mesh: THREE.Group; lights: THREE.MeshStandardMaterial; tails: THREE.MeshStandardMaterial; model: VehicleModel; seat: { x: number; y: number; z: number } } {
   // the same vehicles you can drive (vehicles/model.ts): its class's body, its own paint
   const spec = SPECS[classFor(kind === 'moto' ? 'motorcycle' : kind)];
   const color = spec.livery ? spec.paints[0] : PAINT[Math.floor(Math.random() * PAINT.length)];
   const model = buildVehicle(spec, color);
   model.root.userData.model = model;
   void mats;
-  return { mesh: model.root, lights: model.mats.head, tails: model.mats.tail, model };
+  return { mesh: model.root, lights: model.mats.head, tails: model.mats.tail, model, seat: spec.seat };
 }
 
 /** Free what a vehicleMesh made for itself: every geometry (merged per vehicle) and its own materials, not the shared ones. */

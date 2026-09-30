@@ -2532,6 +2532,7 @@ export class App {
       this.doorClose = null;
     }
     this.vehicles.update(dt);
+    this.vehicles.fx.update(dt, this.camera, innerHeight);
     this.boats.update(dt, (b) => (b === this.boat ? this.boatSteer : 0));
     if (inWorld && !this.vehicle) {
       this.stairwell();

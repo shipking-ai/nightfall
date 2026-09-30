@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { SPECS } from '../vehicles/specs';
+import { buildVehicle, setLights, type VehicleModel } from '../vehicles/model';
 import type { Materials } from '../world/materials';
 
 /**
@@ -154,6 +156,8 @@ class Heli {
 interface Cruiser {
   group: THREE.Group;
   bar: THREE.MeshBasicMaterial[];
+  /** the patrol car itself (vehicles/model.ts) */
+  model: VehicleModel;
   pos: THREE.Vector3;
   yaw: number;
   v: number;
@@ -183,21 +187,13 @@ export class Police {
     const door = new THREE.MeshStandardMaterial({ color: 0xd7d9dc, roughness: 0.4, metalness: 0.3 });
     for (let i = 0; i < 2; i++) {
       const g = new THREE.Group();
-      const bodyM = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.62, 4.6).translate(0, 0.62, 0), paint);
-      const doors = new THREE.Mesh(new THREE.BoxGeometry(1.82, 0.4, 1.9).translate(0, 0.66, -0.1), door);
-      const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 2.3).translate(0, 1.18, -0.25), mats.darkGlass);
+      // the same patrol car you could drive (vehicles/model.ts), beacons on the roof
+      const model = buildVehicle(SPECS.police, SPECS.police.paints[0]);
+      g.add(model.root);
       const bar: THREE.MeshBasicMaterial[] = [];
-      for (const [x, c] of [[-0.35, 0xff2a1a], [0.35, 0x2a5cff]] as const) {
-        const m = new THREE.MeshBasicMaterial({ color: c });
-        bar.push(m);
-        g.add(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.12, 0.26).translate(x, 1.5, -0.25), m));
-      }
-      for (const sx of [-0.84, 0.84]) for (const sz of [-1.45, 1.45]) g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.22, 12).rotateZ(Math.PI / 2).translate(sx, 0.34, sz), mats.rubber));
-      g.add(bodyM, doors, cabin);
-      bodyM.castShadow = true;
       g.visible = false;
       this.group.add(g);
-      this.cars.push({ group: g, bar, pos: new THREE.Vector3(), yaw: 0, v: 0, state: 'off', stopAt: new THREE.Vector3(), t: 0 });
+      this.cars.push({ group: g, bar, model, pos: new THREE.Vector3(), yaw: 0, v: 0, state: 'off', stopAt: new THREE.Vector3(), t: 0 });
     }
   }
 
@@ -255,9 +251,8 @@ export class Police {
     const want = player && !indoors ? (stars >= 4 ? 2 : stars >= 2 ? 1 : 0) : 0;
     let out = this.cars.filter((c) => c.state === 'coming' || c.state === 'parked').length;
     for (const c of this.cars) {
-      const flash = Math.floor(t * 4 + (c === this.cars[0] ? 0 : 1)) % 2;
-      c.bar[0].color.setHex(flash ? 0xff2a1a : 0x2a0000);
-      c.bar[1].color.setHex(flash ? 0x00081a : 0x2a5cff);
+      setLights(c.model, { head: 1, brake: c.v < 1 && c.state !== 'off', reverse: false, indicator: 0, hazard: false, beacons: true, running: true }, t + (c === this.cars[0] ? 0 : 0.13), { head: false, tail: false });
+      for (const w of c.model.wheels) w.spin.rotation.x += (c.v * dt) / w.r;
       if (c.state === 'off') {
         if (player && out < want) {
           this.dispatch(c, player, camFwd);

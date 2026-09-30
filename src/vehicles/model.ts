@@ -700,3 +700,31 @@ export function dent(v: VehicleModel, x: number, y: number, z: number, depth: nu
   let slot = v.wear.dents.find((d) => d.w <= 0) ?? v.wear.dents.reduce((a, d) => (d.w < a.w ? d : a));
   slot.set(x, y, z, Math.min(1, depth));
 }
+
+/**
+ * A class's shapes for a parked, never-driven car baked into the scenery
+ * (the city's static batch): body, glass, trim, lamps and wheels in place,
+ * as (kind, geometry) pairs in car-local space. Shared; never freed.
+ */
+const STATIC = new Map<string, { kind: 'paint' | 'glass' | 'trim' | 'chrome' | 'interior' | 'head' | 'tail' | 'rubber' | 'rim'; geo: THREE.BufferGeometry }[]>();
+export function staticVehicleParts(spec: VehicleSpec) {
+  const have = STATIC.get(spec.cls);
+  if (have) return have;
+  const cg = classGeo(spec);
+  const out: { kind: 'paint' | 'glass' | 'trim' | 'chrome' | 'interior' | 'head' | 'tail' | 'rubber' | 'rim'; geo: THREE.BufferGeometry }[] = [
+    { kind: 'paint', geo: cg.paint }, { kind: 'glass', geo: cg.glass }, { kind: 'trim', geo: cg.trim }, { kind: 'chrome', geo: cg.chrome },
+    { kind: 'interior', geo: cg.interior }, { kind: 'head', geo: cg.lamps.head }, { kind: 'tail', geo: cg.lamps.tail },
+  ];
+  const m = spec.mech;
+  const axles = [m.axleF, m.axleR, ...(m.extraAxles ?? [])];
+  const tires: THREE.BufferGeometry[] = [], rims: THREE.BufferGeometry[] = [];
+  for (const z of axles) for (const lx of m.bike ? [0] : [-m.track / 2, m.track / 2]) {
+    tires.push(cg.tire.clone().translate(lx, m.wheelR, z));
+    const r = cg.rim.clone();
+    if (lx < 0) r.scale(-1, 1, 1);
+    rims.push(r.translate(lx, m.wheelR, z));
+  }
+  out.push({ kind: 'rubber', geo: merge(tires) }, { kind: 'rim', geo: merge(rims) });
+  STATIC.set(spec.cls, out);
+  return out;
+}

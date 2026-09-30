@@ -10,6 +10,7 @@ import { wrap } from './Player';
 import { SPECS, classFor, type VehicleSpec } from '../vehicles/specs';
 import { Dynamics } from '../vehicles/dynamics';
 import { buildVehicle, setLights, dent, type VehicleModel } from '../vehicles/model';
+import { VehicleFx } from '../vehicles/VehicleFx';
 
 const ACCEL = 7.5;
 const BRAKE = 16;
@@ -93,7 +94,11 @@ export class Vehicles {
     return new Set<THREE.Material>(Object.values(this.ctx.mats) as THREE.Material[]);
   }
 
+  /** spray, tyre smoke, skid marks, a smoking engine */
+  fx = new VehicleFx();
+
   constructor(private ctx: WorldContext) {
+    this.group.add(this.fx.group);
     for (const spec of ctx.cars) this.spawn(spec);
   }
 
@@ -224,6 +229,15 @@ export class Vehicles {
     if (Math.abs(car.v) < 9 && Math.abs(steer) > 0.45) car.signal.ind = steer > 0 ? -1 : 1;
     else if (Math.abs(d.steerIn) < 0.1) car.signal.ind = 0;
     car.signal.head = this.dark ? 1 : 0;
+    // what the tyres throw up and leave behind, and a hurt engine's smoke
+    const sy = Math.sin(d.yaw), cy = Math.cos(d.yaw);
+    for (const w of d.wheels) {
+      if (!w.contact) continue;
+      const wx = d.x + w.lx * cy + w.lz * sy, wz = d.z - w.lx * sy + w.lz * cy;
+      this.fx.wheel(w, wx, w.ground, wz, d.vx, d.vz, w.slip, Math.abs(car.v), this.wet, dt, true);
+    }
+    const nose = car.spec.shape.length / 2 - 0.6;
+    this.fx.engine(d.x + nose * sy, d.y + car.spec.shape.belt, d.z + nose * cy, car.damage.engine, dt);
     car.signal.beacons = car.spec.livery === 'police' || car.spec.livery === 'ambulance' ? car.signal.beacons : false;
     this.place(car, dt);
   }
