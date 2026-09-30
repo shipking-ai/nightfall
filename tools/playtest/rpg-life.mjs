@@ -143,6 +143,8 @@ for (const kind of ['diner', 'store', 'motel', 'hotel']) {
   if (kind === 'motel' || kind === 'hotel') {
     const before = await page.evaluate(() => window.nf.rpg.atmos.label);
     await page.evaluate(() => [...document.querySelectorAll('.talk__choice')].find((b) => /A room/.test(b.textContent))?.click());
+    // lying down plays out in real time before the night passes
+    await t.wait(4000);
     for (let i = 0; i < 12; i++) await step(0.5);
     log('slept', before, '→', await page.evaluate(() => window.nf.rpg.atmos.label), 'auto', await page.evaluate(() => !!localStorage.getItem('nightfall.rpg.save.auto')));
     break;

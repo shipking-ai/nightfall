@@ -78,6 +78,8 @@ export type Tone = 'info' | 'good' | 'bad' | 'xp' | 'item' | 'rep' | 'quest';
 export interface GameEvents {
   toast(text: string, tone: Tone): void;
   levelUp(level: number): void;
+  /** something was used (eaten, drunk, applied): the body shows it */
+  used?(kind: string, id: string): void;
 }
 
 export function newState(name: string, bg: Background, attrs: Record<Attr, number>, hero: HumanSpec, pos: GameState['pos']): GameState {
@@ -197,6 +199,7 @@ export class Game {
     }
     if (!d.use) return d.desc;
     const u = d.use;
+    this.ev.used?.(d.kind, d.id);
     const raw = (d.id === 'fish' || d.id === 'meat') && !c.perks.includes('ironstomach');
     const heal = (u.heal ?? 0) * (c.perks.includes('medic') && d.kind === 'medical' ? 1.5 : 1) * (1 + c.skills.medicine / 200);
     c.fed = clamp(c.fed + (u.fed ?? 0) * (raw ? 1 : d.id === 'fish' || d.id === 'meat' ? 3 : 1));

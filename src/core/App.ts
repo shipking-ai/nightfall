@@ -1760,7 +1760,14 @@ export class App {
     if (speed < 6) return;
     this.crowd.npcs.forEach((n, i) => {
       if (!n.visible || n.dead >= 0 || Math.hypot(n.pos.x - pos.x, n.pos.z - pos.z) > 1.4) return;
-      this.hitNpc(i, speed * 7);
+      const lethal = speed > 11;
+      if (!lethal && n.frozen > 0) return; // already down
+      if (lethal) this.hitNpc(i, speed * 7);
+      else {
+        // a knock, not a killing: down, then up again
+        this.crowd.npcs[i].hp -= speed * 4;
+        this.crowd.knockDown(i, pos.x, pos.z);
+      }
       this.audio.crash(0.5);
       this.blood.spray(this.tmpB.set(n.pos.x, n.pos.y + 1, n.pos.z), this.tmpDir.set(n.pos.x - pos.x, 0.3, n.pos.z - pos.z).normalize(), 1.5);
       this.mp.shot({ x: pos.x, y: 0.5, z: pos.z, p: n.pos.x, q: 0.5, r: n.pos.z, n: i, a: '', m: 60 });
@@ -2323,6 +2330,12 @@ export class App {
     const { spot, def } = cur;
     let override: string[] | undefined;
     let unlock = def.unlock;
+    // the body does what the verb says: turn to it, then the hands
+    if (spot.pos) this.player.facing = Math.atan2(spot.pos.x - this.player.pos.x, spot.pos.z - this.player.pos.z);
+    const verbClip: Record<string, string> = { Inspect: 'act.inspect', Read: 'act.inspect', Use: 'act.press', Ring: 'act.press', Listen: 'react.whisper', Talk: 'emote.greet', Answer: 'act.payphone' };
+    if (def.action === 'vend') this.player.act('act.vend', { hold: true });
+    else if (def.action === 'enter' || def.action === 'exit') this.player.act('act.pushDoor');
+    else if (def.action !== 'sit' && verbClip[def.verb]) this.player.act(verbClip[def.verb]);
     if (def.action === 'phone') {
       if (this.phone.ringing) {
         this.phone.ringing = false;

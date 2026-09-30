@@ -101,6 +101,7 @@ export class Life {
       toast: (t) => rpg.hud.toast(t),
     });
     this.shop = new Shop(host.ui);
+    this.shop.onBuy = () => host.player.act('act.buy');
     this.shop.onClose = () => this.closePanel();
     this.creator = new Creator(host.ui);
     this.creator.onChange = (spec) => this.wantHero(spec);
@@ -134,6 +135,11 @@ export class Life {
     return {
       toast: (t: string, tone: Tone) => this.rpg.hud.toast(t, tone),
       levelUp: (n: number) => this.rpg.hud.arrive(`Level ${n}`, 'A new perk to choose · open the Casefile'),
+      // eating, drinking and patching yourself up happen on your body, not just in a list
+      used: (kind: string, id: string) => {
+        const clip = kind === 'food' ? 'act.eat' : kind === 'drink' ? 'act.drinkBottle' : kind === 'medical' ? (id === 'painkillers' ? 'act.eat' : 'act.bandage') : id === 'herbs' ? 'act.eat' : null;
+        if (clip) this.host.player.act(clip);
+      },
     };
   }
 
@@ -272,7 +278,12 @@ export class Life {
   private openTalk(n: Node, w: Walker | null) {
     this.closeAll();
     this.talkingTo = w;
-    if (w) w.talk = 1e6;
+    if (w) {
+      w.talk = 1e6;
+      // a greeting both ways before the words
+      this.host.player.act('emote.greet');
+      w.anim.play('emote.greet', { group: 'social', fadeIn: 0.25, mirror: w.persona.leftHanded });
+    }
     this.panel = 'talk';
     this.host.panel(true, 'playing');
     this.talk.show(n);
@@ -395,6 +406,12 @@ export class Life {
     else m[p.id] = { n: 1, name: p.name, kind: p.kind, town: p.town, x: p.x, z: p.z };
   }
 
+  /** Play an action on the body and wait for it (so the time skip that follows is seen to happen). */
+  private perform(clip: string, secs: number, stay = false): Promise<void> {
+    this.host.player.act(clip, { hold: true, stay });
+    return new Promise((r) => setTimeout(r, secs * 1000));
+  }
+
   /** Looking for something: it takes a while (less if you're good at it), and night finds things day doesn't. */
   private async search(qid: string) {
     const g = this.game!;
@@ -410,6 +427,8 @@ export class Life {
     this.busy = true;
     const minutes = Math.round(35 * (g.c.perks.includes('bloodhound') ? 0.5 : 1) * (1 - g.c.skills.investigation / 200));
     this.rpg.hud.toast(`Searching… (${minutes} min)`, 'info');
+    // you get down and look (the time it really takes passes behind the curtain)
+    await this.perform('act.search', 2.6);
     await this.host.curtain(true);
     this.rpg.atmos.advance(minutes);
     g.s.stats.searched++;
@@ -439,6 +458,8 @@ export class Life {
     const g = this.game!;
     if (!g.pay(cost)) return;
     this.closePanel();
+    // lie down, and the night passes; you get up in the morning
+    await this.perform('act.lieDown', 2.5, true);
     await this.host.curtain(true);
     const hours = (((until - this.rpg.atmos.hours) % 24) + 24) % 24 || 8;
     this.rpg.atmos.advance(hours * 60);
@@ -447,6 +468,8 @@ export class Life {
     this.autosave();
     await new Promise((r) => setTimeout(r, 600));
     await this.host.curtain(false);
+    this.host.player.stopAct(0.05);
+    this.host.player.act('react.getUp', { hold: true });
     this.rpg.hud.toast(`Slept ${Math.round(hours)} hours. Saved.`, 'good');
   }
 
@@ -510,6 +533,7 @@ export class Life {
       return;
     }
     this.busy = true;
+    await this.perform('act.butcher', 2.9);
     await this.host.curtain(true);
     this.rpg.atmos.advance(20);
     a.looted = true;
@@ -535,6 +559,7 @@ export class Life {
     if (this.host.player.swimming || this.host.inVehicle()) return 'Not here.';
     if (this.rpg.atmos.now.rain > 0.6) return 'Too wet to get anything going.';
     this.putOut();
+    this.host.player.act('act.lightFire', { hold: true });
     const at = p.clone().add(new THREE.Vector3(Math.sin(this.host.player.facing) * 1.2, 0, Math.cos(this.host.player.facing) * 1.2));
     at.y = this.rpg.streamer.heightAt(at.x, at.z);
     this.fire = new Campfire(at);
@@ -630,10 +655,14 @@ export class Life {
     this.panel = 'fishing';
     this.host.panel(true, 'playing');
     this.fishing.open(g.c.skills.survival + g.c.attrs.stamina * 3, { name, weight });
+    // the cast, then hands on the reel until it's over
+    this.host.player.act('act.cast');
+    setTimeout(() => this.panel === 'fishing' && this.host.player.act('act.reel', { loop: true }), 1500);
   }
 
   private landed(c: Catch | null, minutes: number) {
     const g = this.game!;
+    this.host.player.stopAct();
     this.rpg.atmos.advance(minutes);
     this.closePanel();
     if (!c) return;
@@ -738,6 +767,7 @@ export class Life {
     const p = this.host.player.pos;
     const car = this.rpg.carjack(p);
     if (!g || !car) return;
+    this.host.player.act('act.pullOut', { hold: true });
     const s = this.rpg.place.settlement;
     const seen = this.rpg.populace.witnesses(p, 40).length > 0;
     g.rep('union', -3);

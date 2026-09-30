@@ -11,6 +11,9 @@ import type { BiomeId } from '../world/biomes';
  * your Barter, your Charm and what the town thinks of you.
  */
 export class Shop {
+  /** money changes hands (the body pays and takes it) */
+  onBuy: (() => void) | null = null;
+
   el: HTMLElement;
   private title: HTMLElement;
   private money: HTMLElement;
@@ -72,6 +75,7 @@ export class Shop {
         b.title = d.desc;
         b.addEventListener('click', () => {
           if (!g.pay(p)) return;
+          this.onBuy?.();
           g.give(line.id, 1, undefined, true);
           const bought = this.bought();
           bought[line.id] = (bought[line.id] ?? 0) + 1;

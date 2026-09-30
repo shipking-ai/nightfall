@@ -152,9 +152,15 @@ export class Player {
     this.busy = false;
   }
 
+  /** Stop whatever action is playing (a loop, or one that holds its last frame). */
+  stopAct(fade = 0.3) {
+    this.anim.stop('act', fade);
+    this.busy = false;
+  }
+
   /** A short action over whatever else is happening (a door, a button, answering a phone). */
-  act(clip: string, opts: { hold?: boolean; loop?: boolean } = {}) {
-    this.anim.play(clip, { group: 'act', fadeIn: 0.18, fadeOut: 0.3, loop: opts.loop });
+  act(clip: string, opts: { hold?: boolean; loop?: boolean; stay?: boolean } = {}) {
+    this.anim.play(clip, { group: 'act', fadeIn: 0.18, fadeOut: 0.3, loop: opts.loop, stay: opts.stay });
     if (opts.hold) this.busy = true;
     if (opts.hold) setTimeout(() => (this.busy = false), 900);
   }

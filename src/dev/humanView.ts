@@ -72,6 +72,9 @@ for (let i = 0; i < n; i++) {
 }
 (window as unknown as { people: Person[] }).people = people;
 // ?expr=happy|sad|angry|fear|surprise|pain|talk|blink: hold an expression to look at
+// ?clip=act.search: every person plays it on a loop (for looking at the library)
+const clipName = q.get('clip');
+if (clipName) for (const [i, p] of people.entries()) setInterval(() => p.anim.play(clipName, { group: 'dev', fadeIn: 0.2 }), 1000 * Number(q.get('every') ?? 4) + i * 10);
 const expr = q.get('expr');
 if (expr) for (const p of people) {
   if (expr === 'talk') p.m.face.talk = 1;

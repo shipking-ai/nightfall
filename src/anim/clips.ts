@@ -1,5 +1,6 @@
 import { defineClip, type Ease, type Key } from './Animator';
 import type { Channel } from './pose';
+import './actions';
 
 /**
  * The animation library: every authored movement in the game.

@@ -686,7 +686,13 @@ export function solve(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, m: Moti
   const p = out.pose;
   LAST.pose = p;
   basePose(p, b, o, m, t, root);
+  const gaitPelY = p[C.pelY];
   anim?.apply(p);
+  // a clip that bends the legs stands the body on them (the gait's own height no longer applies)
+  if (anim) {
+    const lg = anim.legs();
+    if (lg.w > 0 && !lg.pelvis) p[C.pelY] -= gaitPelY * lg.w;
+  }
   finishPose(p, m, t);
   buildRig(out, root, b, o, p);
 }

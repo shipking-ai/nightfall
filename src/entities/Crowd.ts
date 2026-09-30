@@ -90,7 +90,7 @@ export interface Npc {
   speaking: boolean;
   talkT: number;
   /** something quietly wrong with them right now */
-  horror: { kind: 'stare' | 'backwards' | 'repeat' | 'nothing'; t: number; x: number; z: number; n: number } | null;
+  horror: { kind: 'stare' | 'backwards' | 'repeat' | 'nothing' | 'smile' | 'wave' | 'follow'; t: number; x: number; z: number; n: number } | null;
   /** last frame's speed, for the lean into starts and stops */
   lastV: number;
   /** multiplayer: the host's latest word on this person (followers only) */
@@ -250,8 +250,11 @@ export class Crowd {
     // how they walk and the face they wear when nothing's happening
     motion.style = styleFor(persona, irng.next, { arche: person.arche, bulk: outfit.bulk, femme: Math.min(1, (body.bust ?? 0) * 1.6), toeOut: body.toeOut });
     moodFor(motion.face, persona, person.arche);
+    const anim = new Animator();
+    // underdressed for the night: a shiver that comes and goes, under everything else
+    if (motion.cold > 0.2) anim.play('react.shiver', { group: 'shiver', loop: true, weight: 0.8, at: rng.range(0, 1) });
     return {
-      arche: person.arche, persona, anim: new Animator(), idle: new IdleDirector(persona, irng.next), friend: null, speaking: false, talkT: 0, horror: null, lastV: 0,
+      arche: person.arche, persona, anim, idle: new IdleDirector(persona, irng.next), friend: null, speaking: false, talkT: 0, horror: null, lastV: 0,
       mode, pos, yaw, body, outfit, motion, rig: newRig(), lod: -1, parts: new Set(),
       timer: rng.range(2, 8), s: 0, dir: 1, lateral: 0, speed: 0, v: 0, paused: 0, hidden: 0,
       lookT: rng.range(2, 6), lookTarget: 0, visible: true, frozen: 0, wrongYaw: 0, glitchT: 0, glowOn: false, glance: 0, glanceWait: rng.range(2, 10),
@@ -289,8 +292,12 @@ export class Crowd {
       // close and fast: a jump back; otherwise a flinch and a look
       if (fresh && n.mode !== 'sit') {
         n.idle.interrupt(n.anim);
-        if (d < 4.5 && speed > 6) n.anim.play('react.startle', { group: 'react', fadeIn: 0.05 });
-        else if (inPath) n.anim.play('react.flinch', { group: 'flinch', fadeIn: 0.05 });
+        if (d < 4.5 && speed > 6) {
+          n.anim.play('react.nearMiss', { group: 'react', fadeIn: 0.05 });
+          feel(n.motion.face, 'surprise', 1, 0.6);
+          feel(n.motion.face, 'fear', 0.7, 3);
+        } else if (inPath) n.anim.play('react.flinch', { group: 'flinch', fadeIn: 0.05 });
+        if (byPlayer && speed > 8 && d < 6) feel(n.motion.face, 'angry', 0.8, 5);
         // and after it's gone, what they think of the driver
         if (byPlayer && speed > 8 && d < 6) setTimeout(() => n.alarm > 0 && n.anim.play(Math.random() < 0.6 ? 'emote.angry' : 'emote.shake', { group: 'gesture', fadeIn: 0.25 }), 900);
       }
@@ -316,12 +323,19 @@ export class Crowd {
       n.alarm = Math.max(n.alarm, 2.2 + Math.random());
       n.alarmX = x;
       n.alarmZ = z;
+      // a jolt, and a look round at it
+      if (d < radius * 0.6 && n.mode !== 'sit' && !n.anim.playing('react')) {
+        n.anim.play('react.horn', { group: 'react', fadeIn: 0.04, mirror: (n.pos.x - x) * Math.cos(n.yaw) - (n.pos.z - z) * Math.sin(n.yaw) < 0 });
+        feel(n.motion.face, 'surprise', 0.8, 0.5);
+      }
       if (d < nd) (near = n), (nd = d);
     }
     // one of them answers back, not the whole street
     if (byPlayer && near && Math.random() < 0.6) {
       this.say(near, 'honked');
-      near.anim.play(Math.random() < 0.5 ? 'emote.angry' : 'emote.shoo', { group: 'gesture', fadeIn: 0.3 });
+      const who = near;
+      feel(who.motion.face, 'angry', 0.85, 4);
+      setTimeout(() => who.anim.play(Math.random() < 0.5 ? 'react.annoyed' : 'emote.shoo', { group: 'gesture', fadeIn: 0.3 }), 700);
     }
   }
 
@@ -336,7 +350,10 @@ export class Crowd {
       n.alarmX = x;
       n.alarmZ = z;
       n.idle.interrupt(n.anim);
-      n.anim.play(d < 8 && n.mode !== 'sit' ? 'react.startle' : 'react.flinch', { group: 'react', fadeIn: 0.05 });
+      // close to a blast: turn away, arms round the head
+      n.anim.play(d < 8 && n.mode !== 'sit' ? 'react.shield' : 'react.flinch', { group: 'react', fadeIn: 0.05 });
+      feel(n.motion.face, 'fear', 1, 6);
+      feel(n.motion.face, 'surprise', 1, 0.5);
       if (d < nd) (near = n), (nd = d);
     }
     if (near) {
@@ -551,6 +568,30 @@ export class Crowd {
     n.anim.stop();
     n.anim.play(along >= 0 ? 'react.deathBack' : 'react.deathForward', { group: 'death', fadeIn: 0.06, stay: true });
     return true;
+  }
+
+  /**
+   * Hit by a car and it wasn't the end: thrown down, a moment on the ground,
+   * then up again (slowly), and they don't forget it.
+   */
+  knockDown(i: number, fromX: number, fromZ: number) {
+    const n = this.npcs[i];
+    if (!n || n.dead >= 0) return;
+    n.idle.interrupt(n.anim);
+    n.anim.stop(undefined, 0.05);
+    n.yaw = Math.atan2(fromX - n.pos.x, fromZ - n.pos.z); // thrown back, away from it
+    n.anim.play('react.knockdown', { group: 'down', fadeIn: 0.04, stay: true });
+    feel(n.motion.face, 'pain', 1, 4);
+    feel(n.motion.face, 'fear', 0.9, 12);
+    n.frozen = 3.6;
+    n.v = 0;
+    n.motion.speed = 0;
+    setTimeout(() => {
+      if (n.dead >= 0) return;
+      n.anim.stop('down', 0.2);
+      n.anim.play('react.getUp', { group: 'react', fadeIn: 0.15 });
+      n.panic = Math.max(n.panic, 6);
+    }, 2400);
   }
 
   /** Gunfire at (x,z): people run from `from` (walkers) or freeze with their hands up. */
@@ -926,7 +967,13 @@ export class Crowd {
   }
   enabled = true;
 
+  /** which way the camera looks (for the ones that only move when you aren't looking) */
+  private lastCamYaw = 0;
+  private camDir = new THREE.Vector3();
+
   update(dt: number, t: number, player: THREE.Vector3 | null, camera: THREE.Camera) {
+    camera.getWorldDirection(this.camDir);
+    this.lastCamYaw = Math.atan2(this.camDir.x, this.camDir.z);
     if (!this.enabled) return;
     const camPos = camera.position;
     this.pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -1223,9 +1270,12 @@ export class Crowd {
     if (roll < 0.3) this.summonWatcher(player, camPos);
     else if (roll < 0.48) this.freezeSomeone(player);
     else if (roll < 0.62) this.glitchSomeone(player, camPos);
-    else if (roll < 0.76) this.haunt('stare', player);
-    else if (roll < 0.86) this.haunt('backwards', player);
-    else if (roll < 0.94) this.haunt('repeat', player);
+    else if (roll < 0.7) this.haunt('stare', player);
+    else if (roll < 0.77) this.haunt('backwards', player);
+    else if (roll < 0.83) this.haunt('repeat', player);
+    else if (roll < 0.88) this.haunt('smile', player);
+    else if (roll < 0.92) this.haunt('wave', player);
+    else if (roll < 0.96) this.haunt('follow', player);
     else this.haunt('nothing', player);
   }
 
@@ -1236,11 +1286,12 @@ export class Crowd {
    * stops, looks at a patch of dark that's empty, and backs away from it.
    * Then they're ordinary again.
    */
-  private haunt(kind: 'stare' | 'backwards' | 'repeat' | 'nothing', player: THREE.Vector3) {
+  private haunt(kind: 'stare' | 'backwards' | 'repeat' | 'nothing' | 'smile' | 'wave' | 'follow', player: THREE.Vector3) {
     const pool = this.npcs.slice(0, this.citizens).filter((n) => {
       if (!n.visible || n.mode === 'watcher' || n.mode === 'stare' || n.frozen > 0 || n.horror || n.dead >= 0) return false;
       const d = n.pos.distanceTo(player);
       if (kind === 'backwards') return n.mode === 'walk' && d > 8 && d < 30;
+      if (kind === 'follow') return n.mode !== 'sit' && n.mode !== 'walk' && n.mode !== 'talk' && d > 12 && d < 30;
       return d > 6 && d < 26 && this.frustum.containsPoint(_tmp.copy(n.pos).setY(1.5));
     });
     if (!pool.length) {
@@ -1248,7 +1299,7 @@ export class Crowd {
       return;
     }
     const n = this.rng.pick(pool);
-    n.horror = { kind, t: kind === 'stare' ? 14 : kind === 'backwards' ? 5 : kind === 'repeat' ? 12 : 9, x: 0, z: 0, n: 0 };
+    n.horror = { kind, t: kind === 'stare' ? 14 : kind === 'backwards' ? 5 : kind === 'repeat' ? 12 : kind === 'follow' ? 40 : kind === 'wave' ? 12 : 9, x: 0, z: 0, n: 0 };
     if (kind === 'nothing') {
       // a point in the dark, a few metres off to their side
       const a = n.yaw + (this.rng.chance(0.5) ? 1 : -1) * this.rng.range(1.2, 2.2);
@@ -1302,6 +1353,43 @@ export class Crowd {
       }
       case 'backwards':
         break; // walk() handles it
+      case 'smile': {
+        // they look at you, and smile, and hold it a second too long
+        const want = wrap(Math.atan2(player.x - n.pos.x, player.z - n.pos.z) - n.yaw);
+        m.lookYaw += (THREE.MathUtils.clamp(want, -1.2, 1.2) - m.lookYaw) * Math.min(1, dt * 1.5);
+        gaze(m.face, 0, 0);
+        if (h.n === 0) {
+          h.n = 1;
+          n.anim.play('horror.smile', { group: 'face', fadeIn: 0.3 });
+        }
+        m.blinkT = Math.max(m.blinkT, 2);
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        break;
+      }
+      case 'wave':
+        // a wave that's a beat too slow, and doesn't stop when it should
+        if (h.n === 0) {
+          h.n = 1;
+          n.anim.play('horror.wave', { group: 'gesture', fadeIn: 0.8, loop: true });
+        }
+        m.lookYaw += (THREE.MathUtils.clamp(wrap(Math.atan2(player.x - n.pos.x, player.z - n.pos.z) - n.yaw), -1.2, 1.2) - m.lookYaw) * Math.min(1, dt * 1.2);
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        if (h.t < 0.6) n.anim.stop('gesture', 0.6);
+        break;
+      case 'follow': {
+        // keeps the same distance behind you; stops when you turn to look
+        const dx = player.x - n.pos.x, dz = player.z - n.pos.z, d = Math.hypot(dx, dz);
+        const facing = Math.sin(this.lastCamYaw) * -dx + Math.cos(this.lastCamYaw) * -dz > d * 0.6;
+        const go = !facing && d > 14 ? 1.25 : 0;
+        n.yaw += turnToward(n.yaw, Math.atan2(dx, dz), n.v, dt);
+        n.v = approach(n.v, go, dt, 1.5, 3);
+        n.pos.x += Math.sin(n.yaw) * n.v * dt;
+        n.pos.z += Math.cos(n.yaw) * n.v * dt;
+        m.speed = n.v;
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        if (facing) m.breath -= dt; // and holds still, even its breath
+        break;
+      }
     }
   }
 
