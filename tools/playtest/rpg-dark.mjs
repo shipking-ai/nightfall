@@ -1,5 +1,5 @@
 // RPG R4b: dread after dark (the watcher at the tree line), and something by the road.
-import { launch } from './lib.mjs';
+import { launch, enterRpg } from './lib.mjs';
 const t = await launch({ pad: 'xbox' });
 const { page, shot, tap, waitState, focused, errors, step, press } = t;
 const until = async (fn, secs = 60) => { for (let i = 0; i < secs * 2; i++) { if (await fn()) return true; await t.wait(500); } return false; };
@@ -7,16 +7,7 @@ const log = (...a) => console.log(...a);
 await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('nightfall.rpg.save')) localStorage.removeItem(k); });
 await waitState('landing');
 await t.wait(3000);
-await until(async () => (await focused()).includes('Enter'), 8);
-for (let i = 0; i < 6 && !(await focused()).includes('Enter'); i++) { await tap(i < 3 ? 'Down' : 'Up'); await t.wait(700); }
-await tap('A');
-await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 20);
-await t.wait(1200);
-for (let i = 0; i < 8 && !(await focused()).includes('RPG'); i++) { await tap('Down'); await t.wait(800); }
-await t.wait(2000);
-await tap('A');
-await until(async () => ['playing', 'overlay'].includes(await page.evaluate(() => window.nf.state)), 240);
-await until(() => page.evaluate(() => window.nf.rpg.life.panel === 'creator'), 30);
+await enterRpg(t, { creator: 'keep' });
 await page.evaluate(() => document.querySelector('.cr__begin').click());
 await step(1);
 // a road through the woods, at night

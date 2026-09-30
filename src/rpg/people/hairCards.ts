@@ -109,7 +109,9 @@ export function hairCards(kind: HairKind, color: number, seed: number, scalp: nu
           best = v;
         }
       }
-      if (best < 0 || bd > 0.03 * 0.03) return q;
+      // (a short cut is pulled back onto the head from further out: no flyaways over the ears)
+      const reach = hug ? 0.07 : 0.03;
+      if (best < 0 || bd > reach * reach) return q;
       const nn: Vec = [N[best * 3], N[best * 3 + 1], N[best * 3 + 2]];
       const h = dot(sub(q, [Q[best * 3], Q[best * 3 + 1], Q[best * 3 + 2]]), nn);
       // (hugging: pulled down onto the scalp too, not only pushed off it)

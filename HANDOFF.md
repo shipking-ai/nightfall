@@ -148,7 +148,18 @@ The user's brief is a very large "fifth game" addendum: an endless streamed worl
   - Grass is tiled and cached.
   - Trees, rocks and grass are compiled with `compileAsync` and prepared behind the loading card.
   - Journal plates use an async readback and are encoded in `plate.worker.ts`.
-- **Next:** R6.
+- **Finding the way (the user couldn't find the ferryman):** `rpg/ui/GoalMarker.ts` is a world-space marker for the tracked job. It's a light column over a place or a diamond over a person, with a screen label clamped to the edge.
+  - `Life.goal()` follows a person by their hours even when they aren't embodied (`whereIs`).
+  - `Populace.pinned` keeps quest people out of doors.
+  - Main-story stage 1 names an informant (`quests.informant`).
+  - Test: `tools/playtest/rpg-ferry.mjs`.
+- **Roads:** dry dips get embankments (bridges only over water or valleys deeper than 30 m, and no short runs). The ground is sunk 0.55 m under the carriageway. The road surface is a deck you stand on.
+
+### R6: checklist and soak
+- `docs/rpg-checklist.md` maps every system to its test.
+- `tools/playtest/rpg-all.mjs` runs them all, one browser at a time. Running them together ran out of memory. Use `SKIP=rpg-soak` for a quick pass.
+- `tools/playtest/rpg-soak.mjs` simulates MINUTES (default 60) of play: a loop between the story's towns at driving speed, walks, and the Casefile and map. It samples heap, GPU objects, programs, chunks, collision, people and traffic every minute. It compares the 2nd and 3rd loops of the route for leaks.
+- `enterRpg(t)` in `tools/playtest/lib.mjs` enters the RPG and checks that it started. Use it in new tests.
 
 ### Still to build (the addendum's list)
 - **R2 leftovers:** more landmark kinds.

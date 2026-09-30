@@ -357,7 +357,8 @@ function strandTexture() {
     const x = r() * W;
     const len = H * (0.55 + r() * 0.45);
     const drift = (r() - 0.5) * 10;
-    const shade = 150 + r() * 105;
+    // (a wide spread of shades, so the strands read even on dark hair in shade)
+    const shade = 95 + r() * 160;
     const w = 0.8 + r() * 1.4;
     // a hair: dark at the root, its own shade along, fading out at the tip
     const grad = g.createLinearGradient(0, 0, 0, len);
