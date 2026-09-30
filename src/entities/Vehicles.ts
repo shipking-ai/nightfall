@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { carParts, CAR_GLASS } from '../world/builders/props';
+import { carParts, CAR_GLASS, G } from '../world/builders/props';
+
+/** the template shapes the city's cars are built from (shared: never freed) */
+const TEMPLATE_GEOS = new Set<THREE.BufferGeometry>(Object.values(G));
 import type { Lamp, WorldContext } from '../world/WorldContext';
 import type { Collision } from '../world/Collision';
 import type { Input } from '../core/Input';
@@ -70,6 +73,11 @@ export class Vehicles {
   grip = 1;
   private tmp = new THREE.Vector3();
 
+  /** the world's shared materials (never freed with a car) */
+  private get shared() {
+    return new Set<THREE.Material>(Object.values(this.ctx.mats) as THREE.Material[]);
+  }
+
   constructor(private ctx: WorldContext) {
     for (const spec of ctx.cars) this.spawn(spec);
   }
@@ -110,9 +118,14 @@ export class Vehicles {
     if (i < 0 || car.occupied) return;
     this.cars.splice(i, 1);
     this.group.remove(car.group);
+    // free what this car made for itself: its paint and lights, and any geometry that's its own
+    // (the RPG's cars are merged per car; the city's share the template boxes, which must stay)
     car.group.traverse((o) => {
       const m = o as THREE.Mesh;
-      if (m.isMesh && m.material !== CAR_GLASS) (m.material as THREE.Material).dispose?.();
+      if (!m.isMesh) return;
+      if (!TEMPLATE_GEOS.has(m.geometry)) m.geometry.dispose();
+      const mat = m.material as THREE.Material;
+      if (mat !== CAR_GLASS && !this.shared.has(mat)) mat.dispose?.();
     });
   }
 

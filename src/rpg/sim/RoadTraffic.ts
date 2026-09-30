@@ -144,7 +144,7 @@ export class RoadTraffic {
       v.tails.emissiveIntensity = (braking ? 8 : 0.4) + this.night * 3;
       if (v.pos.distanceTo(player) > DROP) v.alive = false;
     }
-    for (const v of this.cars) if (!v.alive) this.group.remove(v.mesh);
+    for (const v of this.cars) if (!v.alive) this.forget(v.mesh);
     this.cars = this.cars.filter((v) => v.alive);
   }
 
@@ -200,8 +200,14 @@ export class RoadTraffic {
   }
 
   clear() {
-    for (const v of this.cars) this.group.remove(v.mesh);
+    for (const v of this.cars) this.forget(v.mesh);
     this.cars = [];
+  }
+
+  /** Off the road for good: its own geometry and paint go back to the GPU (the shared materials stay). */
+  private forget(mesh: THREE.Group) {
+    this.group.remove(mesh);
+    disposeVehicle(mesh, this.mats);
   }
 
   get count() {
@@ -287,4 +293,16 @@ export function vehicleMesh(kind: VehicleKind, mats: Materials): { mesh: THREE.G
     g.add(mesh);
   }
   return { mesh: g, lights, tails };
+}
+
+/** Free what a vehicleMesh made for itself: every geometry (merged per vehicle) and its own materials, not the shared ones. */
+export function disposeVehicle(root: THREE.Object3D, mats: Materials) {
+  const shared = new Set<THREE.Material>(Object.values(mats) as THREE.Material[]);
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    m.geometry.dispose();
+    const ms = Array.isArray(m.material) ? m.material : [m.material];
+    for (const x of ms) if (!shared.has(x)) x.dispose();
+  });
 }
