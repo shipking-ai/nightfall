@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { styleFor } from '../../anim/gait';
+import { moodFor } from '../../anim/face';
 import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from '../../entities/Humanoid';
 import { Animator } from '../../anim/Animator';
 import '../../anim/clips';
@@ -122,6 +124,8 @@ export class Soldier implements Unit {
     this.mag = this.gun.mag;
     this.motion.stride = 1.05;
     this.motion.armSwing = 0.3;
+    this.motion.style = styleFor({ energy: 0.7, confidence: 0.75, nervous: 0.3, tired: 0.2, age: 0.25 }, Math.random, { arche: 'soldier', bulk: outfit.bulk });
+    moodFor(this.motion.face, { energy: 0.7, confidence: 0.75, nervous: 0.3, tired: 0.2, age: 0.25 }, 'soldier');
   }
 
   spawn(x: number, z: number, y: number, yaw: number, gun?: GunId) {
@@ -417,7 +421,7 @@ export class Soldier implements Unit {
     m.armL = this.gun.long ? m.armR : 'free';
     m.lookPitch = aiming ? -this.aimPitch : 0;
     m.lookYaw = 0;
-    m.weight = Math.sin(t * 0.7 + this.pos.x);
+    m.weight = Math.sin(t * 0.13 + this.pos.x) > 0 ? 0.7 : -0.7;
     stepPhase(m, dt);
     _m.compose(this.pos, _q.setFromAxisAngle(_up, this.yaw), _s.setScalar(this.body.height));
     solve(this.rig, _m, this.body, this.outfit, m, t, this.anim);

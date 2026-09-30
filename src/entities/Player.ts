@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { styleFor } from '../anim/gait';
 import { newMotion, newRig, solve, stepPhase, visibleParts, type ArmMode, type Body, type Outfit } from './Humanoid';
 import { FigureBatch } from './FigureBatch';
 import type { Collision } from '../world/Collision';
@@ -94,6 +95,11 @@ export class Player {
     this.motion.stride = 1.05;
     this.motion.armSwing = 0.9;
     this.motion.slouch = 0.02;
+    // the lead: steady, unhurried, a little guarded
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    this.motion.style = styleFor({ energy: 0.55, confidence: 0.7, nervous: 0.2, tired: 0.25, age: 0.3 }, rnd, { bulk: this.outfit.bulk, femme: 0.2 });
+    this.motion.face.restless = 0.35;
   }
 
   place(x: number, y: number, z: number, yaw: number) {
@@ -156,6 +162,8 @@ export class Player {
   update(dt: number, input: Input | null, camYaw: number, col: Collision, obstacles: { x: number; z: number; r: number }[]) {
     this.anim.update(dt);
     const m = this.motion;
+    // the feet find kerbs, steps and slopes for themselves
+    if (!m.ground) m.ground = (x, z) => col.groundAt(x, z, this.pos.y + 0.4, 0.8, 0.05);
     if (this.seat) return this.updateSeated(dt);
 
     // analog on a stick (a gentle push walks slowly), full speed from the keys
@@ -324,7 +332,8 @@ export class Player {
       m.phase += dt * (1.2 + hs);
       m.armL = m.armR = Math.sin(m.phase * 2) > 0 ? 'punch' : 'guard';
     }
-    m.weight = Math.sin(performance.now() * 0.00021);
+    // the weight moves from one foot to the other now and then, not continuously
+    m.weight = Math.sin(performance.now() * 0.00021) > 0 ? 0.8 : -0.8;
     m.steer = 0;
 
     this.root.compose(this.pos, _q.setFromAxisAngle(_up, this.facing), _one.setScalar(this.body.height));

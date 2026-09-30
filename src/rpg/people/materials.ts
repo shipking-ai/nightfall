@@ -118,21 +118,71 @@ function common(sh: THREE.WebGLProgramParametersWithUniforms) {
   );
 }
 
+/**
+ * The face, moved by the MakeHuman face bones' weights (anim/face.ts drives the numbers): the jaw
+ * hinges open, lids close over the eye, brows lift and draw in, mouth corners rise or fall, cheeks
+ * lift with a smile. Done in bind space before skinning, so the head carries it wherever it goes.
+ * Units: the bind mesh is scaled to a height of 1 (so 0.005 ≈ 9 mm on an average person).
+ */
+export interface FaceU {
+  /** jaw (radians), blink (0..1), brow up (-1..1), smile (0..1) */
+  uFaceA: { value: THREE.Vector4 };
+  /** frown, brows in, brow asymmetry, squint */
+  uFaceB: { value: THREE.Vector4 };
+  /** the jaw's hinge */
+  uJaw: { value: THREE.Vector3 };
+  /** where the eyes look: yaw, pitch (radians) */
+  uGaze: { value: THREE.Vector2 };
+}
+export function faceUniforms(jaw: [number, number, number] | undefined): FaceU {
+  return { uFaceA: { value: new THREE.Vector4() }, uFaceB: { value: new THREE.Vector4() }, uJaw: { value: new THREE.Vector3(...(jaw ?? [0, 0.9, 0.02])) }, uGaze: { value: new THREE.Vector2() } };
+}
+const FACE_DECL = `uniform vec4 uFaceA;\nuniform vec4 uFaceB;\nuniform vec3 uJaw;\nattribute vec4 faceA;\nattribute vec4 faceB;`;
+const FACE_JAW = `
+  float nfJa = uFaceA.x * faceA.x;
+  float nfJc = cos(nfJa), nfJs = sin(nfJa);`;
+function faceVertex(sh: THREE.WebGLProgramParametersWithUniforms, u: FaceU) {
+  Object.assign(sh.uniforms, u);
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', `#include <common>\n${FACE_DECL}`)
+    .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>\n{${FACE_JAW}\n  objectNormal = vec3(objectNormal.x, objectNormal.y * nfJc - objectNormal.z * nfJs, objectNormal.y * nfJs + objectNormal.z * nfJc);\n}`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+{${FACE_JAW}
+  vec3 r = transformed - uJaw;
+  transformed = uJaw + vec3(r.x, r.y * nfJc - r.z * nfJs, r.y * nfJs + r.z * nfJc);
+  float side = sign(transformed.x);
+  float blink = uFaceA.y, browUp = uFaceA.z + uFaceB.z * side * 0.5, smile = uFaceA.w;
+  float frown = uFaceB.x, browIn = uFaceB.y, squint = uFaceB.w;
+  // lids: the upper one slides down over the eye (and a little forward, round the ball); the lower rises with a squint
+  transformed += faceA.y * vec3(0.0, -0.0052 * blink - 0.0012 * squint, 0.0012 * blink);
+  transformed += faceA.z * vec3(0.0, 0.0012 * blink + 0.0018 * max(squint, 0.0) + 0.0012 * smile, 0.0);
+  // brows: up, or down and together
+  transformed += faceA.w * vec3(-side * 0.0016 * browIn, 0.0034 * browUp - 0.0022 * browIn, 0.0006 * browIn);
+  // mouth corners: up and back and out for a smile, down for a frown; the cheeks lift with it
+  transformed += faceB.x * vec3(side * 0.0016 * smile, 0.0024 * smile - 0.0018 * frown, -0.001 * smile);
+  transformed += faceB.y * vec3(side * 0.0004 * smile, 0.0016 * smile + 0.001 * max(squint, 0.0), 0.0004 * smile);
+  transformed += faceB.z * vec3(0.0, -0.0014 * frown + 0.0005 * smile, 0.0);
+  transformed += faceB.w * vec3(0.0, 0.0008 * max(frown, browIn) * 0.6, 0.0);
+}`);
+}
+
 function aoPass(frag: string) {
   // occlusion darkens the ambient and a little of the direct light (it's cavities, not shadow)
   return frag.replace('#include <aomap_fragment>', `#include <aomap_fragment>\n reflectedLight.indirectDiffuse *= vAO;\n reflectedLight.indirectSpecular *= mix(0.5, 1.0, vAO);\n reflectedLight.directDiffuse *= mix(0.7, 1.0, vAO);`);
 }
 
 /** Skin: `face` = the head centre in bind space (for the red zones, the stubble, the lips). */
-export function skinMaterial(color: number, face: THREE.Vector3, stubble: number, lip: number, brows?: { eyes: [number, number, number][]; r: number; color: number; thick: number }): THREE.MeshPhysicalMaterial {
+export function skinMaterial(color: number, face: THREE.Vector3, stubble: number, lip: number, brows?: { eyes: [number, number, number][]; r: number; color: number; thick: number }, faceU?: FaceU): THREE.MeshPhysicalMaterial {
   // a dimmer specular than the default 4% (skin's is broad and soft), and a faint sheen of fine hair
   const m = new THREE.MeshPhysicalMaterial({ color, roughness: 0.6, metalness: 0, specularIntensity: 0.55, sheen: 0.18, sheenRoughness: 0.8, sheenColor: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.5) });
   m.defines = { NF_SKIN: '', USE_UV: '' };
   // real pores and fine lines (a photographed skin-grain normal map, tiled finely over the body's UVs)
   m.normalMap = normalTex('pores', 48);
   m.normalScale.set(0.28, 0.28);
+  if (faceU) m.defines.NF_FACE = '';
   m.onBeforeCompile = (sh) => {
     common(sh);
+    if (faceU) faceVertex(sh, faceU);
     sh.uniforms.uRegions = { value: peopleTextures().regions };
     const e = brows?.eyes ?? [[0, -9, 0], [0, -9, 0]];
     sh.uniforms.uEyeA = { value: new THREE.Vector3(...e[0]) };
@@ -402,11 +452,29 @@ export function hairCardMaterial(color: number): THREE.MeshPhysicalMaterial {
  * tinted to this person's eye colour, a dark limbal ring, and a wet clear coat
  * over it all. Without UVs (the sculpted far detail) it's drawn procedurally.
  */
-export function eyeMaterial(iris: number, textured = false): THREE.MeshPhysicalMaterial {
+export function eyeMaterial(iris: number, textured = false, faceU?: FaceU): THREE.MeshPhysicalMaterial {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.03, metalness: 0 });
   if (textured) m.map = peopleTextures().eye;
+  if (faceU) m.defines = { NF_GAZE: '' };
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uIris = { value: new THREE.Color(iris) };
+    // the eyeball turns about its own centre to look
+    if (faceU && textured) {
+      sh.uniforms.uGaze = faceU.uGaze;
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', `#include <common>\nuniform vec2 uGaze;\nattribute vec3 eyeLocal;`)
+        .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+  float nfCy = cos(uGaze.x), nfSy = sin(uGaze.x), nfCp = cos(uGaze.y), nfSp = sin(uGaze.y);
+  objectNormal = vec3(objectNormal.x * nfCy + objectNormal.z * nfSy, objectNormal.y, -objectNormal.x * nfSy + objectNormal.z * nfCy);
+  objectNormal = vec3(objectNormal.x, objectNormal.y * nfCp + objectNormal.z * nfSp, -objectNormal.y * nfSp + objectNormal.z * nfCp);`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+{
+  vec3 c = transformed - eyeLocal;
+  vec3 e = vec3(eyeLocal.x * nfCy + eyeLocal.z * nfSy, eyeLocal.y, -eyeLocal.x * nfSy + eyeLocal.z * nfCy);
+  e = vec3(e.x, e.y * nfCp + e.z * nfSp, -e.y * nfSp + e.z * nfCp);
+  transformed = c + e;
+}`);
+    }
     if (textured) {
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>\nuniform vec3 uIris;`)
@@ -451,5 +519,15 @@ export function eyeMaterial(iris: number, textured = false): THREE.MeshPhysicalM
       );
   };
   m.customProgramCacheKey = () => (textured ? 'nf-rpg-eye-tex' : 'nf-rpg-eye');
+  return m;
+}
+
+/** Teeth and tongue: seen only when the mouth opens; they ride the jaw. */
+export function mouthMaterial(color: number, faceU?: FaceU): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color, roughness: color > 0xc00000 ? 0.35 : 0.5, metalness: 0 });
+  if (faceU) {
+    m.defines = { NF_MOUTH: '' };
+    m.onBeforeCompile = (sh) => faceVertex(sh, faceU);
+  }
   return m;
 }

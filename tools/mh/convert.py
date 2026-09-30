@@ -202,6 +202,27 @@ for v in range(NV):
         ws[k] = w / s
     skin_w.append(tuple(ws))
 
+# face: weights of the face bones the game moves itself (a jaw, lids, brows, mouth corners, cheeks),
+# 8 per vertex, 0..255: [jaw chain, upper lid, lower lid, brow, upper-lip corner, cheek, lower corner, nose]
+FACE = [
+    ('jaw', 'oris01', 'oris07', 'tongue', 'special04'),
+    ('orbicularis03',),
+    ('orbicularis04',),
+    ('oculi01',),
+    ('oris03', 'oris05'),
+    ('risorius03',),
+    ('levator05',),
+    ('levator06',),
+]
+face_w = [[0.0] * 8 for _ in range(NV)]
+for bone, lst in wts.items():
+    n = bone.lower()
+    for k, prefixes in enumerate(FACE):
+        if any(n.startswith(p) for p in prefixes):
+            for vi, w in lst:
+                face_w[vi][k] += w
+face_bytes = bytes(max(0, min(255, int(round(min(1.0, w) * 255)))) for fw in face_w for w in fw)
+
 # joints the game needs (MakeHuman joint vertex groups), by our names; side by position
 def bone_joint(bone, end):
     return skel['bones'][bone][end]
@@ -218,6 +239,7 @@ J = {
     'neck': find('neck01', None, 'head'),
     'head': find('head', None, 'head'),
     'headTop': find('head', None, 'tail'),
+    'jaw': find('jaw', None, 'head'),
 }
 for s in ('L', 'R'):
     J['sh' + s] = find('upperarm01', s, 'head')
@@ -299,6 +321,7 @@ for name in RENDER:
     put('tris:' + name, 'I', [i for t in group_tris[name] for i in t])
 put('skinIndex', '', bytes(skin_idx))
 put('skinWeight', 'f', [c for w in skin_w for c in w])
+put('face', '', face_bytes)
 tmeta = []
 QT = 2e-5
 for name, d in targets:

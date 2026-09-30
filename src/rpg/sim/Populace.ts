@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { newMotion, newRig, solve, stepPhase, type Outfit, type Rig, type Motion } from '../../entities/Humanoid';
 import { Animator } from '../../anim/Animator';
+import { IdleDirector } from '../../anim/IdleDirector';
+import { styleFor, approach, turnToward } from '../../anim/gait';
+import { feel, gaze, moodFor } from '../../anim/face';
+import type { Persona } from '../../data/people';
 import '../../anim/clips';
 import type { Collision } from '../../world/Collision';
 import { mulberry32 } from '../../world/rng';
@@ -80,6 +84,10 @@ export interface Walker {
   dead: number;
   /** a police officer coming for you */
   chase: boolean;
+  /** ground speed (m/s), with momentum */
+  v: number;
+  persona: Persona;
+  idler: IdleDirector;
 }
 
 export class Populace {
@@ -233,31 +241,48 @@ export class Populace {
       const dx = target.x - w.pos.x, dz = target.z - w.pos.z;
       const d = Math.hypot(dx, dz);
       let speed = 0;
+      const pace = (1.15 + 0.35 * w.persona.energy - 0.3 * w.r.spec.age) * (1 + rain * 0.35);
+      const face = w.m.face;
       if (w.dead >= 0) {
         w.dead += dt;
+        w.v = 0;
       } else if (w.flee > 0 || w.chase) {
         speed = w.chase ? (d > 1.2 ? 4.6 : 0) : 4.2;
-        if (speed > 0) {
-          w.pos.x += (dx / (d || 1)) * speed * dt;
-          w.pos.z += (dz / (d || 1)) * speed * dt;
-        }
-        w.yaw += wrap(Math.atan2(dx, dz) - w.yaw) * Math.min(1, dt * 8);
+        w.yaw += turnToward(w.yaw, Math.atan2(dx, dz), w.v, dt);
+        feel(face, w.chase ? 'angry' : 'fear', w.chase ? 0.6 : 0.9, 1);
         if (w.chase && d < 1.4) this.onCatch(w);
       } else if (w.talk > 0) {
         w.talk -= dt;
         const fy = Math.atan2(player.x - w.pos.x, player.z - w.pos.z);
-        w.yaw += wrap(fy - w.yaw) * Math.min(1, dt * 5);
+        w.yaw += turnToward(w.yaw, fy, w.v, dt);
+        // a line takes a few seconds to say; then they listen
+        face.talk = w.talk > 3.2 ? 1 : 0;
+        gaze(face, 0, 0.05);
       } else if (d > 25) {
         w.pos.set(target.x, w.pos.y, target.z); // skipped ahead (sleeping, waiting): catch up
+        w.v = 0;
       } else if (d > 0.4) {
-        speed = Math.min(1.35 + rain * 0.5, d * 2);
-        w.pos.x += (dx / d) * speed * dt;
-        w.pos.z += (dz / d) * speed * dt;
-        w.yaw += wrap(Math.atan2(dx, dz) - w.yaw) * Math.min(1, dt * 6);
+        // ease off as they arrive rather than stopping dead
+        speed = Math.min(pace, Math.sqrt(2 * 2.5 * Math.max(0, d - 0.3)));
+        w.yaw += turnToward(w.yaw, Math.atan2(dx, dz), w.v, dt);
+      }
+      if (w.talk <= 0) {
+        face.talk = 0;
+        gaze(face, NaN, NaN);
+      }
+      // momentum: bodies speed up and slow down, and go the way they face (turning as they walk)
+      w.v = approach(w.v, speed, dt, speed > 3 ? 4 : 2.2, 4.5);
+      if (w.v > 0) {
+        const heading = Math.abs(wrap(Math.atan2(dx, dz) - w.yaw)) < 1.6 || w.chase || w.flee > 0 ? w.yaw : Math.atan2(dx, dz);
+        w.pos.x += Math.sin(heading) * w.v * dt;
+        w.pos.z += Math.cos(heading) * w.v * dt;
       }
       w.pos.y = this.col.groundAt(w.pos.x, w.pos.z, w.pos.y + 0.6, 0.7, 0.2);
-      w.m.speed += (speed - w.m.speed) * Math.min(1, dt * 6);
+      w.m.speed = w.v;
+      w.m.turn = 0;
       stepPhase(w.m, dt);
+      // standing about: they do what people do (not in a conversation, not dead)
+      if (w.dead < 0 && w.talk <= 0) w.idler.update(dt, w.anim, { still: w.v < 0.1, raining: rain > 0.3, cold: false, waiting: false, hands: '', hoodable: false, police: w.r.job === 'police', wall: false });
       w.anim.update(dt);
       const h = w.human;
       if (!h.ready) continue;
@@ -315,7 +340,25 @@ export class Populace {
     }
     human.group.visible = false;
     this.group.add(human.group);
-    this.walkers.set(r.id, { r, human, rig: newRig(), m: newMotion(), anim: new Animator(), pos: at.clone(), yaw: Math.random() * 6.28, outfit: { bulk: 1 } as Outfit, talk: 0, idle: 0, hp: r.job === 'police' ? 140 : 100, flee: 0, from: new THREE.Vector3(), dead: -1, chase: false });
+    // who they are, as far as how they move goes: from their traits (deterministic per resident)
+    const rng = mulberry32(hash3(r.i, 7, 131)).next;
+    const persona: Persona = {
+      energy: 0.3 + 0.5 * rng() - 0.25 * r.spec.age,
+      confidence: 0.25 + 0.6 * r.brave,
+      nervous: Math.max(0, 0.55 - 0.5 * r.brave + 0.2 * rng()),
+      tired: 0.15 + 0.4 * rng() * (r.job === 'night' || r.job === 'nurse' ? 1.4 : 1),
+      age: r.spec.age,
+      leftHanded: rng() < 0.11,
+      idles: r.job === 'police' ? { scan: 3, radio: 1 } : { checkPhone: 1 + rng() * 2, lookAround: 1, shift: 1.5, adjust: 1, crossArms: r.friendly < 0.4 ? 2 : 0.5, rubHands: 0.5, checkWatch: 1 },
+    };
+    const m = newMotion();
+    const arche = r.job === 'police' ? 'police' : r.job === 'drifter' ? 'drifter' : r.spec.age > 0.7 ? 'elder' : undefined;
+    m.style = styleFor(persona, rng, { arche, femme: 1 - r.spec.sex, bulk: 1 });
+    moodFor(m.face, persona, arche);
+    m.slouch = 0.02 + 0.05 * persona.tired;
+    m.weight = rng() * 2 - 1;
+    m.ground = (x, z) => this.col.groundAt(x, z, m.g.py + 0.45, 0.9, 0.05);
+    this.walkers.set(r.id, { r, human, rig: newRig(), m, anim: new Animator(), pos: at.clone(), yaw: Math.random() * 6.28, outfit: { bulk: 1 } as Outfit, talk: 0, idle: 0, hp: r.job === 'police' ? 140 : 100, flee: 0, from: new THREE.Vector3(), dead: -1, chase: false, v: 0, persona, idler: new IdleDirector(persona, rng) });
   }
 
   private release(id: string, w: Walker) {

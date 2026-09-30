@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { ANATOMY, EYE, HEAD, type FacialHair, type Grip, type HairCut, type HatStyle } from './anatomy';
 import { C, newPose, type Pose } from '../anim/pose';
 import type { Animator } from '../anim/Animator';
+import { newFace, stepFace, facePose, type FaceState } from '../anim/face';
+import { gaitPose, postureSway, newGait, advanceGait, DEFAULT_STYLE, type GaitState, type GaitStyle, type GaitOut } from '../anim/gait';
 
 /**
  * Humanoid — the people of NIGHTFALL.
@@ -155,6 +157,14 @@ export interface Motion {
   steer: number;
   /** hunched against the cold / rain, 0..1 */
   cold: number;
+  /** how this person walks (anim/gait.ts); made from stride/armSwing/cadence if not set */
+  style?: GaitStyle;
+  /** planted feet, springs: the gait's memory */
+  g: GaitState;
+  /** ground height under a point (world), where it isn't flat */
+  ground?: ((x: number, z: number) => number) | null;
+  /** face: emotion and speech (anim/face.ts) */
+  face: FaceState;
 }
 
 export const newMotion = (): Motion => ({
@@ -185,7 +195,23 @@ export const newMotion = (): Motion => ({
   blink: 0,
   steer: 0,
   cold: 0,
+  g: newGait(),
+  face: newFace(),
 });
+
+const _go: GaitOut = { armL: 0, armR: 0, elL: 0, elR: 0, run: 0, lean: 0 };
+const _save = new Float32Array(64);
+const _styles = new WeakMap<Motion, GaitStyle>();
+/** A walk for someone nobody described: the old stride / arm swing / cadence knobs. */
+function defaultStyle(m: Motion, b: Body): GaitStyle {
+  let s = _styles.get(m);
+  if (!s) _styles.set(m, (s = { ...DEFAULT_STYLE }));
+  s.step = m.stride;
+  s.arm = m.armSwing;
+  s.cadence = m.cadence;
+  s.toeOut = b.toeOut ?? 0.08;
+  return s;
+}
 
 /* ─────────────────────────── the rig ─────────────────────────── */
 
@@ -267,123 +293,86 @@ const GRIPS: Grip[] = ['relaxed', 'fist', 'point', 'thumb', 'open'];
  * backwards), idle weight shifts, turning, crouching, sitting, jumping and
  * landing, plus the arm modes the crowd uses for what it's holding.
  */
-export function basePose(p: Pose, b: Body, o: Outfit, m: Motion, t: number) {
+export function basePose(p: Pose, b: Body, o: Outfit, m: Motion, t: number, root?: THREE.Matrix4) {
   p.fill(0);
   const age = b.age ?? 0;
-  const run = clamp01((m.speed - 2.6) / 2.4);
-  const walk = clamp01(m.speed / 1.1);
-  const moving = walk > 0.02;
+  const st = m.style ?? defaultStyle(m, b);
   const sit = m.sit;
   const crouch = m.crouch;
   const air = m.air;
-  const fwdK = Math.cos(m.moveDir), sideK = Math.sin(m.moveDir);
+  const fwdK = Math.cos(m.moveDir);
+  const walk = clamp01(m.speed / 1.1);
+  const moving = walk > 0.02;
 
-  // gait amplitudes (older people take shorter steps)
-  const stride = m.stride * (1 - 0.18 * age);
-  const legAmp = (0.38 * walk * (1 - run) + 0.68 * run) * stride;
-  const kneeAmp = 0.62 * (1 - run) + 1.45 * run;
-  const armAmp = (0.34 * walk * (1 - run) + 0.62 * run) * m.armSwing * (1 - 0.3 * crouch);
-  const phL = m.phase, phR = m.phase + Math.PI;
-
-  const leg = (ph: number) => {
-    const s = Math.sin(ph);
-    const swing = Math.max(0, Math.cos(ph));
-    const k = moving ? 0.06 + kneeAmp * Math.pow(swing, 1.3) * walk : 0;
-    return { f: legAmp * s * fwdK, ab: legAmp * 0.5 * s * sideK, k };
-  };
-  const L = leg(phL), R = leg(phR);
-
-  // idle: weight onto one leg, the other knee softens
-  const idle = 1 - walk;
-  const shift = m.weight * idle;
-  if (idle > 0) {
-    L.f += 0.03 * Math.max(0, -shift) * idle;
-    L.k += 0.14 * Math.max(0, -shift);
-    R.f += 0.03 * Math.max(0, shift) * idle;
-    R.k += 0.14 * Math.max(0, shift);
+  // ── the legs: planted feet and the body over them (anim/gait.ts)
+  const off = Math.max(sit, air);
+  const go = _go;
+  if (root && off < 0.999) {
+    gaitPose(p, m.g, {
+      root: root.elements, t, speed: m.speed, moveDir: m.moveDir, phase: m.phase, crouch, land: m.land,
+      weight: m.weight, legLen: b.legLen ?? 1, hips: b.hips, style: st, ground: m.ground ?? undefined, bank: -m.turn * 0.04,
+    }, go);
+  } else {
+    go.armL = go.armR = go.elL = go.elR = 0;
+    go.run = clamp01((m.speed - 2.6) / 2.4);
+    go.lean = st.lean;
   }
-  // crouch: hips back, knees forward
-  if (crouch > 0) {
-    L.f += 0.62 * crouch;
-    R.f += 0.52 * crouch;
-    L.k += 1.2 * crouch;
-    R.k += 1.05 * crouch;
-  }
-  // in the air: legs tuck
-  if (air > 0) {
-    L.f += 0.35 * air;
-    L.k += 0.75 * air;
-    R.f += 0.1 * air;
-    R.k += 0.35 * air;
-  }
-  // a landing: both knees take it
-  if (m.land > 0) {
-    L.k += 0.5 * m.land;
-    R.k += 0.5 * m.land;
-    L.f += 0.25 * m.land;
-    R.f += 0.25 * m.land;
-  }
-  // sitting overrides the legs
-  const sitF = 1.5, sitK = 1.45;
-  L.f = L.f * (1 - sit) + sitF * sit;
-  L.k = L.k * (1 - sit) + sitK * sit;
-  R.f = R.f * (1 - sit) + sitF * sit;
-  R.k = R.k * (1 - sit) + sitK * sit;
-
-  p[C.hipLf] = L.f;
-  p[C.hipLab] = -L.ab;
-  p[C.knL] = L.k;
-  p[C.hipRf] = R.f;
-  p[C.hipRab] = R.ab;
-  p[C.knR] = R.k;
-  // feet turned out a little, per person; stance a touch wider when crouched
-  const toe = b.toeOut ?? 0.08;
-  p[C.hipLtw] = toe;
-  p[C.hipRtw] = toe;
-  p[C.hipLab] += 0.03 * crouch;
-  p[C.hipRab] += 0.03 * crouch;
-  // roll through the step
-  if (moving) {
-    p[C.anL] = -0.25 * Math.sin(phL) * walk * (1 - sit);
-    p[C.anR] = -0.25 * Math.sin(phR) * walk * (1 - sit);
+  // sitting, or in the air: the body decides where the feet go (and they're planted afresh after)
+  if (off > 0.5) m.g.init = false;
+  if (off > 0.001) {
+    const legs = [C.hipLf, C.hipLab, C.hipLtw, C.knL, C.anL, C.hipRf, C.hipRab, C.hipRtw, C.knR, C.anR, C.pelY, C.pelX, C.pelRy, C.pelRz, C.pelRx];
+    for (const c of legs) _save[c] = p[c];
+    const toe = st.toeOut;
+    let Lf = 0, Lk = 0.08, Rf = 0, Rk = 0.08;
+    if (air > 0) {
+      Lf += 0.35 * air + 0.25 * Math.sin(m.phase) * (1 - sit);
+      Lk += 0.75 * air;
+      Rf += 0.1 * air - 0.25 * Math.sin(m.phase) * (1 - sit);
+      Rk += 0.35 * air;
+    }
+    const sitF = 1.5, sitK = 1.45;
+    const ks = sit / Math.max(1e-3, off);
+    Lf = Lf * (1 - ks) + sitF * ks;
+    Lk = Lk * (1 - ks) + sitK * ks;
+    Rf = Rf * (1 - ks) + sitF * ks;
+    Rk = Rk * (1 - ks) + sitK * ks;
+    const special = [Lf, 0.02, toe, Lk, 0, Rf, 0.02, toe, Rk, 0, -0.08 * sit, 0, 0, 0, 0];
+    for (let i = 0; i < legs.length; i++) p[legs[i]] = _save[legs[i]] * (1 - off) + special[i] * off;
   }
 
-  // pelvis: a bounce when running, lower when sitting
-  p[C.pelY] = run * 0.02 * Math.abs(Math.sin(m.phase)) - 0.08 * sit;
-  p[C.pelZ] = -0.06 * crouch;
+  const run = go.run;
   const breathe = Math.sin(m.breath) * 0.006 * (1 - run);
-
-  const sway = moving ? 0.022 * Math.sin(m.phase) * (1 - run) * (1 + Math.abs(sideK)) : 0.018 * shift;
-  const twist = moving ? 0.1 * Math.sin(m.phase) * walk * fwdK : 0;
-  // posture: slouch, age, running forward lean, leaning into acceleration
+  // posture: slouch, age, the gait's lean, leaning into acceleration, sitting back, crouched over
   const accLean = Math.max(-0.1, Math.min(0.14, m.accel * 0.022));
-  const lean = m.slouch + 0.07 * age + 0.2 * run * Math.max(0, fwdK) + 0.04 * walk * (1 - run) - 0.08 * sit + 0.28 * crouch + 0.12 * m.land + accLean + 0.06 * air;
+  const lean = m.slouch + 0.07 * age + go.lean * (1 - sit) - 0.08 * sit + 0.28 * crouch + 0.12 * m.land + accLean * (1 - st.still) + 0.06 * air;
   const bank = -m.turn * 0.04;
-  p[C.pelX] = sway;
-  p[C.pelRy] = twist;
-  p[C.pelRz] = bank + shift * 0.03;
-  p[C.spRx] = lean + breathe * 2;
-  p[C.spRy] = -twist * 1.8;
-  p[C.spRz] = -bank * 0.5 - shift * 0.04;
+  if (off > 0.001) p[C.pelRz] += bank * off;
+  p[C.spRx] += lean + breathe * 2;
+  p[C.spRz] += -bank * 0.5;
 
   // head: where they're looking, holding the eyes level against the lean
-  p[C.nkRx] = m.lookPitch - lean * 0.6 + 0.06 * age;
-  p[C.nkRy] = m.lookYaw;
-  p[C.nkRz] = b.tilt ?? 0;
-
+  p[C.nkRx] += m.lookPitch - lean * 0.6 + 0.06 * age + st.chin;
+  p[C.nkRy] += m.lookYaw;
+  p[C.nkRz] += b.tilt ?? 0;
+  // standing: never quite still
+  postureSway(p, m.g, t, st, (1 - walk) * (1 - sit * 0.6));
+  const armAmp = 1;
+  const phL = m.phase, phR = m.phase + Math.PI;
   // arms
   const arm = (side: -1 | 1, mode: ArmMode, ph: number) => {
-    let f = -armAmp * Math.sin(ph) * (1 - sit) * (fwdK >= 0 ? 1 : 0.7);
+    const sw = side < 0 ? go.armL : go.armR;
+    let f = armAmp * sw * (1 - sit) * (fwdK >= 0 ? 1 : 0.7) * (1 - 0.3 * crouch) + 0.04 * run;
+    void ph;
     // arms hang close, a little in front of the thighs (not a mannequin's A)
-    let ab = 0.08 + 0.07 * (o.bulk - 1) + 0.05 * run + 0.18 * air + 0.1 * crouch;
-    let bend = 0.24 + 0.3 * Math.max(0, -Math.sin(ph)) * walk + 1.25 * run + 0.35 * crouch;
+    let ab = st.armOut + 0.07 * (o.bulk - 1) + 0.05 * run + 0.18 * air + 0.1 * crouch;
+    let bend = st.elbow + (side < 0 ? go.elL : go.elR) * (1 - run) + 1.25 * run + 0.35 * crouch;
     let tw = -0.35;
     let wr = 0.08;
     let grip = 0;
     let up = 0;
     switch (mode) {
       case 'pockets':
-        f = 0.12 * Math.sin(ph) * walk - 0.08;
+        f = 0.12 * sw * walk - 0.08;
         ab = 0.16 + 0.05 * o.bulk;
         bend = 0.55;
         tw = -0.25;
@@ -520,6 +509,7 @@ export function finishPose(p: Pose, m: Motion, t: number) {
   p[C.shRup] += br * 0.06;
   if (m.cold > 0) p[C.spRz] += Math.sin(t * 38) * 0.006 * m.cold;
   p[C.blink] = Math.max(p[C.blink], m.blink);
+  facePose(p, m.face, t);
   // looking far round: the chest helps the neck
   const ny = p[C.nkRy];
   if (Math.abs(ny) > 0.9 && m.glitch === 0) {
@@ -586,10 +576,16 @@ export function buildRig(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, p: P
   out.hat.copy(out.head);
   part(out.neck, J.neck, b.girth * (0.9 + 0.1 * tb), nl, b.girth * (0.9 + 0.1 * tb));
   // eyes close about their centre line; brows lift
-  const bl = clamp01(p[C.blink]);
+  const bl = clamp01(Math.max(p[C.blink], 0.35 * p[C.squint]));
   partAbout(out.eyes, out.head, 0, EYE.y, EYE.z, 1, 1 - 0.88 * bl, 1);
-  out.irises.copy(out.eyes);
-  _m.makeTranslation(0, 0.004 * p[C.browUp] - 0.002 * bl, 0);
+  // the irises follow the gaze across the eye
+  _m.makeTranslation(0.0045 * Math.max(-1, Math.min(1, p[C.eyeX])), 0.003 * Math.max(-1, Math.min(1, p[C.eyeY])), 0);
+  out.irises.multiplyMatrices(out.eyes, _m);
+  // brows lift, draw together (down and in), and not always evenly
+  const bIn = clamp01(p[C.browIn]);
+  _m.makeTranslation(0, 0.004 * p[C.browUp] - 0.002 * bl - 0.0025 * bIn, 0.0008 * bIn);
+  _m2.makeRotationZ(0.06 * p[C.browAsym]);
+  _m.multiply(_m2);
   out.brows.multiplyMatrices(out.head, _m);
   if (o.brows && o.brows !== 1) {
     _m.copy(out.brows);
@@ -683,9 +679,13 @@ export function buildRig(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, p: P
 }
 
 /** Everything for one figure, one frame. `anim` blends its clips over the procedural pose. */
+/** The pose of the figure solved last (with J): a skinned body copies its face from it. */
+export const LAST = { pose: newPose() };
+
 export function solve(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, m: Motion, t: number, anim?: Animator | null) {
   const p = out.pose;
-  basePose(p, b, o, m, t);
+  LAST.pose = p;
+  basePose(p, b, o, m, t, root);
   anim?.apply(p);
   finishPose(p, m, t);
   buildRig(out, root, b, o, p);
@@ -695,13 +695,14 @@ export function solve(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, m: Moti
 
 /** Advance gait phase from ground speed; stride frequency rises with speed. */
 export function stepPhase(m: Motion, dt: number) {
-  const cadence = m.speed < 0.05 ? 0 : (2.6 + m.speed * 0.95) * m.cadence;
-  const before = Math.sin(m.phase);
-  m.phase += dt * cadence * (1 / Math.max(0.75, m.stride));
+  const st = m.style;
+  const before = Math.floor(m.phase / Math.PI);
+  m.phase = advanceGait(m.phase, m.speed, dt, m.g, (st ? st.cadence : m.cadence), st ? st.step : m.stride);
   m.breath += dt * (1.2 + Math.min(1.5, m.speed * 0.3));
   stepBlink(m, dt);
+  stepFace(m.face, dt);
   if (m.land > 0) m.land = Math.max(0, m.land - dt * 3.2);
-  return Math.sign(before) !== Math.sign(Math.sin(m.phase)) && m.speed > 0.6; // footfall
+  return Math.floor(m.phase / Math.PI) !== before && (m.speed > 0.6 || m.g.need); // footfall
 }
 
 /** Detail distances (metres): full faces and hands inside `near`, garments inside `mid`, silhouettes beyond. */

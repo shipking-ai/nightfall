@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { styleFor, approach, turnToward } from '../anim/gait';
+import { feel, gaze, moodFor } from '../anim/face';
 import { LOD, newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
 import { FigureBatch } from './FigureBatch';
 import { Animator } from '../anim/Animator';
@@ -47,6 +49,9 @@ export interface Npc {
   wrongYaw: number; // facing somewhere no one would face
   glitchT: number;
   glowOn: boolean;
+  /** eyes: a glance at you (seconds left), and the wait before the next */
+  glance: number;
+  glanceWait: number;
   // cars: a flinch, a step back, a long look after it
   alarm: number;
   alarmX: number;
@@ -242,11 +247,14 @@ export class Crowd {
     motion.weight = rng.range(-1, 1);
     motion.cold = outfit.garment === 'tee' || outfit.garment === 'scrubs' ? 0.25 : persona.age > 0.7 ? 0.15 : 0;
     const irng = mulberry32(Math.floor(rng.next() * 1e9));
+    // how they walk and the face they wear when nothing's happening
+    motion.style = styleFor(persona, irng.next, { arche: person.arche, bulk: outfit.bulk, femme: Math.min(1, (body.bust ?? 0) * 1.6), toeOut: body.toeOut });
+    moodFor(motion.face, persona, person.arche);
     return {
       arche: person.arche, persona, anim: new Animator(), idle: new IdleDirector(persona, irng.next), friend: null, speaking: false, talkT: 0, horror: null, lastV: 0,
       mode, pos, yaw, body, outfit, motion, rig: newRig(), lod: -1, parts: new Set(),
       timer: rng.range(2, 8), s: 0, dir: 1, lateral: 0, speed: 0, v: 0, paused: 0, hidden: 0,
-      lookT: rng.range(2, 6), lookTarget: 0, visible: true, frozen: 0, wrongYaw: 0, glitchT: 0, glowOn: false,
+      lookT: rng.range(2, 6), lookTarget: 0, visible: true, frozen: 0, wrongYaw: 0, glitchT: 0, glowOn: false, glance: 0, glanceWait: rng.range(2, 10),
       alarm: 0, alarmX: 0, alarmZ: 0, recoil: 0, recoilX: 0, recoilZ: 0,
       voice: randomVoice(this.voiceRng.next, body.height), sayCd: 0, talked: 0, stareT: 0,
       hp: 100, dead: -1, panic: 0, panicX: 0, panicZ: 0, baseArms: null, fireT: 1,
@@ -532,6 +540,8 @@ export class Crowd {
       n.recoilZ = dz / d;
       const clip = Math.abs(along) > Math.abs(side) ? (along > 0 ? 'react.hitFront' : 'react.hitBack') : side > 0 ? 'react.hitLeft' : 'react.hitRight';
       n.anim.play(clip, { group: 'hit', fadeIn: 0.03, fadeOut: 0.2 });
+      feel(n.motion.face, 'pain', 1, 1.6);
+      feel(n.motion.face, 'fear', 0.8, 8);
       this.say(n, 'hurt', true);
       return false;
     }
@@ -557,6 +567,8 @@ export class Crowd {
         else if (n.mode === 'walk') n.anim.play('react.flinch', { group: 'flinch', fadeIn: 0.05 });
       }
       n.panic = 9 + Math.random() * 5;
+      feel(n.motion.face, 'surprise', 1, 0.5);
+      feel(n.motion.face, 'fear', 0.7 + 0.3 * n.persona.nervous, n.panic);
       n.panicX = from.x;
       n.panicZ = from.z;
       n.alarm = Math.max(n.alarm, 3);
@@ -608,12 +620,13 @@ export class Crowd {
         if (d > 45) n.visible = false;
         continue;
       }
-      n.yaw = Math.atan2(dx, dz);
-      const v = d > 11 ? 4.4 : 0;
-      n.pos.x += (dx / d) * v * dt;
-      n.pos.z += (dz / d) * v * dt;
+      n.yaw += turnToward(n.yaw, Math.atan2(dx, dz), n.v, dt);
+      const v = approach(n.v, d > 11 ? 4.4 : 0, dt, 3.2, 5.5);
+      n.pos.x += Math.sin(n.yaw) * v * dt;
+      n.pos.z += Math.cos(n.yaw) * v * dt;
       n.pos.y += (player.y - n.pos.y) * Math.min(1, dt * 2);
       n.v = v;
+      feel(m.face, 'focus', 0.8, 1);
       m.speed = v;
       m.armR = d < 24 ? 'aim' : 'free';
       stepPhase(m, dt);
@@ -968,6 +981,19 @@ export class Crowd {
         n.parts = visibleParts(n.outfit, d);
       }
       // unease: a moment where a body moves the way a body shouldn't
+      // the eyes get there before the head: people glance at you as you pass
+      if (player && n.dead < 0 && d < 12) {
+        const f = n.motion.face;
+        if (n.glance > 0) {
+          n.glance -= dt;
+          const rel = wrap(Math.atan2(player.x - n.pos.x, player.z - n.pos.z) - n.yaw) - n.motion.lookYaw;
+          if (Math.abs(rel) < 1.4) gaze(f, THREE.MathUtils.clamp(rel * 2.4, -1, 1), THREE.MathUtils.clamp((player.y + 1.6 - n.pos.y - 1.6 * n.body.height) * 0.3, -0.5, 0.5));
+          if (n.glance <= 0) gaze(f, NaN, NaN);
+        } else if ((n.glanceWait -= dt) <= 0) {
+          n.glanceWait = (3 + Math.random() * 9) * (1.3 - n.persona.nervous);
+          n.glance = 0.5 + Math.random() * (1 + n.persona.confidence);
+        }
+      }
       if (n.glitchT > 0) {
         n.glitchT -= dt;
         const k = 1 - Math.abs(1 - n.glitchT / 0.45);
@@ -1175,6 +1201,8 @@ export class Crowd {
       // now and then a shared laugh
       if (this.rng.chance(0.18)) for (const who of [n, f]) who.anim.play('emote.laugh', { group: 'social', fadeIn: 0.3 });
     }
+    m.face.talk += ((n.speaking ? 1 : 0) - m.face.talk) * Math.min(1, dt * 6);
+    if (f) gaze(m.face, THREE.MathUtils.clamp((wrap(Math.atan2(f.pos.x - n.pos.x, f.pos.z - n.pos.z) - n.yaw) - m.lookYaw) * 2, -1, 1), 0);
     if (n.speaking) {
       if (!n.anim.playing('social')) n.anim.play('emote.talk', { group: 'social', loop: true, fadeIn: 0.5, speed: 0.85 + 0.3 * n.persona.energy, mirror: n.persona.leftHanded });
     } else {

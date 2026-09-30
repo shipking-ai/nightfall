@@ -4,7 +4,9 @@ import { bindPose, jointMatrices, BIND_BONES } from './bind';
 import { headCentre, type HumanSpec, type Joints } from './anatomy';
 import type { BuiltHuman, BuiltPart } from './build';
 import type { MHBuilt } from './mh';
-import { skinMaterial, fabricMaterial, hairMaterial, hairCardMaterial, eyeMaterial } from './materials';
+import { skinMaterial, fabricMaterial, hairMaterial, hairCardMaterial, eyeMaterial, mouthMaterial, faceUniforms, type FaceU } from './materials';
+import { LAST } from '../../entities/Humanoid';
+import { C } from '../../anim/pose';
 
 /**
  * A person in the RPG: the sculpted meshes, skinned to one skeleton that
@@ -92,6 +94,8 @@ export class RealHuman {
   /** the body the rig should be solved with (MakeHuman people bring their own proportions) */
   body: Body;
   onReady: ((h: RealHuman) => void) | null = null;
+  /** the face's numbers, shared by this person's skin, eyes and mouth */
+  private face: FaceU | null = null;
 
   constructor(public spec: HumanSpec, body: Body, opts: { hero?: boolean; lods?: number[]; mh?: boolean } = {}) {
     this.hero = !!opts.hero;
@@ -112,6 +116,7 @@ export class RealHuman {
         const jb = bindPose(this.body, h.angles).joints;
         const hc = headCentre(jb);
         this.headC.set(hc[0], hc[1], hc[2]);
+        this.face = faceUniforms(h.jaw);
         this.lods[1] = this.assemble({ parts: h.parts, eyes: h.eyes, eyeR: h.eyeR, ms: h.ms, tris: h.tris }, 1, sk);
         this.lods[0] = this.lods[1];
         this.ready = true;
@@ -160,13 +165,24 @@ export class RealHuman {
       geo.computeBoundingSphere();
       if (p.uv) geo.setAttribute('uv', new THREE.BufferAttribute(p.uv, 2));
       if (p.eyeLocal) geo.setAttribute('eyeLocal', new THREE.BufferAttribute(p.eyeLocal, 3));
+      const face = lod < 2 && p.face ? this.face : null;
+      if (face && p.face) {
+        const n = p.face.length / 8, a = new Uint8Array(n * 4), b = new Uint8Array(n * 4);
+        for (let i = 0; i < n; i++) for (let k = 0; k < 4; k++) {
+          a[i * 4 + k] = p.face[i * 8 + k];
+          b[i * 4 + k] = p.face[i * 8 + 4 + k];
+        }
+        geo.setAttribute('faceA', new THREE.BufferAttribute(a, 4, true));
+        geo.setAttribute('faceB', new THREE.BufferAttribute(b, 4, true));
+      }
       let mat: THREE.Material;
-      if (p.mat === 'eye') mat = eyeMaterial(p.color, !!p.uv);
+      if (p.mat === 'eye') mat = eyeMaterial(p.color, !!p.uv, lod < 2 ? this.face ?? undefined : undefined);
+      else if (p.name === 'teeth' || p.name === 'tongue') mat = mouthMaterial(p.color, face ?? undefined);
       else if (p.mat === 'skin') {
         // brows: the hair colour, darker; thinner with age (MakeHuman bodies know where their eyes are)
         const bc = new THREE.Color(s.hairColor).multiplyScalar(s.hairColor > 0x808080 ? 0.75 : 0.85).getHex();
         const brows = h.parts.some((q: BuiltPart) => q.mat === 'eye') ? { eyes: h.eyes as [number, number, number][], r: h.eyeR, color: bc, thick: (s.sex > 0.5 ? 0.8 : 0.35) * (1 - s.age * 0.4) } : undefined;
-        mat = skinMaterial(p.color, this.headC, stubble, lip, brows);
+        mat = skinMaterial(p.color, this.headC, stubble, lip, brows, face ?? undefined);
       }
       else if (p.mat === 'hairCard') mat = hairCardMaterial(p.color);
       else if (p.mat === 'hair') mat = hairMaterial(p.color, this.headC.clone().add(new THREE.Vector3(0, 0.1, -0.02)), p.name === 'hairCap');
@@ -212,6 +228,14 @@ export class RealHuman {
   /** Right after the rig was solved for this person: bones follow its joints. Picks the detail for the distance. */
   pose(camDist: number) {
     jointMatrices(this.mats);
+    // the face, from the pose just solved (anim/face.ts), when near enough to read it
+    const f = this.face;
+    if (f && camDist < 14) {
+      const p = LAST.pose;
+      f.uFaceA.value.set(Math.max(0, Math.min(0.32, p[C.jaw] * 0.55)), Math.min(1, p[C.blink]), Math.max(-1, Math.min(1, p[C.browUp])), Math.max(0, Math.min(1, p[C.smile])));
+      f.uFaceB.value.set(Math.max(0, Math.min(1, p[C.frown])), Math.max(0, Math.min(1, p[C.browIn])), Math.max(-1, Math.min(1, p[C.browAsym])), Math.max(-0.5, Math.min(1, p[C.squint])));
+      f.uGaze.value.set(Math.max(-1, Math.min(1, p[C.eyeX])) * 0.38, Math.max(-1, Math.min(1, p[C.eyeY])) * 0.28);
+    }
     for (let i = 0; i < this.bones.length; i++) this.bones[i].matrixWorld.copy(this.mats[i]);
     let want = this.hero ? 0 : camDist < LOD_DIST[1] ? 1 : camDist < LOD_DIST[2] ? 1 : 2;
     // the best that's ready, nearest what's wanted

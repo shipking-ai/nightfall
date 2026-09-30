@@ -17,6 +17,8 @@ export interface BuiltPart {
   uv?: Float32Array;
   /** eyes: each vertex relative to its eye's centre (the iris is drawn from it) */
   eyeLocal?: Float32Array;
+  /** face bone weights, 8 per vertex (0..255): jaw, upper lid, lower lid, brow, lip corner, cheek, lower corner, nose */
+  face?: Uint8Array;
 }
 
 export interface BuiltHuman {

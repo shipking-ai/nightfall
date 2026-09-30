@@ -26,6 +26,8 @@ export const CHANNELS = [
   'hipLf', 'hipLab', 'hipLtw', 'knL', 'anL',
   'hipRf', 'hipRab', 'hipRtw', 'knR', 'anR',
   'blink', 'browUp', 'jaw',
+  // the face beyond a blink: expressions and the eyes (anim/face.ts)
+  'smile', 'frown', 'browIn', 'browAsym', 'eyeX', 'eyeY', 'squint',
 ] as const;
 export type Channel = (typeof CHANNELS)[number];
 export const NCH = CHANNELS.length;
@@ -38,11 +40,12 @@ export const newPose = (): Pose => new Float32Array(NCH);
 const idx = (names: Channel[]) => names.map((n) => C[n]);
 export const MASKS = {
   full: CHANNELS.map((_, i) => i),
-  upper: idx(['spRx', 'spRy', 'spRz', 'nkRx', 'nkRy', 'nkRz', 'shLf', 'shLab', 'shLtw', 'shLup', 'elL', 'elLtw', 'wrL', 'wrLz', 'gripL', 'shRf', 'shRab', 'shRtw', 'shRup', 'elR', 'elRtw', 'wrR', 'wrRz', 'gripR', 'blink', 'browUp', 'jaw']),
+  upper: idx(['spRx', 'spRy', 'spRz', 'nkRx', 'nkRy', 'nkRz', 'shLf', 'shLab', 'shLtw', 'shLup', 'elL', 'elLtw', 'wrL', 'wrLz', 'gripL', 'shRf', 'shRab', 'shRtw', 'shRup', 'elR', 'elRtw', 'wrR', 'wrRz', 'gripR', 'blink', 'browUp', 'jaw', 'smile', 'frown', 'browIn', 'browAsym', 'eyeX', 'eyeY', 'squint']),
   arms: idx(['shLf', 'shLab', 'shLtw', 'shLup', 'elL', 'elLtw', 'wrL', 'wrLz', 'gripL', 'shRf', 'shRab', 'shRtw', 'shRup', 'elR', 'elRtw', 'wrR', 'wrRz', 'gripR']),
   armR: idx(['shRf', 'shRab', 'shRtw', 'shRup', 'elR', 'elRtw', 'wrR', 'wrRz', 'gripR']),
   armL: idx(['shLf', 'shLab', 'shLtw', 'shLup', 'elL', 'elLtw', 'wrL', 'wrLz', 'gripL']),
-  head: idx(['nkRx', 'nkRy', 'nkRz', 'blink', 'browUp', 'jaw']),
+  head: idx(['nkRx', 'nkRy', 'nkRz', 'blink', 'browUp', 'jaw', 'smile', 'frown', 'browIn', 'browAsym', 'eyeX', 'eyeY', 'squint']),
+  face: idx(['blink', 'browUp', 'jaw', 'smile', 'frown', 'browIn', 'browAsym', 'eyeX', 'eyeY', 'squint']),
   legs: idx(['pelX', 'pelY', 'pelZ', 'pelRx', 'pelRy', 'pelRz', 'hipLf', 'hipLab', 'hipLtw', 'knL', 'anL', 'hipRf', 'hipRab', 'hipRtw', 'knR', 'anR']),
 };
 export type MaskName = keyof typeof MASKS;
@@ -51,7 +54,7 @@ export type MaskName = keyof typeof MASKS;
 export const DISCRETE = new Set([C.gripL, C.gripR]);
 
 /** Swap left and right (a left-handed wave from a right-handed one). */
-const MIRROR_NEG = new Set<Channel>(['rootX', 'rootRy', 'rootRz', 'pelX', 'pelRy', 'pelRz', 'spRy', 'spRz', 'nkRy', 'nkRz']);
+const MIRROR_NEG = new Set<Channel>(['rootX', 'rootRy', 'rootRz', 'pelX', 'pelRy', 'pelRz', 'spRy', 'spRz', 'nkRy', 'nkRz', 'eyeX', 'browAsym']);
 export function mirrorChannel(c: Channel): { to: Channel; neg: boolean } {
   let to = c as string;
   if (/^(sh|el|wr|grip|hip|kn|an)L/.test(c) || /^(el|wr|grip|kn|an)L$/.test(c)) to = c.replace(/L(?=[a-z]*$)/, 'R');

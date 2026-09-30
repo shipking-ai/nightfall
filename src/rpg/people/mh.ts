@@ -179,6 +179,8 @@ export interface MHBuilt {
   eyeR: number;
   ms: number;
   tris: number;
+  /** where the jaw hinges (bind space), for the face to open it */
+  jaw?: V3;
 }
 
 /** A whole person, ready to skin to the game's rig (in its bind pose, at height scale 1). */
@@ -257,6 +259,8 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
     return ours.multiply(theirs.invert()).elements;
   });
   const si = new Uint8Array(d.buf, d.meta.layout.skinIndex.offset, d.meta.layout.skinIndex.count);
+  // the face bones' weights (older packs don't have them: those faces stay still)
+  const faceW = d.meta.layout.face ? new Uint8Array(d.buf, d.meta.layout.face.offset, d.meta.layout.face.count) : null;
   const sw = f32(d, 'skinWeight');
   const Q = new Float32Array(nv * 3);
   for (let v = 0; v < nv; v++) {
@@ -309,6 +313,7 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
     const t = tri(g);
     const map = new Map<number, number>();
     const pos: number[] = [], nrm: number[] = [], uvs: number[] = [], sI: number[] = [], sW: number[] = [], idx: number[] = [], src: number[] = [];
+    const fw: number[] | null = faceW && (mat === 'skin' || mat === 'lid') ? [] : null;
     for (let i = 0; i < t.length; i += 3) {
       const r0 = t[i], r1 = t[i + 1], r2 = t[i + 2];
       if (keep && !(keep(rvPos[r0]) && keep(rvPos[r1]) && keep(rvPos[r2]))) continue;
@@ -327,6 +332,7 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
             sI.push(si[p * 4 + q]);
             sW.push(sw[p * 4 + q]);
           }
+          if (fw) for (let q = 0; q < 8; q++) fw.push(faceW![p * 8 + q]);
         }
         idx.push(o);
       }
@@ -338,6 +344,7 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
       name, mat, color, fabric,
       position: new Float32Array(pos), normal: new Float32Array(nrm), ao: new Float32Array(pos.length / 3).fill(1),
       index: new Uint32Array(idx), skinIndex: new Uint16Array(sI), skinWeight: new Float32Array(sW), uv: new Float32Array(uvs),
+      face: fw ? new Uint8Array(fw) : undefined,
     });
   };
   /**
@@ -425,7 +432,11 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
   // ── skin
   const shoeTop = ankleY + (s.shoes.kind === 'boots' ? 0.12 : 0.03);
   part('body', 'body', 'skin', s.skin, undefined, (p) => yOf(p) > shoeTop - 0.06);
-  // ── lashes and teeth
+  // ── teeth and tongue (seen when the mouth opens; they ride the jaw)
+  part('teeth', 'helper-upper-teeth', 'lid', 0xe8e0d0, undefined, null);
+  part('teeth', 'helper-lower-teeth', 'lid', 0xe8e0d0, undefined, null);
+  part('tongue', 'helper-tongue', 'lid', 0xa0484a, undefined, null);
+  // ── lashes
   // ── the top: tights from the hips up, sleeves by length
   const t = s.top;
   const long = t.kind !== 'tee' && t.kind !== 'tank' && t.kind !== 'armor';
@@ -669,5 +680,11 @@ export function buildMH(d: MHData, s: HumanSpec): MHBuilt {
     parts.push({ name: 'eyes', mat: 'eye', color: s.eyeColor, position: new Float32Array(pos), normal: nrm, ao: new Float32Array(n).fill(1), index: new Uint32Array(idx), skinIndex: sI, skinWeight: sW, eyeLocal: new Float32Array(loc), uv: uvE });
     tris += idx.length / 3;
   }
-  return { parts, body, angles: { shAb, elBend, hipAb }, eyes, eyeR: eyeR * 0.55, ms: performance.now() - t0, tris };
+  // the jaw's hinge, carried by the head's frame like any head vertex
+  let jaw: V3 | undefined;
+  if (d.meta.joints.jaw) {
+    const q = mj('jaw'), e = T[3];
+    jaw = [e[0] * q[0] + e[4] * q[1] + e[8] * q[2] + e[12], e[1] * q[0] + e[5] * q[1] + e[9] * q[2] + e[13], e[2] * q[0] + e[6] * q[1] + e[10] * q[2] + e[14]];
+  }
+  return { parts, body, angles: { shAb, elBend, hipAb }, eyes, eyeR: eyeR * 0.55, ms: performance.now() - t0, tris, jaw };
 }
