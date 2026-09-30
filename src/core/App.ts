@@ -724,10 +724,13 @@ export class App {
         c = mix(c, uG, step(h, -0.05));
         gl_FragColor = vec4(c, 1.0); }`,
     });
-    envScene.add(new THREE.Mesh(new THREE.SphereGeometry(10, 32, 16), m));
+    const ball = new THREE.SphereGeometry(10, 32, 16);
+    envScene.add(new THREE.Mesh(ball, m));
     const pmrem = new THREE.PMREMGenerator(this.renderer.renderer);
     const rt = pmrem.fromScene(envScene, 0.02);
     pmrem.dispose();
+    ball.dispose(); // (the RPG makes a new one as the sky changes: the scratch sky mustn't pile up)
+    m.dispose();
     return rt.texture;
   }
 

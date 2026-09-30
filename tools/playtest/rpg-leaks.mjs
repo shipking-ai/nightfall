@@ -18,17 +18,23 @@ const ok = await page.evaluate(async () => {
   tex ??= nf.scene.environment;
   const mod = { BufferGeometry: geo && base(geo, 'BufferGeometry'), Texture: tex && base(tex, 'Texture') };
   if (!mod.BufferGeometry || !mod.Texture) return false;
+  // held weakly: what the game itself dropped is garbage, not a leak (a GPU object it forgot to dispose is still
+  // kept alive by three.js's renderer bookkeeping, so it stays in here)
   const live = (window.__live = new Map());
+  const reg = new FinalizationRegistry((k) => live.delete(k));
   const where = () => new Error().stack.split('\n').slice(2, 12).map((s) => s.trim().replace(/https?:\/\/[^/]+\//, '').replace(/\?[^:)]*/g, '')).filter((s) => !/three\.module|node_modules|deps\//.test(s)).slice(0, 3).join(' < ');
   for (const [Cls, kind] of [[mod.BufferGeometry, 'geometry'], [mod.Texture, 'texture']]) {
     const proto = Cls.prototype;
     const dispose = proto.dispose;
-    proto.dispose = function () { live.delete(this); return dispose.call(this); };
+    proto.dispose = function () { if (this.__key) live.delete(this.__key); return dispose.call(this); };
     // clone/copy and constructors all end in the constructor: hook uuid assignment via a defineProperty on the prototype
     Object.defineProperty(proto, 'uuid', {
       configurable: true,
       get() { return this.__uuid; },
-      set(v) { this.__uuid = v; if (!live.has(this)) live.set(this, { kind, at: where() }); },
+      set(v) {
+        this.__uuid = v;
+        if (!this.__key) { this.__key = {}; const ref = new WeakRef(this); live.set(this.__key, { ref, kind, at: where() }); reg.register(this, this.__key); }
+      },
     });
   }
   return true;
@@ -63,7 +69,8 @@ await page.evaluate(async (MINUTES) => {
   }
   nf.noRender = false;
 }, MINUTES);
-const report = await page.evaluate(() => {
+const report = await page.evaluate(async () => {
+  for (let i = 0; i < 3; i++) { window.gc?.(); await new Promise((r) => setTimeout(r, 50)); }
   const nf = window.nf, live = window.__live;
   // what's still in use: geometries and textures reachable from the scene (and the scene's environment)
   const used = new Set();
@@ -74,8 +81,9 @@ const report = await page.evaluate(() => {
   });
   if (nf.scene.environment) used.add(nf.scene.environment);
   const groups = new Map();
-  for (const [obj, v] of live) {
-    if (used.has(obj)) continue;
+  for (const [, v] of live) {
+    const obj = v.ref.deref();
+    if (!obj || used.has(obj)) continue;
     const key = `${v.kind}  ${v.at}`;
     groups.set(key, (groups.get(key) ?? 0) + 1);
   }

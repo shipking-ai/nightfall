@@ -281,12 +281,14 @@ export function vehicleMesh(kind: VehicleKind, mats: Materials): { mesh: THREE.G
   const by = new Map<THREE.Material, THREE.BufferGeometry[]>();
   for (const [m, geo] of parts) {
     const gg = geo.index ? geo.toNonIndexed() : geo;
+    if (gg !== geo) geo.dispose();
     for (const a of Object.keys(gg.attributes)) if (!['position', 'normal'].includes(a)) gg.deleteAttribute(a);
     if (!by.has(m)) by.set(m, []);
     by.get(m)!.push(gg);
   }
   for (const [m, list] of by) {
     const merged = mergeGeometries(list, false);
+    for (const x of list) x.dispose(); // the per-part copies were only scratch for the merge
     if (!merged) continue;
     const mesh = new THREE.Mesh(merged, m);
     mesh.castShadow = m === paint;
