@@ -517,7 +517,8 @@ export class Rpg {
         t: man.t,
         what: man.w.r.name,
         apply: (dmg) => {
-          const killed = this.populace.damage(man.w, dmg * (man.head ? 2.2 : 1), this.host.player.pos);
+          const at = o.clone().addScaledVector(dir, man.t + 0.05);
+          const killed = this.populace.damage(man.w, dmg * (man.head ? 2.2 : 1), this.host.player.pos, at);
           this.life.violence(man.w, killed);
           return killed;
         },

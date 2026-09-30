@@ -444,9 +444,17 @@ export class Populace {
   }
 
   /** Hurt someone; true if they died. They flinch and run, or fall where they stand. */
-  damage(w: Walker, dmg: number, from: THREE.Vector3): boolean {
+  /** Everyone lying where they fell (for their pools of blood). */
+  eachDead(fn: (w: Walker) => void) {
+    for (const w of this.walkers.values()) if (w.dead >= 0) fn(w);
+  }
+
+  damage(w: Walker, dmg: number, from: THREE.Vector3, at?: THREE.Vector3): boolean {
     if (w.dead >= 0) return false;
     w.hp -= dmg;
+    // the blood shows where it hit
+    w.human.wound(at ?? this.tmp2.set(w.pos.x, w.pos.y + 1.2 * w.human.body.height, w.pos.z), dmg / 50);
+    feel(w.m.face, 'pain', 1, 2);
     w.talk = 0;
     if (w.hp <= 0) {
       w.dead = 0;

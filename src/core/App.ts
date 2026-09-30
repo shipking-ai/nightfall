@@ -18,6 +18,7 @@ import { Crowd } from '../entities/Crowd';
 import { Traffic, type Car as TrafficCar } from '../entities/Traffic';
 import { Vehicles, exitBeside, type DrivableCar } from '../entities/Vehicles';
 import { wrap } from '../entities/Player';
+import { bloody } from '../vehicles/model';
 import { Player } from '../entities/Player';
 import { FollowCamera } from '../camera/FollowCamera';
 import { CinematicCamera, SHOTS } from '../camera/CinematicCamera';
@@ -166,6 +167,10 @@ export class App {
   private combat = new Combat();
   private tracers = new Tracers();
   private blood = new Blood();
+  /** a knife or a blade in hand (a cut, not a blow) */
+  private bladeInHand() {
+    return this.rpg.active && /knife|machete|axe|blade/i.test(this.rpg.life.weapon().name);
+  }
   private dying = false;
   /** seconds left inside (0: the gate is open) */
   private sentence = 0;
@@ -621,7 +626,7 @@ export class App {
         if (this.dying || this.combat.god) return;
         this.hud.hurt(Math.min(0.6, dmg / 30));
         this.input.rumble('bump', Math.min(1, dmg / 20));
-        this.blood.spray(this.tmpB.set(this.player.pos.x, this.player.pos.y + 1, this.player.pos.z), this.tmpDir.set(Math.random() - 0.5, 0.4, Math.random() - 0.5).normalize(), 0.5);
+        this.blood.spray(this.tmpB.set(this.player.pos.x, this.player.pos.y + 1, this.player.pos.z), this.tmpDir.set(Math.random() - 0.5, 0.4, Math.random() - 0.5).normalize(), 0.5, 'bite');
         if (this.combat.hurt(dmg)) this.die(by);
       },
       spawn: SPAWN,
@@ -632,6 +637,9 @@ export class App {
     this.quests.onEvent = (e) => this.onQuest(e);
     this.scene.add(this.questMarker.group);
     this.scene.add(this.tracers.group, this.blood.group);
+    // blood lands on whatever ground is here, and on the walls behind a wound
+    this.blood.ground = (x, z, y) => this.world.collision.groundAt(x, z, y, 1.2, 0.02);
+    this.blood.wall = (o, d, max) => this.world.collision.raycast(o, d, max);
     this.crowd.onCopShot = (from, hit) => this.copShot(from, hit);
     this.crowd.spawnAt = (out) => this.policeSpawn(out);
     this.crowd.onCrookShot = (from, hit) => this.copShot(from, hit, 'Someone on the street');
@@ -692,7 +700,13 @@ export class App {
     this.discovery.on('district', (d) => {
       if (d && this.state === 'playing') this.hud.location(d.name, d.code);
     });
-    this.player.onStep = (k) => this.audio.footstep(k);
+    let leftFoot = false;
+    this.player.onStep = (k) => {
+      this.audio.footstep(k);
+      // step in blood and the next few prints show it
+      leftFoot = !leftFoot;
+      this.blood.step('me', this.player.pos.x, this.player.pos.y, this.player.pos.z, this.player.facing, leftFoot);
+    };
     this.player.onLand = (v) => this.audio.land(v);
 
     this.applySettings();
@@ -1677,12 +1691,12 @@ export class App {
       this.audio.punch(!!(npc || rem || wild));
       if (wild) {
         wild.apply(this.rpg.life.weapon().dmg);
-        this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, wild.t), dir, 0.4);
+        this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, wild.t), dir, 0.5, this.bladeInHand() ? 'cut' : 'blunt');
         return;
       }
       if (npc) {
         this.hitNpc(npc.i, w.dmg);
-        this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, npc.t), dir, 0.4);
+        this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, npc.t), dir, 0.5, this.bladeInHand() ? 'cut' : 'blunt');
         this.mp.shot({ x: o.x, y: o.y, z: o.z, p: o.x, q: o.y, r: o.z, n: npc.i, a: '', m: w.dmg });
       } else if (rem) this.mp.shot({ x: o.x, y: o.y, z: o.z, p: o.x, q: o.y, r: o.z, n: -1, a: rem.id, m: w.dmg });
       return;
@@ -1724,7 +1738,7 @@ export class App {
       this.blood.spray(end, dir, 0.8);
     }
     if (npc) {
-      this.hitNpc(npc.i, w.dmg);
+      this.hitNpc(npc.i, w.dmg, end.y);
       this.blood.spray(end, dir);
     } else if (rem) this.blood.spray(end, dir);
     this.mp.shot({ x: muzzle.x, y: muzzle.y, z: muzzle.z, p: end.x, q: end.y, r: end.z, n: npc ? npc.i : -1, a: rem ? rem.id : '', m: npc || rem ? w.dmg : 0 });
@@ -1738,19 +1752,19 @@ export class App {
     return false;
   }
 
-  private hitNpc(i: number, dmg: number) {
+  private hitNpc(i: number, dmg: number, hitY?: number) {
     const n = this.crowd.npcs[i];
     if (this.crowd.isCrook(i)) {
       // criminals: fair game. Stopping one even takes a little heat off you.
       this.crowd.provokeCrook(i);
-      if (this.crowd.damage(i, dmg, this.player.pos)) {
+      if (this.crowd.damage(i, dmg, this.player.pos, hitY)) {
         this.combat.heat = Math.max(0, this.combat.heat - 1);
         this.hud.toast('Criminal stopped');
       }
       return;
     }
     const cop = i >= this.crowd.citizens;
-    const killed = this.crowd.damage(i, dmg, this.player.pos);
+    const killed = this.crowd.damage(i, dmg, this.player.pos, hitY);
     this.combat.crime(killed ? (cop ? 2 : 1.2) : cop ? 1 : 0.6);
     if (killed && n) this.hud.bark(cop ? 'Officer down!' : 'Oh my god\u2014', undefined);
   }
@@ -1769,7 +1783,10 @@ export class App {
         this.crowd.knockDown(i, pos.x, pos.z);
       }
       this.audio.crash(0.5);
-      this.blood.spray(this.tmpB.set(n.pos.x, n.pos.y + 1, n.pos.z), this.tmpDir.set(n.pos.x - pos.x, 0.3, n.pos.z - pos.z).normalize(), 1.5);
+      this.blood.spray(this.tmpB.set(n.pos.x, n.pos.y + 1, n.pos.z), this.tmpDir.set(n.pos.x - pos.x, 0.3, n.pos.z - pos.z).normalize(), 1.5, 'vehicle');
+      // and on the car that did it
+      const drv = this.vehicle?.kind === 'drive' ? this.vehicle.car : null;
+      if (drv?.model) bloody(drv.model, n.pos.x - drv.pos.x, n.pos.z - drv.pos.z, drv.yaw, lethal ? 1 : 0.5);
       this.mp.shot({ x: pos.x, y: 0.5, z: pos.z, p: n.pos.x, q: 0.5, r: n.pos.z, n: i, a: '', m: 60 });
     });
   }
@@ -2600,7 +2617,12 @@ export class App {
     );
     this.voice?.update(dt, (id) => this.remotes.positionOf(id), this.muted, (id, on) => this.remotes.talking(id, on));
     this.blood.enabled = this.settings.data.blood !== false;
+    this.blood.eye.copy(this.camera.position);
+    this.blood.wet = this.mode === 'rpg' ? this.rpg.atmos.now.rain : Math.min(1, this.weather.intensity * 1.2);
+    if (this.rpg.active) this.rpg.populace.eachDead((w) => this.blood.pool(w.pos, w));
     for (const n of this.crowd.npcs) {
+      // the wounded who are still on their feet leave a trail
+      if (n.dead < 0 && n.visible && n.hp < 70 && n.v > 0.3) this.blood.drip(n, n.pos.x, n.pos.y, n.pos.z, (70 - n.hp) / 70, dt);
       if (n.dead >= 0 && n.visible) this.blood.pool(n.pos, n);
       else if (n.dead < 0) this.blood.clear(n);
     }

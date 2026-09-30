@@ -57,6 +57,8 @@ export interface Wear {
   wet: { value: number };
   time: { value: number };
   glassCrack: { value: number };
+  /** blood on the bodywork: car-local position and amount (up to 4) */
+  blood: THREE.Vector4[];
 }
 
 const DENTS = 8;
@@ -70,6 +72,7 @@ function patchVehicle(m: THREE.Material, wear: Wear, kind: 'paint' | 'glass' | '
     sh.uniforms.uWetV = wear.wet;
     sh.uniforms.uTimeV = wear.time;
     sh.uniforms.uCrack = wear.glassCrack;
+    sh.uniforms.uBlood = { value: wear.blood };
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>\nuniform vec4 uDents[${DENTS}];\nvarying vec3 vLoc;\nvarying float vDent;`)
       .replace(
@@ -89,7 +92,7 @@ for (int i = 0; i < ${DENTS}; i++) {
 vLoc = transformed;`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nuniform float uDirt;\nuniform float uWetV;\nuniform float uTimeV;\nuniform float uCrack;\nvarying vec3 vLoc;\nvarying float vDent;\nfloat vh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f); return mix(mix(vh(i), vh(i+vec2(1,0)), f.x), mix(vh(i+vec2(0,1)), vh(i+vec2(1,1)), f.x), f.y); }`)
+      .replace('#include <common>', `#include <common>\nuniform vec4 uBlood[4];\nuniform float uDirt;\nuniform float uWetV;\nuniform float uTimeV;\nuniform float uCrack;\nvarying vec3 vLoc;\nvarying float vDent;\nfloat vh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f); return mix(mix(vh(i), vh(i+vec2(1,0)), f.x), mix(vh(i+vec2(0,1)), vh(i+vec2(1,1)), f.x), f.y); }`)
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
@@ -106,6 +109,16 @@ vLoc = transformed;`,
   float scratch = smoothstep(0.62, 0.9, sc) * vDent;
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.55, 0.55, 0.56), scratch * 0.7);
   diffuseColor.rgb *= 1.0 - vDent * 0.25;`}
+  // blood where someone was hit: spattered, thickest at the point, run down by gravity
+  for (int i = 0; i < 4; i++) {
+    vec4 b = uBlood[i];
+    if (b.w <= 0.0) continue;
+    vec3 dd = vLoc - b.xyz;
+    dd.y = dd.y > 0.0 ? dd.y * 1.6 : dd.y * 0.55;
+    float bk = smoothstep(0.55, 0.0, length(dd)) * b.w;
+    bk *= smoothstep(0.35, 0.75, vn(vLoc.xz * 22.0 + vLoc.y * 17.0 + float(i) * 3.1) + bk * 0.5);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22, 0.01, 0.01), clamp(bk, 0.0, 0.9) * (1.0 - uWetV * 0.5));
+  }
   // road dirt: thickest low down and behind the wheels
   float low = 1.0 - smoothstep(0.15, 0.9, vLoc.y);
   float grime = uDirt * (low * 0.85 + 0.15) * (0.6 + 0.4 * vn(vLoc.xz * 6.0 + vLoc.y * 3.0));
@@ -538,7 +551,7 @@ function classGeo(spec: VehicleSpec): ClassGeo {
 
 export function buildVehicle(spec: VehicleSpec, color: number): VehicleModel {
   const cg = classGeo(spec);
-  const wear: Wear = { dents: Array.from({ length: DENTS }, () => new THREE.Vector4(0, 0, 0, 0)), dirt: { value: 0.05 }, wet: { value: 0 }, time: { value: 0 }, glassCrack: { value: 0 } };
+  const wear: Wear = { dents: Array.from({ length: DENTS }, () => new THREE.Vector4(0, 0, 0, 0)), dirt: { value: 0.05 }, wet: { value: 0 }, time: { value: 0 }, glassCrack: { value: 0 }, blood: Array.from({ length: 4 }, () => new THREE.Vector4(0, 0, 0, 0)) };
   const paint = new THREE.MeshPhysicalMaterial({ color, roughness: 0.32, metalness: 0.45, clearcoat: 1, clearcoatRoughness: 0.06 });
   const glass = new THREE.MeshPhysicalMaterial({ color: 0x0c1014, roughness: 0.04, metalness: 0.1, transparent: true, opacity: 0.62, clearcoat: 1, clearcoatRoughness: 0.02, side: THREE.DoubleSide, depthWrite: false });
   const trim = new THREE.MeshStandardMaterial({ color: 0x151618, roughness: 0.6, metalness: 0.1 });
@@ -727,4 +740,16 @@ export function staticVehicleParts(spec: VehicleSpec) {
   out.push({ kind: 'rubber', geo: merge(tires) }, { kind: 'rim', geo: merge(rims) });
   STATIC.set(spec.cls, out);
   return out;
+}
+
+/**
+ * Someone hit by this car: blood on the bodywork where they struck it
+ * (`dx, dz` world offset from the car to them, `yaw` the car's heading).
+ * Rain washes it off slowly (the wear shader thins it when wet).
+ */
+export function bloody(v: VehicleModel, dx: number, dz: number, yaw: number, amount: number) {
+  const fx = Math.sin(yaw), fz = Math.cos(yaw);
+  const lz = dx * fx + dz * fz, lx = dx * fz - dz * fx;
+  const slot = v.wear.blood.find((b) => b.w <= 0) ?? v.wear.blood.reduce((a, b) => (b.w < a.w ? b : a));
+  slot.set(lx * 0.6, 0.75, lz * 0.9, Math.min(1, amount));
 }

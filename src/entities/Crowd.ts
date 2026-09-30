@@ -541,10 +541,13 @@ export class Crowd {
   }
 
   /** Hurt someone. Returns true if that put them down. */
-  damage(i: number, dmg: number, from: THREE.Vector3): boolean {
+  damage(i: number, dmg: number, from: THREE.Vector3, hitY?: number): boolean {
     const n = this.npcs[i];
     if (!n || n.dead >= 0) return false;
     n.hp -= dmg;
+    // the wound shows on them: that part of their clothes (or skin) soaks dark
+    const at = hitY != null ? (hitY - n.pos.y) / (1.76 * n.body.height) : 0.62 + Math.random() * 0.15;
+    this.batch.stain(i, at, Math.min(1, dmg / 40));
     this.scatter(n.pos.x, n.pos.z, 26, from);
     const dx = n.pos.x - from.x, dz = n.pos.z - from.z, d = Math.hypot(dx, dz) || 1;
     // where the hit came from, in their own frame: front, back, left, right

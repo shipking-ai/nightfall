@@ -4,7 +4,7 @@ import { bindPose, jointMatrices, BIND_BONES } from './bind';
 import { headCentre, type HumanSpec, type Joints } from './anatomy';
 import type { BuiltHuman, BuiltPart } from './build';
 import type { MHBuilt } from './mh';
-import { skinMaterial, fabricMaterial, hairMaterial, hairCardMaterial, eyeMaterial, mouthMaterial, faceUniforms, type FaceU } from './materials';
+import { skinMaterial, fabricMaterial, hairMaterial, hairCardMaterial, eyeMaterial, mouthMaterial, faceUniforms, woundUniforms, type FaceU } from './materials';
 import { LAST } from '../../entities/Humanoid';
 import { C } from '../../anim/pose';
 
@@ -96,6 +96,9 @@ export class RealHuman {
   onReady: ((h: RealHuman) => void) | null = null;
   /** the face's numbers, shared by this person's skin, eyes and mouth */
   private face: FaceU | null = null;
+  /** blood from wounds, per person (bind space), and how far each should spread */
+  private wounds = woundUniforms();
+  private woundWant = [0, 0, 0, 0];
 
   constructor(public spec: HumanSpec, body: Body, opts: { hero?: boolean; lods?: number[]; mh?: boolean } = {}) {
     this.hero = !!opts.hero;
@@ -182,11 +185,11 @@ export class RealHuman {
         // brows: the hair colour, darker; thinner with age (MakeHuman bodies know where their eyes are)
         const bc = new THREE.Color(s.hairColor).multiplyScalar(s.hairColor > 0x808080 ? 0.75 : 0.85).getHex();
         const brows = h.parts.some((q: BuiltPart) => q.mat === 'eye') ? { eyes: h.eyes as [number, number, number][], r: h.eyeR, color: bc, thick: (s.sex > 0.5 ? 0.8 : 0.35) * (1 - s.age * 0.4) } : undefined;
-        mat = skinMaterial(p.color, this.headC, stubble, lip, brows, face ?? undefined);
+        mat = skinMaterial(p.color, this.headC, stubble, lip, brows, face ?? undefined, lod < 2 ? this.wounds : undefined);
       }
       else if (p.mat === 'hairCard') mat = hairCardMaterial(p.color);
       else if (p.mat === 'hair') mat = hairMaterial(p.color, this.headC.clone().add(new THREE.Vector3(0, 0.1, -0.02)), p.name === 'hairCap');
-      else mat = fabricMaterial(p.color, p.fabric ?? 'cotton', p.mat);
+      else mat = fabricMaterial(p.color, p.fabric ?? 'cotton', p.mat, lod < 2 ? this.wounds : undefined);
       const mesh = new THREE.SkinnedMesh(geo, mat);
       mesh.bindMode = THREE.DetachedBindMode;
       mesh.bind(skeleton, new THREE.Matrix4());
@@ -226,8 +229,34 @@ export class RealHuman {
   }
 
   /** Right after the rig was solved for this person: bones follow its joints. Picks the detail for the distance. */
+  /**
+   * A wound at a world point: mapped into the body's own (bind) space through
+   * the nearest bone, so it stays where it was hit however they move, and
+   * spreads over the next seconds.
+   */
+  wound(p: THREE.Vector3, amount: number) {
+    const sk = this.skeletons[0];
+    if (!sk) return;
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < this.bones.length; i++) {
+      _v.setFromMatrixPosition(this.bones[i].matrixWorld);
+      const d = _v.distanceToSquared(p);
+      if (d < bd) (bd = d), (best = i);
+    }
+    _m.copy(this.bones[best].matrixWorld).multiply(sk.boneInverses[best]).invert();
+    _v.copy(p).applyMatrix4(_m);
+    const w = this.wounds.uWound.value;
+    let slot = w.findIndex((x) => x.w <= 0);
+    if (slot < 0) slot = this.woundWant.indexOf(Math.min(...this.woundWant));
+    w[slot].set(_v.x, _v.y, _v.z, 0.05);
+    this.woundWant[slot] = Math.min(1, 0.4 + amount);
+  }
+
   pose(camDist: number) {
     jointMatrices(this.mats);
+    // wounds spread (fast at first) toward how bad they are
+    const wv = this.wounds.uWound.value;
+    for (let i = 0; i < 4; i++) if (wv[i].w > 0 && wv[i].w < this.woundWant[i]) wv[i].w = Math.min(this.woundWant[i], wv[i].w + 0.004 * (1.2 - wv[i].w / this.woundWant[i]));
     // the face, from the pose just solved (anim/face.ts), when near enough to read it
     const f = this.face;
     if (f && camDist < 14) {
@@ -265,3 +294,6 @@ export class RealHuman {
     this.group.removeFromParent();
   }
 }
+
+const _v = new THREE.Vector3();
+const _m = new THREE.Matrix4();

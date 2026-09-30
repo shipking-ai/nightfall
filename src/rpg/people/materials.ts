@@ -166,13 +166,39 @@ function faceVertex(sh: THREE.WebGLProgramParametersWithUniforms, u: FaceU) {
 }`);
 }
 
+/** Wounds on one person: bind-space position and how far the blood has spread (0..1), up to 4. */
+export interface WoundU {
+  uWound: { value: THREE.Vector4[] };
+}
+export const woundUniforms = (): WoundU => ({ uWound: { value: Array.from({ length: 4 }, () => new THREE.Vector4(0, 0, 0, 0)) } });
+/** Blood soaking out from each wound (through cloth, over skin), running down more than up. */
+function woundPass(sh: THREE.WebGLProgramParametersWithUniforms, u: WoundU) {
+  Object.assign(sh.uniforms, u);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', `#include <common>\nuniform vec4 uWound[4];`)
+    .replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+for (int i = 0; i < 4; i++) {
+  vec4 w = uWound[i];
+  if (w.w <= 0.0) continue;
+  vec3 d = vBind - w.xyz;
+  d.y = d.y > 0.0 ? d.y * 2.4 : d.y * 0.55;
+  float r = 0.02 + 0.07 * w.w;
+  float k = smoothstep(r, r * 0.25, length(d));
+  k *= smoothstep(0.25, 0.55, n3(vBind * 70.0) * 0.6 + k * 0.7);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.012, 0.01), clamp(k, 0.0, 0.88));
+}`,
+    );
+}
+
 function aoPass(frag: string) {
   // occlusion darkens the ambient and a little of the direct light (it's cavities, not shadow)
   return frag.replace('#include <aomap_fragment>', `#include <aomap_fragment>\n reflectedLight.indirectDiffuse *= vAO;\n reflectedLight.indirectSpecular *= mix(0.5, 1.0, vAO);\n reflectedLight.directDiffuse *= mix(0.7, 1.0, vAO);`);
 }
 
 /** Skin: `face` = the head centre in bind space (for the red zones, the stubble, the lips). */
-export function skinMaterial(color: number, face: THREE.Vector3, stubble: number, lip: number, brows?: { eyes: [number, number, number][]; r: number; color: number; thick: number }, faceU?: FaceU): THREE.MeshPhysicalMaterial {
+export function skinMaterial(color: number, face: THREE.Vector3, stubble: number, lip: number, brows?: { eyes: [number, number, number][]; r: number; color: number; thick: number }, faceU?: FaceU, wounds?: WoundU): THREE.MeshPhysicalMaterial {
   // a dimmer specular than the default 4% (skin's is broad and soft), and a faint sheen of fine hair
   const m = new THREE.MeshPhysicalMaterial({ color, roughness: 0.6, metalness: 0, specularIntensity: 0.55, sheen: 0.18, sheenRoughness: 0.8, sheenColor: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.5) });
   m.defines = { NF_SKIN: '', USE_UV: '' };
@@ -180,9 +206,11 @@ export function skinMaterial(color: number, face: THREE.Vector3, stubble: number
   m.normalMap = normalTex('pores', 48);
   m.normalScale.set(0.28, 0.28);
   if (faceU) m.defines.NF_FACE = '';
+  if (wounds) m.defines.NF_WOUND = '';
   m.onBeforeCompile = (sh) => {
     common(sh);
     if (faceU) faceVertex(sh, faceU);
+    if (wounds) woundPass(sh, wounds);
     sh.uniforms.uRegions = { value: peopleTextures().regions };
     const e = brows?.eyes ?? [[0, -9, 0], [0, -9, 0]];
     sh.uniforms.uEyeA = { value: new THREE.Vector3(...e[0]) };
@@ -279,7 +307,7 @@ const FABRIC: Record<Fabric, { rough: number; sheen: number; scale: number; bump
 };
 
 /** Cloth (and leather, rubber soles): the weave in the normal, sheen at the edges, wear at the seams. */
-export function fabricMaterial(color: number, fabric: Fabric, kind: MatKind): THREE.MeshPhysicalMaterial {
+export function fabricMaterial(color: number, fabric: Fabric, kind: MatKind, wounds?: WoundU): THREE.MeshPhysicalMaterial {
   const f = FABRIC[fabric];
   const m = new THREE.MeshPhysicalMaterial({
     color,
@@ -293,8 +321,10 @@ export function fabricMaterial(color: number, fabric: Fabric, kind: MatKind): TH
   const [nm, rep, str] = FABRIC_NORMAL[fabric];
   m.normalMap = normalTex(nm, rep);
   m.normalScale.set(str, str);
+  if (wounds) m.defines = { ...(m.defines ?? {}), NF_WOUND: '' };
   m.onBeforeCompile = (sh) => {
     common(sh);
+    if (wounds) woundPass(sh, wounds);
     sh.fragmentShader = sh.fragmentShader
       .replace(
         '#include <color_fragment>',
