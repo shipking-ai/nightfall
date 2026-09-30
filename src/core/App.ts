@@ -17,6 +17,7 @@ import { LightFX } from '../fx/LightFX';
 import { Crowd } from '../entities/Crowd';
 import { Traffic, type Car as TrafficCar } from '../entities/Traffic';
 import { Vehicles, exitBeside, type DrivableCar } from '../entities/Vehicles';
+import { wrap } from '../entities/Player';
 import { Player } from '../entities/Player';
 import { FollowCamera } from '../camera/FollowCamera';
 import { CinematicCamera, SHOTS } from '../camera/CinematicCamera';
@@ -114,6 +115,8 @@ export class App {
   /** what the player is sitting in, if anything */
   private vehicle: { kind: 'drive'; car: DrivableCar } | { kind: 'ride'; car: TrafficCar } | null = null;
   private driveVoice: { setPosition(p: THREE.Vector3, speed: number): void; mute(): void } | undefined;
+  /** the engine of the car you're driving (made from its specs) */
+  private engineVoice: ReturnType<AudioEngine['engineVoice']>;
   private horn: { on(p?: THREE.Vector3): void; off(): void } | undefined;
   private trafficHorns: { on(p?: THREE.Vector3): void; off(): void }[] = [];
   private honking = false;
@@ -218,7 +221,9 @@ export class App {
   private emoteNo = 0;
   private emoteSeq = 0;
   /** getting into or out of a vehicle: a short animation at the door first */
-  private boarding: { t: number; go: () => void } | null = null;
+  private boarding: { t: number; go: () => void; tick?: (dt: number) => void } | null = null;
+  /** a car door to swing shut in a moment (after getting in or out) */
+  private doorClose: { car: DrivableCar; t: number } | null = null;
   private controlSeen = new Map<ControlContext, number>();
   /** RPG: the gun in your pocket, not in your hand */
   private rpgHolstered = true;
@@ -1443,10 +1448,40 @@ export class App {
 
   private enterVehicle(v: NonNullable<App['vehicle']>) {
     if (this.boarding) return;
-    // turn to the door, duck in; then the seat
-    const cp = v.kind === 'drive' ? v.car.pos : v.car.group.position;
-    this.player.facing = Math.atan2(cp.x - this.player.pos.x, cp.z - this.player.pos.z);
     this.player.stopEmote(0.1);
+    if (v.kind === 'drive') {
+      // step to the driver's door, look at the car, open it, duck in, sit, pull it shut
+      const car = v.car;
+      const spot = this.vehicles.doorSpot(car, new THREE.Vector3());
+      const from = this.player.pos.clone();
+      const face = Math.atan2(Math.cos(car.yaw), -Math.sin(car.yaw)); // towards the car's side
+      const walk = Math.min(0.6, from.distanceTo(spot) / 2.2);
+      let el = 0, opened = false, ducked = false;
+      const total = walk + 1.0;
+      this.boarding = {
+        t: total,
+        go: () => this.boardNow(v),
+        tick: (dt) => {
+          el += dt;
+          const k = Math.min(1, el / Math.max(0.01, walk));
+          this.player.pos.lerpVectors(from, spot, k * k * (3 - 2 * k));
+          this.player.facing += wrap(face - this.player.facing) * Math.min(1, dt * 8);
+          if (!opened && el > walk * 0.7) {
+            opened = true;
+            this.vehicles.door(car, 0, true);
+            this.audio.footstep(0.5, false);
+          }
+          if (!ducked && el > walk + 0.3) {
+            ducked = true;
+            this.player.act('act.enterCar', { hold: true });
+          }
+        },
+      };
+      return;
+    }
+    // a taxi's back seat: turn to it and get in
+    const cp = v.car.group.position;
+    this.player.facing = Math.atan2(cp.x - this.player.pos.x, cp.z - this.player.pos.z);
     this.player.act('act.enterCar', { hold: true });
     this.boarding = { t: 0.55, go: () => this.boardNow(v) };
   }
@@ -1457,6 +1492,7 @@ export class App {
     if (v.kind === 'drive') {
       v.car.occupied = true;
       v.car.leaving = false;
+      this.doorClose = { car: v.car, t: 0.45 };
     } else {
       this.traffic.board(v.car, this.mp.id);
       if (this.mp.shared && !this.mp.isHost) this.mp.taxi('board');
@@ -2252,7 +2288,10 @@ export class App {
       v.car.leaving = false;
       this.mp.park(this.vehicles.cars.indexOf(v.car), v.car.pos.x, v.car.pos.z, v.car.yaw);
       this.vehicles.exitPoint(v.car, this.world.collision, this.tmpV);
-      this.player.place(this.tmpV.x, this.tmpV.y, this.tmpV.z, v.car.yaw);
+      // the door opens, you swing out and stand; it shuts behind you
+      this.vehicles.door(v.car, 0, true);
+      this.doorClose = { car: v.car, t: 1.1 };
+      this.player.place(this.tmpV.x, this.tmpV.y, this.tmpV.z, Math.atan2(-Math.cos(v.car.yaw), Math.sin(v.car.yaw)));
     } else {
       const remote = this.mp.shared && !this.mp.isHost;
       if (!now && !v.car.taxi?.arrived) {
@@ -2268,6 +2307,7 @@ export class App {
     this.vehicle = null;
     this.player.hidden = false;
     this.player.seat = null;
+    this.follow.endCar();
     this.player.act('act.exitCar', { hold: true });
     this.driveVoice?.mute();
     this.horn?.off();
@@ -2369,7 +2409,13 @@ export class App {
       } else if (this.photoOn) {
         if (this.photo.update(dt, this.input, this.camera, this.player.pos, this.world.collision) === 'exit') this.photoMode(false);
       } else if (this.boat) this.follow.updateVehicle(dt, this.boat.group.position, this.boat.yaw, this.boat.v, null);
-      else if (v?.kind === 'drive') this.follow.updateVehicle(dt, v.car.pos, v.car.yaw, v.car.v, this.world.collision, this.vehicles.impact);
+      else if (v?.kind === 'drive') {
+        const c = v.car, d = c.dyn;
+        const slip = d.wheels.reduce((a, w) => Math.max(a, w.slip), 0);
+        this.follow.updateCar(dt, { pos: c.pos, yaw: c.yaw, speed: c.v, body: c.model?.body.matrixWorld ?? c.group.matrixWorld, length: c.spec.shape.length, height: c.spec.shape.height, seat: c.seat ?? c.spec.seat, ax: d.ax, ay: d.ay, slip }, this.world.collision, this.vehicles.impact);
+        // from the driver's seat, you don't see your own head
+        this.player.hidden = this.follow.carView === 3;
+      }
       else if (v?.kind === 'ride') this.follow.updateVehicle(dt, v.car.group.position, v.car.yaw, v.car.v, this.world.collision);
       else this.follow.update(dt, this.player, this.world.collision, t);
       if (this.introT < 1 && !v && !this.photoOn && !this.fight.active && !this.warzone.active) {
@@ -2442,7 +2488,8 @@ export class App {
         this.player.facing = veh.car.yaw;
         veh.car.group.updateMatrixWorld();
         const sd = veh.car.seat ?? SEATS.driver;
-        this.seatM.copy(veh.car.group.matrixWorld).multiply(this.tmpM.makeTranslation(sd.x, sd.y, sd.z));
+        // sat in the body, so you lean and bob with it on its springs
+        this.seatM.copy(veh.car.model?.body.matrixWorld ?? veh.car.group.matrixWorld).multiply(this.tmpM.makeTranslation(sd.x, sd.y, sd.z));
         this.player.seat = { m: this.seatM, drive: true, steer: veh.car.steer / 0.62 };
         this.player.update(dt, null, this.follow.yaw, this.world.collision, []);
         if (veh.car.leaving && Math.abs(veh.car.v) < 0.3) this.leaveVehicle(true);
@@ -2469,6 +2516,7 @@ export class App {
         if (this.player.seat) this.player.seat = null;
         if (!this.fight.active) this.player.update(dt, move && !this.wheel.isOpen && !(this.warzone.active && this.warzone.busy) ? this.input : null, this.follow.yaw, this.world.collision, this.obstacles);
         if (this.boarding) {
+          this.boarding.tick?.(dt);
           this.boarding.t -= dt;
           if (this.boarding.t <= 0) {
             const go = this.boarding.go;
@@ -2477,6 +2525,11 @@ export class App {
           }
         }
       }
+    }
+    if (this.doorClose && (this.doorClose.t -= dt) <= 0) {
+      this.vehicles.door(this.doorClose.car, 0, false);
+      this.audio.crash(0.08);
+      this.doorClose = null;
     }
     this.vehicles.update(dt);
     this.boats.update(dt, (b) => (b === this.boat ? this.boatSteer : 0));
@@ -2518,6 +2571,11 @@ export class App {
     }
     if (this.warzone.active) this.warzone.update(dt, t, playing && !this.overlay);
     this.crowd.rain = this.weather.intensity;
+    // the city's roads: as wet as the rain, and always night (the RPG sets its own)
+    if (this.mode !== 'rpg') {
+      this.vehicles.wet = Math.min(1, this.weather.intensity * 1.3 + 0.2);
+      this.vehicles.dark = true;
+    }
     this.crowd.update(dt, t, playerPos, this.camera);
     this.tracers.update(dt, this.camera);
     if (inWorld) this.outskirts.update(this.player.pos);
@@ -2566,7 +2624,16 @@ export class App {
     this.radio.update(dt, this.radioHost?.pos() ?? null, this.headphones || (!!this.vehicle && this.radioHost?.car === this.vehicle.car), this.camera.position, this.settings.data.master, !!this.overlay);
     this.radio.setAudible(this.audio.enabled);
     const dv = this.vehicle;
-    if (dv && this.driveVoice) this.driveVoice.setPosition(dv.kind === 'drive' ? dv.car.pos : dv.car.group.position, Math.abs(dv.car.v));
+    if (dv?.kind === 'drive') {
+      // your own car: its engine, tyres and wind (the generic voice is for everything else)
+      this.driveVoice?.mute();
+      if (!this.engineVoice && this.audio.enabled) this.engineVoice = this.audio.engineVoice();
+      const c = dv.car, d = c.dyn, vo = c.spec.voice, m = c.spec.mech;
+      this.engineVoice?.set(c.pos, { rpm: d.rpm, idle: m.idle, redline: m.redline, load: d.load, speed: Math.abs(c.v), slip: d.wheels.reduce((a, w) => Math.max(a, w.slip), 0), cyl: vo.cyl, rough: vo.rough, whine: vo.whine, turbo: vo.turbo, diesel: vo.diesel, inside: this.follow.carView >= 2 && this.follow.carView <= 3, damage: c.damage.engine });
+    } else {
+      this.engineVoice?.mute();
+      if (dv && this.driveVoice) this.driveVoice.setPosition(dv.car.group.position, Math.abs(dv.car.v));
+    }
     for (const u of this.world.updaters) u(t, dt);
     if (this.rpg.active) {
       // the wider world keeps its own day
@@ -2604,6 +2671,10 @@ export class App {
         if (this.carScreen.isOpen) this.hud.setPrompt(null);
         if (this.input.pressed('exitVehicle')) this.leaveVehicle();
         if (v.kind === 'drive' && v.car.screen && this.input.pressed('screen')) this.carScreen.open();
+        if (v.kind === 'drive' && this.input.pressed('carCamera')) {
+          this.follow.carView = (this.follow.carView + 1) % FollowCamera.CAR_VIEWS.length;
+          this.hud.toast?.(`Camera: ${FollowCamera.CAR_VIEWS[this.follow.carView]}`);
+        }
         if (this.input.pressed('radioPrev')) this.tuneRadio(-1);
         else if (this.input.pressed('radioNext')) this.tuneRadio(1);
       } else if (this.boat) {

@@ -48,6 +48,7 @@ export const DEFAULT_BINDINGS: Record<Action, Binding> = {
   radioNext: { kbm: ['KeyR'], pad: ['Right'] },
   radioPrev: { kbm: ['Shift+KeyR'], pad: ['Left'] },
   screen: { kbm: ['KeyV'], pad: ['Up'] },
+  carCamera: { kbm: ['KeyC'], pad: ['Down'] },
 
   melee: { kbm: ['KeyV'], pad: ['RS'] },
   scoreboard: { kbm: ['Tab'], pad: ['View'] },

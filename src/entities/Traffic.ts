@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { CAR_ROUTES } from '../world/layout';
-import { carParts, CAR_COLORS, CAR_GLASS, SEATS } from '../world/builders/props';
+import { CAR_COLORS, SEATS } from '../world/builders/props';
+import { SPECS } from '../vehicles/specs';
+import { buildVehicle, setLights, type VehicleModel } from '../vehicles/model';
 import { FigureBatch } from './FigureBatch';
 import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from './Humanoid';
 import { makePerson, weighted } from '../data/people';
@@ -27,6 +29,10 @@ export interface Car {
   taxi?: TaxiState;
   /** per-car tail-lamp material, so the brake lights are this car's alone */
   tailMat: THREE.MeshStandardMaterial;
+  /** the car itself (vehicles/model.ts): wheels to turn, lamps to light */
+  model: VehicleModel;
+  /** last position, for the wheels' roll */
+  lastS: number;
   /** seconds spent stopped behind you (or a car you left in the road) */
   blocked: number;
   honkIn: number;
@@ -106,25 +112,17 @@ export class Traffic {
       const isTaxi = i === 0;
       const color = isTaxi ? TAXI_COLOR : this.rng.pick(CAR_COLORS);
       const g = new THREE.Group();
-      const tailMat = (ctx.mats.lampRed as THREE.MeshStandardMaterial).clone();
-      for (const part of carParts(color, false, true)) {
-        const mat = part.kind === 'paint' ? new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.3 }) : part.kind === 'tail' ? tailMat : part.kind === 'glass' ? CAR_GLASS : part.mat(ctx);
-        const mesh = new THREE.Mesh(part.geo, mat);
-        mesh.applyMatrix4(part.m);
-        mesh.castShadow = part.kind === 'paint';
-        g.add(mesh);
-      }
+      // the city's cars are the same machines you can drive: a taxi, and saloons and hatchbacks
+      const model = buildVehicle(SPECS[isTaxi ? 'taxi' : this.rng.chance(0.6) ? 'sedan' : 'hatch'], color);
+      g.add(model.root);
+      const tailMat = model.mats.tail;
       for (const sx of [-0.62, 0.62]) {
         const beam = new THREE.Mesh(beamGeo, beamMat);
         beam.position.set(sx, 0.62, 2.25);
         beam.rotation.x = 0.06;
         g.add(beam);
       }
-      if (isTaxi) {
-        const roof = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.2, 0.3), sign);
-        roof.position.set(0, 1.32, -0.2);
-        g.add(roof);
-      }
+      void sign;
       g.visible = false;
       this.group.add(g);
       // lamps travel with the car: two white fronts (one pooled), two red rears
@@ -135,7 +133,7 @@ export class Traffic {
         ctx.lamp(new THREE.Vector3(), 'red', { pooled: false, cone: false, halo: 0.4, streak: 0.7, ground: 0 }),
       ];
       lamps.forEach((l) => (l.dynamic = true));
-      const car: Car = { group: g, path: null, s: 0, v: 0, vmax: 10, wait: i * 5 + 1, lamps, yaw: 0, tailMat, blocked: 0, honkIn: 0 };
+      const car: Car = { group: g, path: null, s: 0, v: 0, vmax: 10, wait: i * 5 + 1, lamps, yaw: 0, tailMat, blocked: 0, honkIn: 0, model, lastS: 0 };
       if (isTaxi) car.taxi = { hailed: false, wait: 0, cooldown: 0, rider: false, stopping: false, arrived: false, riderId: '' };
       this.cars.push(car);
     }
@@ -162,7 +160,8 @@ export class Traffic {
       const d = car.group.position.distanceTo(cam);
       if (d > 70) return this.drivers.hide(i);
       car.group.updateMatrixWorld();
-      this.seatM.copy(car.group.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.driver.x, SEATS.driver.y, SEATS.driver.z));
+      const st = car.model.root.userData.seat ?? (car.model.root.userData.seat = SPECS.sedan.seat);
+      this.seatM.copy(car.group.matrixWorld).multiply(this.tmpM.makeTranslation(st.x, st.y, st.z));
       const m = p.motion;
       const turn = wrapA(car.yaw - p.lastYaw) / Math.max(dt, 1e-3);
       p.lastYaw = car.yaw;
@@ -299,7 +298,16 @@ export class Traffic {
     car.lamps[3].pos.set(0.68, 0.74, -2.3).applyMatrix4(m);
     car.lamps[0].gain = car.lamps[1].gain = 1;
     car.lamps[2].gain = car.lamps[3].gain = braking ? 2.6 : 1;
-    car.tailMat.emissiveIntensity = braking ? 11 : 4;
+    // lamps lit, brakes when it slows, the wheels roll with the road and steer into its bends
+    setLights(car.model, { head: 1, brake: braking, reverse: false, indicator: 0, hazard: !!car.taxi?.hailed && car.v < 0.5, beacons: false, running: true }, performance.now() / 1000, { head: false, tail: false });
+    const ds = car.s - car.lastS;
+    car.lastS = car.s;
+    const turn = wrapA(yaw - (car.model.root.userData.yaw ?? yaw));
+    car.model.root.userData.yaw = yaw;
+    for (const w of car.model.wheels) {
+      if (Math.abs(ds) < 5) w.spin.rotation.x += ds / w.r;
+      if (w.front) w.steer.rotation.y += (THREE.MathUtils.clamp(turn * 25, -0.5, 0.5) - w.steer.rotation.y) * 0.2;
+    }
     car.sound?.setPosition(tmp, car.v);
   }
 

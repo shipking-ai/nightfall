@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { carParts, CAR_GLASS, G, M } from '../../world/builders/props';
+import { SPECS, classFor } from '../../vehicles/specs';
+import { buildVehicle, type VehicleModel } from '../../vehicles/model';
 import type { Materials } from '../../world/materials';
 import type { WorldContext } from '../../world/WorldContext';
 import { BIOMES, type VehicleKind } from '../world/biomes';
@@ -141,6 +142,9 @@ export class RoadTraffic {
       v.mesh.position.copy(v.pos);
       v.mesh.rotation.set(pitch, yaw, 0, 'YXZ');
       v.lights.emissiveIntensity = 0.2 + this.night * 5;
+      // wheels roll with the road
+      const md = v.mesh.userData.model as VehicleModel | undefined;
+      if (md) for (const w of md.wheels) w.spin.rotation.x += (v.v * dt) / w.r;
       v.tails.emissiveIntensity = (braking ? 8 : 0.4) + this.night * 3;
       if (v.pos.distanceTo(player) > DROP) v.alive = false;
     }
@@ -219,86 +223,21 @@ export class RoadTraffic {
 
 const PAINT = [0x7a1c16, 0x1c2a44, 0x2c2c2e, 0xb8b4ac, 0x3a4a2a, 0x5a4a36, 0x8a8a86, 0x1a1a1c, 0x6a5a2a, 0x2a4a5a, 0xd8d4cc];
 
-export function vehicleMesh(kind: VehicleKind, mats: Materials): { mesh: THREE.Group; lights: THREE.MeshStandardMaterial; tails: THREE.MeshStandardMaterial } {
-  const g = new THREE.Group();
-  const color = kind === 'taxi' ? 0xd8a82a : kind === 'police' ? 0x1a1c20 : kind === 'ambulance' ? 0xe8e4dc : PAINT[Math.floor(Math.random() * PAINT.length)];
-  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.4 });
-  const lights = (mats.lampCold as THREE.MeshStandardMaterial).clone();
-  const tails = (mats.lampRed as THREE.MeshStandardMaterial).clone();
-  const parts: [THREE.Material, THREE.BufferGeometry][] = [];
-  const box = (mat: THREE.Material, x: number, y: number, z: number, w: number, h: number, d: number) => parts.push([mat, G.box.clone().applyMatrix4(M(x, y - h / 2, z, w, h, d))]); // (G.box sits on its base)
-  const wheel = (x: number, z: number, r: number, w = 0.26) => parts.push([mats.rubber, G.wheel.clone().applyMatrix4(M(x, r, z, w, r, r))]);
-  if (kind === 'sedan' || kind === 'hatch' || kind === 'taxi' || kind === 'police' || kind === 'sports' || kind === 'van') {
-    for (const p of carParts(color, kind === 'van', false)) {
-      const mat = p.kind === 'paint' ? paint : p.kind === 'tail' ? tails : p.kind === 'head' ? lights : p.kind === 'glass' ? CAR_GLASS : p.mat({ mats } as unknown as WorldContext);
-      parts.push([mat, p.geo.clone().applyMatrix4(p.m)]);
-    }
-    if (kind === 'taxi') box(lights, 0, 1.45, -0.2, 0.6, 0.18, 0.25);
-    if (kind === 'police') {
-      box(new THREE.MeshStandardMaterial({ color: 0x100a0a, emissive: 0xff2010, emissiveIntensity: 3 }), -0.3, 1.45, -0.2, 0.4, 0.12, 0.25);
-      box(new THREE.MeshStandardMaterial({ color: 0x0a0a10, emissive: 0x2040ff, emissiveIntensity: 3 }), 0.3, 1.45, -0.2, 0.4, 0.12, 0.25);
-    }
-  } else if (kind === 'pickup' || kind === 'offroad') {
-    const L = kind === 'pickup' ? 5.3 : 4.6;
-    box(paint, 0, 0.55, 0, 1.9, 0.7, L);
-    box(paint, 0, 1.2, kind === 'pickup' ? 0.55 : -0.2, 1.8, 0.62, kind === 'pickup' ? 2.1 : 2.9);
-    box(CAR_GLASS, 0, 1.22, kind === 'pickup' ? 0.55 : -0.2, 1.84, 0.46, kind === 'pickup' ? 2.14 : 2.94);
-    if (kind === 'pickup') box(mats.iron, 0, 0.95, -1.5, 1.8, 0.1, 2.1);
-    for (const x of [-0.9, 0.9]) for (const z of [-L / 2 + 0.95, L / 2 - 0.95]) wheel(x, z, 0.42, 0.32);
-    box(lights, -0.65, 0.75, L / 2, 0.34, 0.14, 0.05);
-    box(lights, 0.65, 0.75, L / 2, 0.34, 0.14, 0.05);
-    box(tails, -0.72, 0.8, -L / 2, 0.24, 0.16, 0.05);
-    box(tails, 0.72, 0.8, -L / 2, 0.24, 0.16, 0.05);
-  } else if (kind === 'truck') {
-    box(paint, 0, 1.5, 3.1, 2.3, 2.2, 2.2);
-    box(CAR_GLASS, 0, 2.0, 4.2, 2.1, 0.8, 0.05);
-    box(mats.metal, 0, 1.9, -1.4, 2.4, 2.9, 7.2);
-    box(mats.iron, 0, 0.55, 0.3, 1.2, 0.4, 9.4);
-    for (const x of [-1.05, 1.05]) for (const z of [3.1, -0.6, -3.6]) wheel(x, z, 0.5, 0.4);
-    box(lights, -0.8, 1.0, 4.22, 0.3, 0.16, 0.05);
-    box(lights, 0.8, 1.0, 4.22, 0.3, 0.16, 0.05);
-    box(tails, -1.0, 0.8, -5.02, 0.2, 0.2, 0.05);
-    box(tails, 1.0, 0.8, -5.02, 0.2, 0.2, 0.05);
-  } else if (kind === 'bus') {
-    box(paint, 0, 1.75, 0, 2.5, 2.8, 11);
-    box(CAR_GLASS, 0, 2.2, 0, 2.54, 1.0, 10.4);
-    for (const x of [-1.1, 1.1]) for (const z of [3.6, -3.6]) wheel(x, z, 0.52, 0.34);
-    box(lights, -0.9, 0.9, 5.52, 0.3, 0.16, 0.05);
-    box(lights, 0.9, 0.9, 5.52, 0.3, 0.16, 0.05);
-    box(tails, -1.1, 1.0, -5.52, 0.2, 0.3, 0.05);
-    box(tails, 1.1, 1.0, -5.52, 0.2, 0.3, 0.05);
-  } else {
-    // motorcycle (and rider shape)
-    box(paint, 0, 0.7, 0, 0.36, 0.4, 1.4);
-    wheel(0, 0.72, 0.32, 0.12);
-    wheel(0, -0.72, 0.32, 0.12);
-    box(mats.rubber, 0, 1.15, -0.1, 0.4, 0.6, 0.35);
-    box(mats.rubber, 0, 1.55, -0.05, 0.26, 0.26, 0.26);
-    box(lights, 0, 0.9, 0.72, 0.16, 0.12, 0.05);
-    box(tails, 0, 0.85, -0.72, 0.12, 0.08, 0.05);
-  }
-  // merge per material: a handful of draws per vehicle
-  const by = new Map<THREE.Material, THREE.BufferGeometry[]>();
-  for (const [m, geo] of parts) {
-    const gg = geo.index ? geo.toNonIndexed() : geo;
-    if (gg !== geo) geo.dispose();
-    for (const a of Object.keys(gg.attributes)) if (!['position', 'normal'].includes(a)) gg.deleteAttribute(a);
-    if (!by.has(m)) by.set(m, []);
-    by.get(m)!.push(gg);
-  }
-  for (const [m, list] of by) {
-    const merged = mergeGeometries(list, false);
-    for (const x of list) x.dispose(); // the per-part copies were only scratch for the merge
-    if (!merged) continue;
-    const mesh = new THREE.Mesh(merged, m);
-    mesh.castShadow = m === paint;
-    g.add(mesh);
-  }
-  return { mesh: g, lights, tails };
+export function vehicleMesh(kind: VehicleKind, mats: Materials): { mesh: THREE.Group; lights: THREE.MeshStandardMaterial; tails: THREE.MeshStandardMaterial; model: VehicleModel } {
+  // the same vehicles you can drive (vehicles/model.ts): its class's body, its own paint
+  const spec = SPECS[classFor(kind === 'moto' ? 'motorcycle' : kind)];
+  const color = spec.livery ? spec.paints[0] : PAINT[Math.floor(Math.random() * PAINT.length)];
+  const model = buildVehicle(spec, color);
+  model.root.userData.model = model;
+  void mats;
+  return { mesh: model.root, lights: model.mats.head, tails: model.mats.tail, model };
 }
 
 /** Free what a vehicleMesh made for itself: every geometry (merged per vehicle) and its own materials, not the shared ones. */
 export function disposeVehicle(root: THREE.Object3D, mats: Materials) {
+  // a class model: its shapes are shared by its class, only its materials are its own
+  const model = root.userData.model as VehicleModel | undefined;
+  if (model) return model.dispose();
   const shared = new Set<THREE.Material>(Object.values(mats) as THREE.Material[]);
   root.traverse((o) => {
     const m = o as THREE.Mesh;

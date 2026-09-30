@@ -103,6 +103,8 @@ export class Dynamics {
   thump = 0;
   /** 0..1 engine damage: less power, rougher */
   engineDamage = 0;
+  /** traction control (off for sports cars and bikes: you get the wheelspin you ask for) */
+  tc = true;
   /** steering as applied (−1..1) */
   steerIn = 0;
   private acc = 0;
@@ -119,6 +121,7 @@ export class Dynamics {
     add(m.axleR, false, m.drive !== 'fwd');
     for (const z of m.extraAxles ?? []) add(z, false, m.drive !== 'fwd');
     this.rpm = m.idle;
+    this.tc = !m.bike && m.torque / m.mass < 0.3;
   }
 
   get speed() {
@@ -293,6 +296,8 @@ export class Dynamics {
       }
       // one friction budget for both (the circle); what's asked beyond it is sliding
       const lim = wh.load * mu * 1.02;
+      // traction control (road cars): the engine is cut back to what the tyre can take, a little over
+      if (this.tc && wh.driven && !locked && fx * uw >= 0 && Math.abs(fx) > lim * 1.08) fx = Math.sign(fx) * lim * 1.08;
       const want = Math.hypot(fx, fy);
       let slide = 0;
       if (want > lim) {

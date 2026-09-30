@@ -238,9 +238,10 @@ function caps(rings: number[][][]): THREE.BufferGeometry {
 
 const RING = 28;
 /** lower body ring: a rounded box (superellipse), squarer at the bottom than the shoulders */
-function lowerRing(s: Section): number[][] {
+function lowerRing(s: Section, floor = -1): number[][] {
   const out: number[][] = [];
   const mid = (s.bot + s.deck) / 2, hh = (s.deck - s.bot) / 2;
+  const wall = 0.08; // door thickness: inside the cabin the top is a tub (sills, then down to the floor)
   for (let j = 0; j < RING; j++) {
     const th = (j / RING) * Math.PI * 2;
     const c = Math.cos(th), sn = Math.sin(th);
@@ -249,6 +250,12 @@ function lowerRing(s: Section): number[][] {
     const y = mid + hh * sgnPow(sn, e);
     // a slight bulge at the waist
     x *= 1 + 0.015 * (1 - Math.abs(sn));
+    if (floor > 0 && sn > 0.2 && Math.abs(x) < s.hw - wall) {
+      // the inside of the cabin: down from the sill to the floor
+      const k = Math.min(1, (s.hw - wall - Math.abs(x)) / 0.05);
+      out.push([Math.sign(x) * Math.min(Math.abs(x), s.hw - wall), y + (floor - y) * k, s.z]);
+      continue;
+    }
     out.push([x, y, s.z]);
   }
   return out;
@@ -345,7 +352,8 @@ function classGeo(spec: VehicleSpec): ClassGeo {
   } else {
     const secs = sections(spec);
     // ── the lower body (paint), closed at the ends
-    const lower = secs.map(lowerRing);
+    // the cabin is hollow (a tub with a floor), so you can sit in it and see out
+    const lower = secs.map((q) => lowerRing(q, q.top > 0 && q.z < s.aBase - 0.12 && q.z > s.cBase + 0.08 ? q.bot + 0.18 : -1));
     paint.push(loft(lower, true), caps(lower));
     // ── the cabin: glass, with the roof and pillars in paint
     const cab = secs.filter((q) => q.top > 0);
@@ -445,9 +453,10 @@ function classGeo(spec: VehicleSpec): ClassGeo {
     // ── exhaust
     chrome.push(cyl(-s.width / 2 + 0.4, s.clearance + 0.05, -hL + 0.02, 0.04, 0.2, 'z', 10));
     // ── interior: dash, seats, a console (seen through the glass)
-    const dz = Math.min(s.aBase - 0.15, spec.wheel.z + 0.28);
-    interior.push(box(0, s.belt - 0.02, dz, s.width - 0.3, 0.16, 0.36));
-    interior.push(box(0, s.belt - 0.28, dz - 0.05, s.width - 0.36, 0.34, 0.3));
+    // the dash sits under the screen, below the sightline (the driver's eyes are ~0.25 m above it)
+    const dz = Math.min(s.aBase - 0.08, spec.wheel.z + 0.4);
+    interior.push(box(0, s.belt - 0.1, dz, s.width - 0.3, 0.12, 0.34));
+    interior.push(box(0, s.belt - 0.34, dz - 0.04, s.width - 0.36, 0.34, 0.28));
     for (const st of [spec.seat, ...spec.seats]) {
       interior.push(box(st.x, st.y + 0.02, st.z, 0.5, 0.12, 0.5));
       interior.push(box(st.x, st.y + 0.36, st.z - 0.26, 0.48, 0.62, 0.12, -0.18));
@@ -511,7 +520,7 @@ function classGeo(spec: VehicleSpec): ClassGeo {
     rimParts.push(box(Wd * 0.28, Math.cos(a) * ri * 0.5, Math.sin(a) * ri * 0.5, 0.03, ri * 0.95, 0.05, a));
   }
   const rim = merge(rimParts);
-  const wiper = box(0, 0, 0.3, 0.02, 0.015, 0.6);
+  const wiper = box(0.27, 0, 0, 0.54, 0.018, 0.012);
 
   const cg: ClassGeo = {
     paint: merge(paint), glass: merge(glass.length ? glass : [box(0, -9, 0, 0.01, 0.01, 0.01)]), trim: merge(trim), chrome: merge(chrome.length ? chrome : [box(0, -9, 0, 0.01, 0.01, 0.01)]),
@@ -529,7 +538,7 @@ function classGeo(spec: VehicleSpec): ClassGeo {
 
 export function buildVehicle(spec: VehicleSpec, color: number): VehicleModel {
   const cg = classGeo(spec);
-  const wear: Wear = { dents: Array.from({ length: DENTS }, () => new THREE.Vector4()), dirt: { value: 0.05 }, wet: { value: 0 }, time: { value: 0 }, glassCrack: { value: 0 } };
+  const wear: Wear = { dents: Array.from({ length: DENTS }, () => new THREE.Vector4(0, 0, 0, 0)), dirt: { value: 0.05 }, wet: { value: 0 }, time: { value: 0 }, glassCrack: { value: 0 } };
   const paint = new THREE.MeshPhysicalMaterial({ color, roughness: 0.32, metalness: 0.45, clearcoat: 1, clearcoatRoughness: 0.06 });
   const glass = new THREE.MeshPhysicalMaterial({ color: 0x0c1014, roughness: 0.04, metalness: 0.1, transparent: true, opacity: 0.62, clearcoat: 1, clearcoatRoughness: 0.02, side: THREE.DoubleSide, depthWrite: false });
   const trim = new THREE.MeshStandardMaterial({ color: 0x151618, roughness: 0.6, metalness: 0.1 });
@@ -600,17 +609,18 @@ export function buildVehicle(spec: VehicleSpec, color: number): VehicleModel {
   swPivot.add(sw);
   if (!spec.mech.bike) body.add(swPivot);
 
-  // wipers at the base of the screen
+  // wipers: at the base of the screen, lying in its plane, sweeping up it
   const wipers: THREE.Object3D[] = [];
   if (!spec.mech.bike) {
-    for (const x of spec.cls === 'bus' || spec.cls === 'truck' ? [-0.7, 0.1] : [-0.45, 0.15]) {
+    const sh = spec.shape;
+    const tilt = Math.atan2((sh.box ? Math.min(sh.height, sh.box.height - 0.3) : sh.height) - sh.belt, Math.max(0.05, sh.aBase - sh.aTop));
+    for (const x of spec.cls === 'bus' || spec.cls === 'truck' ? [-0.8, 0.2] : [-0.55, 0.05]) {
       const p = new THREE.Group();
-      p.position.set(x, spec.shape.belt + 0.02, spec.shape.aBase - 0.05);
+      p.position.set(x, sh.belt + 0.03, sh.aBase - 0.04);
+      p.rotation.x = tilt - Math.PI / 2;
       const arm = new THREE.Mesh(cg.wiper, interior);
-      // lies along the screen's base, rotating up the glass
-      arm.rotation.set(-0.5, 0, 0);
+      arm.position.z = 0.012;
       p.add(arm);
-      p.rotation.y = Math.PI / 2 - 0.1;
       body.add(p);
       wipers.push(p);
     }

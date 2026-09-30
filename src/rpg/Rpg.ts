@@ -25,7 +25,7 @@ import { RealHuman } from './people/RealHuman';
 import type { HumanSpec } from './people/anatomy';
 import { Life } from './Life';
 import { Populace } from './sim/Populace';
-import { RoadTraffic, vehicleMesh } from './sim/RoadTraffic';
+import { RoadTraffic, disposeVehicle } from './sim/RoadTraffic';
 import { Wildlife } from './sim/Wildlife';
 import { GroundCover } from './world/GroundCover';
 import { setWarmer } from './world/warm';
@@ -269,6 +269,9 @@ export class Rpg {
     this.far.update(p, h.fog, h.sky.uniforms.uSunCol.value);
     this.populace.update(dt, performance.now() / 1000, this.atmos.minutes, p, h.camera, now.rain);
     h.vehicles.grip = this.atmos.now.grip;
+    // roads stay wet a while after the rain; headlights on from dusk
+    h.vehicles.wet += (Math.min(1, now.rain * 1.4 + now.snow * 0.6) - h.vehicles.wet) * Math.min(1, dt * (now.rain > h.vehicles.wet ? 0.5 : 0.02));
+    h.vehicles.dark = this.atmos.daylight < 0.45 || now.fog > 0.4;
     this.traffic.night = 1 - this.atmos.daylight;
     this.traffic.update(dt, p);
     if (!inD03(p.x, p.z)) {
@@ -436,9 +439,9 @@ export class Rpg {
   /** A drivable car of this kind: the city's own model for cars and vans, the road's for the rest. */
   spawnCar(kind: VehicleKind, pos: THREE.Vector3, yaw: number, color: number, k = 0, mesh?: { mesh: THREE.Group; tails: THREE.MeshStandardMaterial }): DrivableCar {
     const t = TUNES[kind] ?? TUNES.sedan;
-    const own = kind === 'sedan' || kind === 'hatch' || kind === 'van';
-    const m = own ? null : mesh ?? vehicleMesh(kind, this.host.mats);
-    const car = this.host.vehicles.spawn({ pos, yaw, color, van: kind === 'van', screen: false, mesh: m?.mesh, tails: m?.tails, kind, tune: t!.tune, seat: t!.seat, reach: t!.reach }, true);
+    // every kind is its own class of vehicle now (vehicles/specs.ts): its shape, its handling, its seat
+    if (mesh) disposeVehicle(mesh.mesh, this.host.mats); // the road's copy of it; ours replaces it
+    const car = this.host.vehicles.spawn({ pos, yaw, color, van: kind === 'van', screen: false, kind, tune: t!.tune }, true);
     car.surface = (x, z) => {
       const g = this.gen.ground(x, z);
       return g.road > 0 || g.urban > 0.3 ? 1 : 0;

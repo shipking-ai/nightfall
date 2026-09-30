@@ -122,8 +122,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 1420, cogH: 0.44, wheelbase: 2.55, track: 1.6, wheelR: 0.34, wheelW: 0.28, axleF: 1.33, axleR: -1.22, drive: 'rwd', torque: 520, torqueRpm: 5200, idle: 900, redline: 7800, gears: [3.3, 2.2, 1.62, 1.28, 1.05, 0.86], final: 3.6, reverse: 3.2, grip: 1.18, offroad: 0.45, brake: 1.15, sag: 0.055, travel: 0.11, damping: 0.42, antiRoll: 0.75, lock: 0.6, cda: 0.62 },
     voice: { cyl: 8, rough: 0.55, whine: 0.2, turbo: 0, diesel: false, horn: 520 },
     paints: [0x8a1a14, 0x121214, 0xd8d4cc, 0x1e3a6a, 0xc88a1a, 0x2a4a2a],
-    seat: { x: 0.38, y: 0.3, z: -0.25 }, seats: [{ x: -0.38, y: 0.3, z: -0.25 }],
-    wheel: { x: 0.38, y: 0.72, z: 0.25, tilt: 1.15 },
+    seat: { x: -0.38, y: 0.3, z: -0.25 }, seats: [{ x: 0.38, y: 0.3, z: -0.25 }],
+    wheel: { x: -0.38, y: 0.72, z: 0.25, tilt: 1.15 },
   },
   sedan: {
     cls: 'sedan', name: 'Saloon',
@@ -131,8 +131,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 1520, cogH: 0.54, wheelbase: 2.8, track: 1.56, wheelR: 0.33, wheelW: 0.22, axleF: 1.42, axleR: -1.38, drive: 'fwd', torque: 270, torqueRpm: 4000, idle: 750, redline: 6500, gears: [3.6, 2.1, 1.4, 1.03, 0.82, 0.68], final: 3.9, reverse: 3.4, grip: 0.98, offroad: 0.55, brake: 0.95, sag: 0.075, travel: 0.14, damping: 0.34, antiRoll: 0.45, lock: 0.62, cda: 0.68 },
     voice: { cyl: 4, rough: 0.25, whine: 0.3, turbo: 0.2, diesel: false, horn: 440 },
     paints: CAR_PAINTS,
-    seat: { x: 0.38, y: 0.4, z: -0.3 }, seats: [{ x: -0.38, y: 0.4, z: -0.3 }, { x: 0.4, y: 0.42, z: -1.2 }, { x: -0.4, y: 0.42, z: -1.2 }],
-    wheel: { x: 0.38, y: 0.86, z: 0.18, tilt: 1.1 },
+    seat: { x: -0.38, y: 0.4, z: -0.3 }, seats: [{ x: 0.38, y: 0.4, z: -0.3 }, { x: 0.4, y: 0.42, z: -1.2 }, { x: -0.4, y: 0.42, z: -1.2 }],
+    wheel: { x: -0.38, y: 0.86, z: 0.18, tilt: 1.1 },
   },
   hatch: {
     cls: 'hatch', name: 'Hatchback',
@@ -140,8 +140,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 1180, cogH: 0.53, wheelbase: 2.55, track: 1.5, wheelR: 0.31, wheelW: 0.2, axleF: 1.3, axleR: -1.25, drive: 'fwd', torque: 200, torqueRpm: 3800, idle: 800, redline: 6600, gears: [3.5, 2.0, 1.35, 1.03, 0.82], final: 4.1, reverse: 3.3, grip: 0.95, offroad: 0.55, brake: 0.95, sag: 0.08, travel: 0.14, damping: 0.33, antiRoll: 0.4, lock: 0.65, cda: 0.62 },
     voice: { cyl: 4, rough: 0.3, whine: 0.35, turbo: 0.35, diesel: false, horn: 480 },
     paints: CAR_PAINTS,
-    seat: { x: 0.36, y: 0.4, z: -0.2 }, seats: [{ x: -0.36, y: 0.4, z: -0.2 }, { x: 0.38, y: 0.42, z: -1.05 }],
-    wheel: { x: 0.36, y: 0.86, z: 0.26, tilt: 1.1 },
+    seat: { x: -0.36, y: 0.4, z: -0.2 }, seats: [{ x: 0.36, y: 0.4, z: -0.2 }, { x: 0.38, y: 0.42, z: -1.05 }],
+    wheel: { x: -0.36, y: 0.86, z: 0.26, tilt: 1.1 },
   },
   taxi: {
     cls: 'taxi', name: 'Taxi',
@@ -149,8 +149,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 1650, cogH: 0.56, wheelbase: 2.85, track: 1.56, wheelR: 0.33, wheelW: 0.22, axleF: 1.45, axleR: -1.4, drive: 'rwd', torque: 330, torqueRpm: 3600, idle: 700, redline: 6000, gears: [3.4, 2.0, 1.35, 1.0, 0.78], final: 3.6, reverse: 3.3, grip: 0.92, offroad: 0.5, brake: 0.9, sag: 0.09, travel: 0.15, damping: 0.3, antiRoll: 0.35, lock: 0.64, cda: 0.7 },
     voice: { cyl: 6, rough: 0.3, whine: 0.2, turbo: 0, diesel: false, horn: 420 },
     paints: [0xd8a82a], livery: 'taxi',
-    seat: { x: 0.38, y: 0.4, z: -0.3 }, seats: [{ x: -0.38, y: 0.4, z: -0.3 }, { x: 0.4, y: 0.42, z: -1.25 }, { x: -0.4, y: 0.42, z: -1.25 }],
-    wheel: { x: 0.38, y: 0.86, z: 0.18, tilt: 1.1 },
+    seat: { x: -0.38, y: 0.4, z: -0.3 }, seats: [{ x: 0.38, y: 0.4, z: -0.3 }, { x: 0.4, y: 0.42, z: -1.25 }, { x: -0.4, y: 0.42, z: -1.25 }],
+    wheel: { x: -0.38, y: 0.86, z: 0.18, tilt: 1.1 },
   },
   police: {
     cls: 'police', name: 'Patrol car',
@@ -158,8 +158,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 1780, cogH: 0.55, wheelbase: 2.9, track: 1.6, wheelR: 0.34, wheelW: 0.24, axleF: 1.47, axleR: -1.43, drive: 'awd', torque: 470, torqueRpm: 4200, idle: 750, redline: 6800, gears: [3.5, 2.2, 1.5, 1.14, 0.87, 0.69], final: 3.4, reverse: 3.3, grip: 1.04, offroad: 0.6, brake: 1.05, sag: 0.065, travel: 0.14, damping: 0.4, antiRoll: 0.6, lock: 0.62, cda: 0.72 },
     voice: { cyl: 8, rough: 0.4, whine: 0.25, turbo: 0.3, diesel: false, horn: 460 },
     paints: [0x16181c], livery: 'police',
-    seat: { x: 0.38, y: 0.4, z: -0.3 }, seats: [{ x: -0.38, y: 0.4, z: -0.3 }, { x: 0.4, y: 0.42, z: -1.25 }, { x: -0.4, y: 0.42, z: -1.25 }],
-    wheel: { x: 0.38, y: 0.86, z: 0.18, tilt: 1.1 },
+    seat: { x: -0.38, y: 0.4, z: -0.3 }, seats: [{ x: 0.38, y: 0.4, z: -0.3 }, { x: 0.4, y: 0.42, z: -1.25 }, { x: -0.4, y: 0.42, z: -1.25 }],
+    wheel: { x: -0.38, y: 0.86, z: 0.18, tilt: 1.1 },
   },
   pickup: {
     cls: 'pickup', name: 'Pickup',
@@ -167,8 +167,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 2150, cogH: 0.82, wheelbase: 3.3, track: 1.7, wheelR: 0.42, wheelW: 0.28, axleF: 1.75, axleR: -1.55, drive: 'rwd', torque: 560, torqueRpm: 3200, idle: 650, redline: 5600, gears: [4.0, 2.4, 1.55, 1.15, 0.85, 0.67], final: 3.55, reverse: 3.6, grip: 0.95, offroad: 0.85, brake: 0.85, sag: 0.11, travel: 0.22, damping: 0.28, antiRoll: 0.3, lock: 0.58, cda: 1.05 },
     voice: { cyl: 8, rough: 0.7, whine: 0.1, turbo: 0, diesel: false, horn: 360 },
     paints: [0x6a1a14, 0x1a1c20, 0xd4d0c8, 0x2a3a2a, 0x3a4a5a, 0x7a6a50],
-    seat: { x: 0.4, y: 0.62, z: 0.1 }, seats: [{ x: -0.4, y: 0.62, z: 0.1 }, { x: 0.4, y: 0.64, z: -0.4 }],
-    wheel: { x: 0.4, y: 1.12, z: 0.6, tilt: 1.2 },
+    seat: { x: -0.4, y: 0.62, z: 0.1 }, seats: [{ x: 0.4, y: 0.62, z: 0.1 }, { x: 0.4, y: 0.64, z: -0.4 }],
+    wheel: { x: -0.4, y: 1.12, z: 0.6, tilt: 1.2 },
   },
   van: {
     cls: 'van', name: 'Van',
@@ -176,8 +176,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 2300, cogH: 0.88, wheelbase: 3.25, track: 1.68, wheelR: 0.36, wheelW: 0.22, axleF: 1.7, axleR: -1.55, drive: 'fwd', torque: 330, torqueRpm: 2400, idle: 750, redline: 4800, gears: [3.9, 2.2, 1.4, 1.0, 0.78, 0.64], final: 4.0, reverse: 3.7, grip: 0.9, offroad: 0.55, brake: 0.8, sag: 0.1, travel: 0.17, damping: 0.3, antiRoll: 0.35, lock: 0.6, cda: 1.3 },
     voice: { cyl: 4, rough: 0.5, whine: 0.15, turbo: 0.5, diesel: true, horn: 400 },
     paints: [0xd8d4cc, 0x1c1f24, 0x2a3a4e, 0x5a5a60, 0x8a2a24],
-    seat: { x: 0.42, y: 0.72, z: 1.0 }, seats: [{ x: -0.42, y: 0.72, z: 1.0 }],
-    wheel: { x: 0.42, y: 1.18, z: 1.42, tilt: 0.95 },
+    seat: { x: -0.42, y: 0.72, z: 1.0 }, seats: [{ x: 0.42, y: 0.72, z: 1.0 }],
+    wheel: { x: -0.42, y: 1.18, z: 1.42, tilt: 0.95 },
   },
   ambulance: {
     cls: 'ambulance', name: 'Ambulance',
@@ -185,8 +185,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 3500, cogH: 0.95, wheelbase: 3.7, track: 1.75, wheelR: 0.38, wheelW: 0.24, axleF: 2.0, axleR: -1.7, drive: 'rwd', torque: 470, torqueRpm: 2200, idle: 700, redline: 4600, gears: [4.2, 2.4, 1.5, 1.0, 0.75], final: 4.1, reverse: 3.8, grip: 0.88, offroad: 0.5, brake: 0.75, sag: 0.09, travel: 0.16, damping: 0.35, antiRoll: 0.95, lock: 0.56, cda: 2.1 },
     voice: { cyl: 6, rough: 0.5, whine: 0.2, turbo: 0.4, diesel: true, horn: 380 },
     paints: [0xe8e4dc], livery: 'ambulance',
-    seat: { x: 0.44, y: 0.78, z: 1.3 }, seats: [{ x: -0.44, y: 0.78, z: 1.3 }],
-    wheel: { x: 0.44, y: 1.24, z: 1.72, tilt: 0.95 },
+    seat: { x: -0.44, y: 0.78, z: 1.3 }, seats: [{ x: 0.44, y: 0.78, z: 1.3 }],
+    wheel: { x: -0.44, y: 1.24, z: 1.72, tilt: 0.95 },
   },
   truck: {
     cls: 'truck', name: 'Box truck',
@@ -194,8 +194,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 9500, cogH: 1.35, wheelbase: 5.2, track: 2.0, wheelR: 0.52, wheelW: 0.32, axleF: 3.0, axleR: -2.2, extraAxles: [-3.4], drive: 'rwd', torque: 1650, torqueRpm: 1400, idle: 600, redline: 2600, gears: [7.0, 4.8, 3.4, 2.4, 1.7, 1.25, 1.0, 0.78], final: 4.4, reverse: 6.5, grip: 0.82, offroad: 0.55, brake: 0.6, sag: 0.09, travel: 0.16, damping: 0.4, antiRoll: 0.6, lock: 0.52, cda: 6.5 },
     voice: { cyl: 6, rough: 0.8, whine: 0.1, turbo: 0.7, diesel: true, horn: 190 },
     paints: [0xd8d4cc, 0x2a3a4e, 0x8a2a24, 0x3a4a3a],
-    seat: { x: 0.55, y: 1.3, z: 3.1 }, seats: [{ x: -0.55, y: 1.3, z: 3.1 }],
-    wheel: { x: 0.55, y: 1.8, z: 3.55, tilt: 0.7 },
+    seat: { x: -0.55, y: 1.3, z: 3.1 }, seats: [{ x: 0.55, y: 1.3, z: 3.1 }],
+    wheel: { x: -0.55, y: 1.8, z: 3.55, tilt: 0.7 },
   },
   bus: {
     cls: 'bus', name: 'Bus',
@@ -203,8 +203,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 12500, cogH: 1.2, wheelbase: 6.1, track: 2.1, wheelR: 0.5, wheelW: 0.3, axleF: 3.6, axleR: -2.5, drive: 'rwd', torque: 1500, torqueRpm: 1300, idle: 600, redline: 2400, gears: [4.2, 2.4, 1.6, 1.15, 0.9, 0.72], final: 5.5, reverse: 5.0, grip: 0.8, offroad: 0.4, brake: 0.55, sag: 0.1, travel: 0.15, damping: 0.45, antiRoll: 0.7, lock: 0.6, cda: 7.0 },
     voice: { cyl: 6, rough: 0.7, whine: 0.25, turbo: 0.6, diesel: true, horn: 230 },
     paints: [0x8a2a24, 0x2a4a6a, 0xd8a82a],
-    seat: { x: 0.7, y: 1.05, z: 4.7 }, seats: [],
-    wheel: { x: 0.7, y: 1.55, z: 5.05, tilt: 0.5 },
+    seat: { x: -0.7, y: 1.05, z: 4.7 }, seats: [],
+    wheel: { x: -0.7, y: 1.55, z: 5.05, tilt: 0.5 },
   },
   offroad: {
     cls: 'offroad', name: '4×4',
@@ -212,8 +212,8 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     mech: { mass: 2250, cogH: 0.88, wheelbase: 2.9, track: 1.66, wheelR: 0.43, wheelW: 0.3, axleF: 1.45, axleR: -1.45, drive: 'awd', torque: 520, torqueRpm: 2600, idle: 700, redline: 5200, gears: [4.3, 2.5, 1.6, 1.2, 1.0, 0.8], final: 3.9, reverse: 4.0, grip: 0.92, offroad: 1.0, brake: 0.85, sag: 0.13, travel: 0.28, damping: 0.3, antiRoll: 0.3, lock: 0.6, cda: 1.15 },
     voice: { cyl: 6, rough: 0.6, whine: 0.1, turbo: 0.5, diesel: true, horn: 380 },
     paints: [0x3a4a3a, 0x6a5a3a, 0x1a1c20, 0xd4d0c8, 0x5a2a1e],
-    seat: { x: 0.4, y: 0.66, z: -0.15 }, seats: [{ x: -0.4, y: 0.66, z: -0.15 }, { x: 0.4, y: 0.68, z: -1.0 }],
-    wheel: { x: 0.4, y: 1.16, z: 0.32, tilt: 1.15 },
+    seat: { x: -0.4, y: 0.66, z: -0.15 }, seats: [{ x: 0.4, y: 0.66, z: -0.15 }, { x: 0.4, y: 0.68, z: -1.0 }],
+    wheel: { x: -0.4, y: 1.16, z: 0.32, tilt: 1.15 },
   },
   motorcycle: {
     cls: 'motorcycle', name: 'Motorcycle',
@@ -230,5 +230,6 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
 export function classFor(kind: string | undefined, van = false): VehicleClass {
   if (kind && kind in SPECS) return kind as VehicleClass;
   if (kind === 'hatchback') return 'hatch';
+  if (kind === 'moto') return 'motorcycle';
   return van ? 'van' : 'sedan';
 }

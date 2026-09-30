@@ -8,6 +8,22 @@ import { speak, type Mood, type VoiceSpec } from './Voice';
  * electrical hum, water, machinery, a radio, footsteps, and a sparse score.
  * Web Audio only — no files to load.
  */
+export interface EngineIn {
+  rpm: number;
+  idle: number;
+  redline: number;
+  load: number;
+  speed: number;
+  slip: number;
+  cyl: number;
+  rough: number;
+  whine: number;
+  turbo: number;
+  diesel: boolean;
+  inside: boolean;
+  damage: number;
+}
+
 export class AudioEngine {
   ctx: AudioContext | null = null;
   private master!: GainNode;
@@ -406,6 +422,103 @@ export class AudioEngine {
         f.frequency.setTargetAtTime(200 + speed * 30, t, 0.2);
       },
       mute: () => g.gain.setTargetAtTime(0, ctx.currentTime, 0.3),
+    };
+  }
+
+  /**
+   * The car you're driving, built from its numbers: the firing note (rpm ×
+   * cylinders ÷ 2) as a pulse train through a filter that opens with load, a
+   * rough half-order under it (big V8s and diesels burble), intake whine,
+   * a turbo's whistle, tyre squeal from slip, wind with speed, and a dull
+   * inside-the-cabin filter when you're sat in it. Each class sounds like
+   * itself because its specs differ, not because of a sample.
+   */
+  engineVoice(): { set(p: THREE.Vector3, e: EngineIn): void; mute(): void } | undefined {
+    if (!this.ctx) return undefined;
+    const ctx = this.ctx;
+    const panner = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 5, rolloffFactor: 1, maxDistance: 200 });
+    const out = ctx.createGain();
+    out.gain.value = 0;
+    const cabin = ctx.createBiquadFilter();
+    cabin.type = 'lowpass';
+    cabin.frequency.value = 18000;
+    // the firing note and its half-order
+    const fire = new OscillatorNode(ctx, { type: 'sawtooth', frequency: 40 });
+    const half = new OscillatorNode(ctx, { type: 'square', frequency: 20 });
+    const whine = new OscillatorNode(ctx, { type: 'sine', frequency: 800 });
+    const turbo = new OscillatorNode(ctx, { type: 'sine', frequency: 3000 });
+    const fireG = ctx.createGain(), halfG = ctx.createGain(), whineG = ctx.createGain(), turboG = ctx.createGain();
+    halfG.gain.value = 0.3;
+    whineG.gain.value = 0;
+    turboG.gain.value = 0;
+    const body = ctx.createBiquadFilter();
+    body.type = 'lowpass';
+    body.frequency.value = 400;
+    body.Q.value = 2.5;
+    // grit: noise, amplitude-modulated by the firing note
+    const grit = this.loopSource(this.noise);
+    const gritF = ctx.createBiquadFilter();
+    gritF.type = 'bandpass';
+    gritF.frequency.value = 900;
+    const gritG = ctx.createGain();
+    gritG.gain.value = 0;
+    // tyres and wind
+    const tyre = this.loopSource(this.noise);
+    const tyreF = ctx.createBiquadFilter();
+    tyreF.type = 'bandpass';
+    tyreF.frequency.value = 1100;
+    tyreF.Q.value = 6;
+    const tyreG = ctx.createGain();
+    tyreG.gain.value = 0;
+    const wind = this.loopSource(this.brown);
+    const windF = ctx.createBiquadFilter();
+    windF.type = 'lowpass';
+    windF.frequency.value = 600;
+    const windG = ctx.createGain();
+    windG.gain.value = 0;
+    fire.connect(fireG).connect(body);
+    half.connect(halfG).connect(body);
+    body.connect(cabin);
+    grit.connect(gritF).connect(gritG).connect(cabin);
+    whine.connect(whineG).connect(cabin);
+    turbo.connect(turboG).connect(cabin);
+    tyre.connect(tyreF).connect(tyreG).connect(cabin);
+    wind.connect(windF).connect(windG).connect(cabin);
+    cabin.connect(out).connect(panner).connect(this.sfx);
+    for (const o of [fire, half, whine, turbo]) o.start();
+    let last = 0;
+    return {
+      set: (p, e) => {
+        const t = ctx.currentTime;
+        if (t - last < 0.03) return;
+        last = t;
+        const f = Math.max(8, (e.rpm / 60) * (e.cyl / 2));
+        const tc = 0.04;
+        panner.positionX.setTargetAtTime(p.x, t, tc);
+        panner.positionY.setTargetAtTime(p.y + 0.5, t, tc);
+        panner.positionZ.setTargetAtTime(p.z, t, tc);
+        fire.frequency.setTargetAtTime(f, t, tc);
+        half.frequency.setTargetAtTime(f / 2, t, tc);
+        const r = Math.min(1, (e.rpm - e.idle) / Math.max(1, e.redline - e.idle));
+        // the filter opens with load and revs: a car on the throttle is louder and brighter
+        body.frequency.setTargetAtTime(160 + f * (1.4 + 3.2 * e.load) + (e.diesel ? 300 : 0), t, tc);
+        fireG.gain.setTargetAtTime(0.16 + 0.22 * e.load + 0.1 * r, t, tc);
+        halfG.gain.setTargetAtTime((0.12 + 0.35 * e.rough) * (0.6 + 0.4 * (1 - r)), t, tc);
+        gritF.frequency.setTargetAtTime(500 + f * 6, t, tc);
+        gritG.gain.setTargetAtTime((0.02 + 0.06 * e.rough + (e.diesel ? 0.05 : 0) + 0.12 * e.damage) * (0.4 + e.load), t, tc);
+        whine.frequency.setTargetAtTime(300 + e.speed * 38, t, tc);
+        whineG.gain.setTargetAtTime(e.whine * 0.02 * Math.min(1, e.speed / 20), t, tc);
+        turbo.frequency.setTargetAtTime(1800 + r * 4200, t, tc);
+        turboG.gain.setTargetAtTime(e.turbo * 0.012 * e.load * r, t, 0.15);
+        tyreF.frequency.setTargetAtTime(900 + e.slip * 700, t, tc);
+        tyreG.gain.setTargetAtTime(Math.min(0.5, e.slip * e.slip * 0.5 * Math.min(1, e.speed / 4)), t, 0.05);
+        windG.gain.setTargetAtTime(Math.min(0.35, e.speed * e.speed * 0.0003), t, 0.2);
+        windF.frequency.setTargetAtTime(300 + e.speed * 25, t, 0.2);
+        // sat inside: the cabin muffles everything outside it
+        cabin.frequency.setTargetAtTime(e.inside ? 1400 + e.speed * 20 : 16000, t, 0.1);
+        out.gain.setTargetAtTime(0.5, t, 0.2);
+      },
+      mute: () => out.gain.setTargetAtTime(0, ctx.currentTime, 0.25),
     };
   }
 

@@ -52,6 +52,7 @@ const DEFS = {
   radioNext: { label: 'Radio: next station', group: 'vehicle' },
   radioPrev: { label: 'Radio: previous station', group: 'vehicle' },
   screen: { label: 'Dash screen', group: 'vehicle' },
+  carCamera: { label: 'Driving camera', group: 'vehicle' },
   // WARZONE extras
   melee: { label: 'Melee', group: 'warzone' },
   scoreboard: { label: 'Scoreboard', group: 'warzone' },
