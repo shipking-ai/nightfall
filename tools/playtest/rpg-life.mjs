@@ -8,14 +8,8 @@ const log = (...a) => console.log(...a);
 async function enterRpg() {
   await waitState('landing');
   await t.wait(3000);
-  await until(async () => (await focused()).includes('Enter'), 8);
-  for (let i = 0; i < 6 && !(await focused()).includes('Enter'); i++) { await tap(i < 3 ? 'Down' : 'Up'); await t.wait(700); }
-  await tap('A');
-  await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 20);
-  await t.wait(1200);
-  for (let i = 0; i < 8 && !(await focused()).includes('RPG'); i++) { await tap('Down'); await t.wait(800); }
-  await t.wait(2000);
-  await tap('A');
+  // straight into the RPG (the menus have their own run in modes.mjs)
+  await page.evaluate(() => { window.nf.mode = 'rpg'; window.nf.enter(); });
   await until(async () => (await page.evaluate(() => window.nf.state)) === 'playing' || (await page.evaluate(() => window.nf.state)) === 'overlay', 240);
 }
 

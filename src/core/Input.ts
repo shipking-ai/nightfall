@@ -66,6 +66,9 @@ export class Input extends Emitter<{ device: Device }> implements Controls {
   aiming = false;
   /** set by gameplay: aim assist slows the stick near a target (0 = none, 1 = full stop) */
   aimSlow = 0;
+  /** look speed scale from a scope's zoom (WARZONE sets it while aiming) */
+  zoomScale = 1;
+  zoomSens = true;
   /** the pad reserved for a second local player (FIGHT versus); player one never reads it */
   reservedPad: Pad | null = null;
 
@@ -183,8 +186,9 @@ export class Input extends Emitter<{ device: Device }> implements Controls {
     const aim = this.aiming ? this.look.aimSens : 1;
     const slow = 1 - Math.min(0.85, this.aimSlow);
     // radians per second at full deflection
-    const yawRate = 3.2 * this.look.sensX * accel * aim * slow;
-    const pitchRate = 2.1 * this.look.sensY * aim * slow;
+    const zoom = this.zoomSens ? this.zoomScale : 1;
+    const yawRate = 3.2 * this.look.sensX * accel * aim * slow * zoom;
+    const pitchRate = 2.1 * this.look.sensY * aim * slow * zoom;
     this.stickYaw = s.x * yawRate * dt * (this.look.invertX ? -1 : 1);
     this.stickPitch = s.y * pitchRate * dt * (this.look.invertY ? -1 : 1);
   }

@@ -459,6 +459,7 @@ export class Warzone {
     f.aim = false;
     this.host.input.aiming = false;
     this.host.input.aimSlow = 0;
+    this.host.input.zoomScale = 1;
     this.host.camera.fov = this.baseFov;
     this.host.camera.updateProjectionMatrix();
   }
@@ -791,6 +792,7 @@ export class Warzone {
       f.aim = false;
       inp.aiming = false;
       inp.aimSlow = 0;
+      inp.zoomScale = 1;
       this.zoom(this.baseFov, dt);
       this.hud.crosshair(null);
       this.hud.blind(0, 0);
@@ -851,6 +853,9 @@ export class Warzone {
     inp.aiming = k > 0.5;
     f.aim = k > 0.5;
     this.zoom(this.baseFov + (gun.zoom - this.baseFov) * easeInOut(k), dt, true);
+    // magnified optics slow the look to match (beyond the ordinary aim slowdown)
+    const deg = THREE.MathUtils.DEG2RAD / 2;
+    inp.zoomScale = k > 0.5 && gun.zoom < 40 ? Math.tan(gun.zoom * deg) / Math.tan(40 * deg) : 1;
     p.speedMul = gun.weight * (1 - k * 0.38) * (this.reloadT > 0 ? 0.9 : 1);
     // first person keeps the body turned with the view (aimYaw), which the walk treats as aiming: undo that when you're not
     if (this.fpActive && k < 0.5 && this.sinceFire > 0.7) p.speedMul /= 0.7;

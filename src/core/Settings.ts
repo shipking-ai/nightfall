@@ -29,6 +29,8 @@ export interface SettingsData {
   padSensY: number;
   /** look speed while aiming, as a fraction */
   padAimSens: number;
+  /** slow the look in proportion to a scope's magnification (mouse and stick) */
+  zoomSens: boolean;
   /** extra turn speed at the edge of the stick, 0..1 */
   padAccel: number;
   padDeadzone: number;
@@ -86,6 +88,7 @@ function defaults(): SettingsData {
     padSensX: 1,
     padSensY: 1,
     padAimSens: 0.6,
+    zoomSens: true,
     padAccel: 0.5,
     padDeadzone: 0.14,
     padCurve: 'dynamic',

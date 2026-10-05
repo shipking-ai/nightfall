@@ -12,17 +12,8 @@ const until = async (fn, secs = 60) => {
 };
 await waitState('landing');
 await t.wait(4000);
-await until(async () => (await focused()).includes('Enter'), 20);
-await tap('A');
-await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 20);
-await t.wait(1500);
-for (let i = 0; i < 8 && !(await focused()).includes('RPG'); i++) {
-  await tap('Down');
-  await t.wait(900);
-}
-console.log('focused', await focused());
-await shot('rpg-select');
-await tap('A');
+// straight into the RPG (the menus have their own run in modes.mjs)
+await page.evaluate(() => { window.nf.mode = 'rpg'; window.nf.enter(); });
 const ok = await until(async () => (await page.evaluate(() => window.nf.state)) === 'playing', 240);
 console.log('playing', ok, JSON.stringify(await page.evaluate(() => window.nf.rpg.debug)));
 await t.wait(3000);

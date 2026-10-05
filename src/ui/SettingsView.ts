@@ -242,6 +242,7 @@ export class SettingsView {
             row('Horizontal sensitivity', null, range('padSensX', 0.3, 2.5, 0.05, x2, 'Horizontal look sensitivity')),
             row('Vertical sensitivity', null, range('padSensY', 0.3, 2.5, 0.05, x2, 'Vertical look sensitivity')),
             row('Aim sensitivity', 'Look speed while aiming, as a share of normal.', range('padAimSens', 0.25, 1.2, 0.05, x2, 'Aim sensitivity')),
+            row('Scale aim with zoom', 'Through a 4× or 8× scope the look slows to match, for the mouse and the stick.', onOff('zoomSens')),
             row('Look acceleration', 'Turns faster the longer the stick is held at its edge.', range('padAccel', 0, 1, 0.05, pct, 'Look acceleration')),
             row('Response curve', 'Dynamic: fine near the centre, quick at the edge. Classic: squared. Linear: straight.', seg('padCurve', [['dynamic', 'Dynamic'], ['classic', 'Classic'], ['linear', 'Linear']])),
             row('Dead zone', 'Raise it if the camera drifts on its own.', range('padDeadzone', 0.04, 0.35, 0.01, x2, 'Stick dead zone')),

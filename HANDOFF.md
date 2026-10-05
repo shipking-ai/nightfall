@@ -1,10 +1,24 @@
 # HANDOFF — NIGHTFALL
 
-Last updated: 2026-09-29 (RPG R1–R4d done, plus realism passes: faces, sky light, trees, grass, rocks, hair cards; R5 next). Read this first, then [README.md](README.md) for architecture and controls.
+Last updated: 2026-10-05 (the "AAA quality upgrade" Q1–Q7: motion, interactions, vehicles, blood, cinematics, Warzone as a full shooter, controller settings). Earlier: RPG R1–R6. Read this first, then [README.md](README.md) for architecture and controls.
 
 ## State in one paragraph
 
 The browser game builds and runs: `npm run dev` serves it at http://localhost:5317, and `npm run build` typechecks and bundles it (no external assets). Production is https://nightfall-sand.vercel.app, deployed from the `claude/sharp-shannon-6ogxul` branch after every fix. The title leads to a **mode select**, and there are **four modes on one city**: City, After Hours, Warzone and Fight (see the next section). Everything can be played **with only a controller**; the four-mode run was playtested that way (tools/playtest/). The older sections below still describe the City systems accurately.
+
+## The AAA quality upgrade, Q1–Q7 (2026-09-30 → 2026-10-05)
+
+The owner's "MASTER AAA QUALITY UPGRADE" brief, built in stages; each was committed, deployed and playtested. Constraints that still stand: no invented SDKs, credentials or platform APIs in the web build; no pay-to-win or predatory monetisation; no claims about console publishing costs; nothing copied from other games (names, assets, UI).
+
+- **Q1, motion** (`anim/gait.ts`, `anim/face.ts`, `entities/Humanoid.ts`): planted-foot gait with IK in the pelvis frame (7 mm foot drift), per-person walk styles, spring arms, faces with emotions, gaze, blinks and visemes; MakeHuman faces export face weights and a jaw (`tools/mh/convert.py`). Test: `tools/playtest/gait.mjs`.
+- **Q2, every action has a body** (`anim/actions.ts`, ~40 clips): doors, phones, vending, eating, searching, first aid, carrying, reactions (horn, near miss, knockdown), horror wrongness. Wired into the RPG's `Life.ts`.
+- **Q3, vehicles** (`vehicles/specs.ts`, `dynamics.ts`, `model.ts`, `VehicleFx.ts`): 12 classes, sprung body with tyre slip, gears, traction control, wet/off-road; lofted bodies with cabins, doors, wipers; dents, dirt, glass cracks; spray, smoke, skids; six cameras; engine voice. Test: `drive.mjs`.
+- **Q4, blood** (`fx/Blood.ts`, wound shaders in `people/materials.ts`): droplets, splats by impact angle, wall spray, pools, prints, drips, soak on skin and clothes, cars. Test: `blood.mjs`.
+- **Q5, cinematics** (`cine/Cinematics.ts`, `cine/CineUi.ts`, depth of field in `render/Renderer.ts`): 16 shot kinds, letterbox, rack focus, occlusion pull-in, skippable; used for talks, story beats and Warzone's opening and ending. Test: `cine.mjs`.
+- **Q6, Warzone** — see the Warzone section below.
+- **Q7**: zoom-scaled aim sensitivity added to the controller settings (everything else the brief lists was already there); `docs/platforms.md` updated; full test pass.
+
+Another session (commit 2e295b8) added cinematic rendering and adaptive quality (`render/Capability.ts`, `Governor.ts`), military APCs, every car drivable, procedural enterable interiors (`world/builders/interiors.ts`), a bank (`bank.ts`), powers on V / Z / X (`systems/Powers.ts`, city only), ragdolls (`anim/Ragdoll.ts`) and more admin tools. PR #2 (shipking-ai/nightfall) is open from this branch into `main`. It also committed a stray `.freebuff/project-id` file from some other tool; check before merging.
 
 ## NIGHTFALL: RPG, the fifth mode (in progress, 2026-09-28)
 
@@ -184,12 +198,19 @@ The user's brief is a very large "fifth game" addendum: an endless streamed worl
 - Rounds are best of three with a 60 s clock. A KO triggers slow motion; the deciding round offers "Finish it" and a three-hit finisher (the special near a dizzy opponent).
 - The CPU (`FightAI.ts`) has a reaction time, spacing, punishes, combos and three levels. For local versus, **hold A on a second pad**. Player one is keyboard plus *their* pad (`Input.controlsWith`), so the second player's presses never drive them.
 
-### WARZONE (`modes/Warzone.ts`, `modes/warzone/*`, `ui/WarzoneHud.ts`, `styles/warzone.css`)
-- Domination in Pier 9 Yard. The bounds (x 40–101.5, z −28–60.5) are invisible collision walls added on start and removed on stop. The points are A (92, −20), B (68.5, 9) in the middle gap, and C (46, 44). Blue spawns south-west and Red north-east. The first team to 150 wins (1 point per held point every 2 s), with a 6-minute clock.
-- The bots (`Soldier.ts`) move on a 0.5 m `NavGrid` (A* with string-pulling) built from the yard's collision. Each one leans towards a point, needs line of sight plus a reaction time before firing, strafes, crouches at range, bursts, reloads, falls back when hurt, and turns on whoever shot it. Accuracy against the player scales with the difficulty (Recruit / Regular / Veteran).
-- Guns (`weapons.ts`): carbine, SMG, marksman rifle, shotgun and pistol, in four loadouts. Each has damage falloff, headshots, hip and ADS spread, bloom and recoil (the camera kicks and mostly settles). Armor soaks 60 % until it's gone, health regenerates out of the fight, and there are ammo and armor stations plus drops from the dead.
-- **First person by default** (`Viewmodel.ts`): the gun and gloved forearms ride the camera with sway, bob, kick, reload dip and swap. Aiming lines the sight up just under a dot. D-pad ↑ / V switches to over the shoulder, and death always uses the third-person camera. The first-person pitch range is ±1.3 (`FollowCamera.pitchMin/Max`).
-- Aim assist is pad only: slowdown over a visible enemy, plus a settle onto one when the sights come up.
+### WARZONE (`modes/Warzone.ts`, `modes/warzone/*`, `ui/WarzoneHud.ts`, `ui/WarzoneMenu.ts`, `ui/Gunsmith.ts`, `ui/Minimap.ts`, `styles/warzone.css`)
+- **Front end:** Warzone opens on its own menu (`WarzoneMenu`): Play (mode cards, bots difficulty, Hardline, view, loadout, Deploy), Loadouts (into the gunsmith), Career, Controls. LB / RB tabs; it's a nav scope, so the pad works everywhere. The end screen's second button returns to it.
+- **The yard:** Pier 9 Yard, bounds x 40–101.5, z −28–60.5 (invisible walls added on start, removed on stop). Points A (92, −20), B (68.5, 9), C (46, 44). Blue spawns south-west, Red north-east.
+- **Modes** (`modes.ts`): Domination, Team Deathmatch, Free-for-all, Hotspot (a zone that moves every 60 s), Tagged (kill-confirm style), Capture the Flag, Gun Ladder (`LADDER`), Last Charge (rounds, plant at A or C, defuse; sides swap after three; first to four), and a firing range. Hardline: 60 health, no regeneration, no map/compass/markers/crosshair. Free-for-all works through `foe(a, b)` and `RULES.ffa` in `Soldier.ts`; everything that asks "is this an enemy" goes through it.
+- **Arsenal** (`arsenal.ts`, 39 original weapons in 12 classes; `attachments.ts`, 44 attachments in 9 slots, five per gun): `weapons.ts` compiles a weapon plus attachments into a `Gun`. Guns are modelled procedurally from their spec (`Guns.ts` `buildGun`, vertex colours, one draw each; the gunsmith draws the same model side on). Fire modes auto/semi/burst/bolt/pump/lever/single/swing; per-gun aim time, sprint-to-fire, climbing recoil with a lean and recovery; empty reloads; single-shell loading that firing interrupts; penetration through thin walls; limb damage; launchers fire projectiles that explode (`Blasts.ts`).
+- **Gear** (`Gear.ts`): frag (cooked), sticky charge, fire bottle, tripwire mine, throwing knife, remote charge; smoke (blocks `sees()`), flash, stun, decoy, sensor, stim. G / RB lethal, Z / LB tactical.
+- **Streaks** (`Streaks.ts`): recon, supply drop, counter-recon, sentry, precision strike, attack drone, at 3–9 kills in one life (5 / B / D-pad ↓). Bots earn recon and strikes.
+- **Bots** (`Soldier.ts`): NavGrid A*; reaction times; strafing; cover (`findCover`); flanking waypoints; hunting the last-seen position; investigating noise and squad callouts; grenades at where you were; fleeing grenades and fire; suppression; flash/stun; the mode's goals via `Battle.goal`; spoken callouts (`shout`) with radio lines.
+- **Career** (`career.ts`): XP from kills, headshots, objectives, matches and challenges; 40 levels; weapons and attachments unlock by level (the gunsmith shows what's locked); stats and 12 challenges, saved in localStorage. Nothing is for sale.
+- **HUD:** minimap that turns with you (enemies only when they give themselves away), compass with objective pips, fire-mode label, gear counts, streak ladder, plant/defuse bar, scope overlay, flash and stun overlays.
+- **Movement** (`Player.tactical`, Warzone only): tactical sprint, slide, mantle up to ~2 m.
+- **Tests:** `wz-menu`, `wz-arsenal`, `wz-gear`, `wz-modes` (MODES=…, SECS=…), `wz-map`, `wz-moves`, and the older `warzone.mjs`.
+- **Not done:** a second map, online play (bots only).
 
 ### CITY and AFTER HOURS
 - After Hours adds headphones (radio on foot, D-pad ←/→), plus pause-menu switches for the weather and for holding the hour (reset when you leave the mode), and photo mode. The City keeps everything it had.

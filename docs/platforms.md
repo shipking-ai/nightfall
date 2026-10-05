@@ -59,6 +59,8 @@ What's deliberately **not** here: any platform's SDK, API names, keys or credent
   - Shadow and post settings.
 - **Suspend:** on `onSuspend(true)`, pause the clock and audio. The RPG autosaves at safe points: sleeping, finishing a job, reaching a new town, and every 150 s.
 - **Online:** the RPG is single-player and needs no network. The shared-city multiplayer in the original modes would need the platform's own networking and account rules.
+- **Warzone:** matches are against bots, entirely on the device. Online squads or matchmaking would go through the platform's own networking, party and account services, with its own rules on voice and text chat. The career (`modes/warzone/career.ts`) is saved locally; a port moves it to the platform's save service with the rest.
+- **Controller:** sensitivity (horizontal, vertical, aiming, scaled with scope zoom), look acceleration, response curve, dead zone, inversion, southpaw, aim assist (off, low, standard; controller only), hold or toggle for sprint, aim and crouch, vibration and trigger effects, and remapping are all in Settings. A port keeps these and adds whatever the platform's accessibility guidelines ask for.
 
 ## Free to play, fairly
 
@@ -68,4 +70,5 @@ The game is free, and there is nothing to buy. If that ever changes, these rules
 - **Cosmetic only, at a price shown up front**, in real money, with no premium currency.
 - **No timers or nags built to push spending.** No purchase prompts during play.
 - **Everything earnable by playing stays earnable by playing.**
+- **Warzone's levels, weapons, attachments and streaks are earned by playing only.** Streaks come from kills in one life; nothing is bought.
 - **Follow each platform's rules** on purchases, refunds, age ratings and disclosures, from their current official documentation.

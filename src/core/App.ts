@@ -856,6 +856,7 @@ export class App {
     const inp = this.input;
     inp.shape.deadzone = d.padDeadzone;
     inp.shape.curve = d.padCurve;
+    inp.zoomSens = d.zoomSens;
     Object.assign(inp.look, { sensX: d.padSensX, sensY: d.padSensY, aimSens: d.padAimSens, accel: d.padAccel, invertX: d.padInvertX, invertY: d.padInvertY, southpaw: d.southpaw });
     inp.modes.sprint = d.sprintMode;
     inp.modes.aim = d.aimMode;
@@ -2907,7 +2908,8 @@ case 'burn':
     } else if (inWorld) {
       this.fitLight.intensity = 0;
       if (playing && this.input.enabled && !this.wheel.isOpen && !this.photoOn) {
-        this.follow.look(this.input.lookX, this.input.lookY);
+        const zs = this.input.zoomSens ? this.input.zoomScale : 1;
+        this.follow.look(this.input.lookX * zs, this.input.lookY * zs);
         this.follow.stick(this.input.stickYaw, this.input.stickPitch);
       }
       this.introT = Math.min(1, this.introT + dt / 3.2);

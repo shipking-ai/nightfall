@@ -8,7 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const OUT = process.env.SHOTS ?? resolve(here, '../../captures/playtest');
 mkdirSync(OUT, { recursive: true });
 
-export async function launch({ pad = 'xbox', w = 960, h = 540, url = 'http://localhost:5317/' } = {}) {
+export async function launch({ pad = 'xbox', w = 960, h = 540, url = process.env.NF_URL ?? 'http://localhost:5317/' } = {}) {
   const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', '--enable-precise-memory-info', '--js-flags=--expose-gc'] });
   const page = await browser.newPage({ viewport: { width: w, height: h } });
   const errors = [];
