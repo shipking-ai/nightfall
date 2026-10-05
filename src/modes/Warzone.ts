@@ -15,6 +15,8 @@ import { NavGrid } from './warzone/NavGrid';
 import { Soldier, chestY, headY, wrap, type Battle, type CapturePoint, type Unit } from './warzone/Soldier';
 import { GunMeshes } from './warzone/Guns';
 import { Blasts } from './warzone/Blasts';
+import { Gear, GEAR_NAME, type GearKind } from './warzone/Gear';
+import { STREAK, STREAKS, Streaks, type StreakId } from './warzone/Streaks';
 import { Viewmodel } from './warzone/Viewmodel';
 import { ARMOR_SOAK, BOT_PRIMARIES, GUNS, MAX_ARMOR, allLoadouts, damageAt, loadoutGuns, type Gun, type Loadout } from './warzone/weapons';
 import { WarzoneHud } from '../ui/WarzoneHud';
@@ -131,6 +133,21 @@ export class Warzone {
   private blasts = new Blasts();
   /** rockets, grenades and slow rounds in the air */
   private shells: Shell[] = [];
+  gear: Gear;
+  streaks: Streaks;
+  /** kills this life, and the streaks you've earned and not yet used */
+  private lifeKills = 0;
+  private earned: StreakId[] = [];
+  private botLife = new Map<Unit, number>();
+  private reconT = 0;
+  /** what you have left this life */
+  private lethalN = 1;
+  private tacticalN = 2;
+  /** a frag held with the pin out (seconds) */
+  private cookT = 0;
+  /** blinded / stunned (seconds left) */
+  private blindT = 0;
+  private stunT = 0;
   private nav: NavGrid | null = null;
   private walls: Box[] = [];
   private points: CapturePoint[] = POINTS.map(([id, x, z]) => ({ id, pos: new THREE.Vector3(x, 0, z), owner: -1, cap: 0, capTeam: -1, contested: false, radius: 5 }));
@@ -228,7 +245,59 @@ export class Warzone {
       fire: (s, t, hit, head) => this.botFire(s, t, hit, head),
       home: (team) => this.spawnCentre(team),
       skill: this.skill,
+      danger: (at, r) => this.gear.danger(at, r),
+      lob: (s, kind, at) => this.gear.lob(kind, s, _t1.set(s.pos.x, s.pos.y + 1.6, s.pos.z), at),
+      callout: (s, at) => {
+        for (const b of this.bots) if (b !== s && b.alive && b.team === s.team && b.pos.distanceTo(s.pos) < 28) b.investigate(at, 5);
+      },
     };
+    this.gear = new Gear({
+      units: this.units,
+      col: host.collision,
+      blasts: this.blasts,
+      audio: host.audio,
+      sees: (a, b) => this.sees(a, b),
+      explode: (at, r, dmg, owner, name) => this.blast(at, r, dmg, owner, named(name)),
+      hurt: (u, dmg, owner, name, head) => {
+        const killed = this.damage(u, dmg, owner, named(name), head);
+        if (owner === this.me && dmg > 5) this.hud.hitmarker(killed, head);
+        return killed;
+      },
+      blind: (u, k) => {
+        if (u === this.me) {
+          this.blindT = Math.max(this.blindT, 0.6 + k * 3.4);
+          this.host.audio.setMuffled(true);
+          this.host.input.rumble('hurt', k);
+        } else if (u instanceof Soldier) u.blind(0.5 + k * 3.5);
+      },
+      stun: (u, k) => {
+        if (u === this.me) this.stunT = Math.max(this.stunT, 1 + k * 3);
+        else if (u instanceof Soldier) u.stun(1 + k * 3);
+      },
+      noise: (at, team) => {
+        for (const b of this.bots) if (b.alive && b.team !== team && b.pos.distanceTo(at) < 45) b.investigate(at, 6);
+      },
+    });
+    this.group.add(this.gear.group);
+    this.streaks = new Streaks({
+      units: this.units,
+      col: host.collision,
+      blasts: this.blasts,
+      audio: host.audio,
+      tracers: host.tracers,
+      sees: (a, b) => this.sees(a, b),
+      blast: (at, r, dmg, owner, name) => this.blast(at, r, dmg, owner, named(name)),
+      hurt: (u, dmg, owner, name, head) => {
+        const killed = this.damage(u, dmg, owner, named(name), head);
+        if (owner === this.me) this.hud.hitmarker(killed, head);
+        return killed;
+      },
+      supply: (at) => {
+        for (const kind of ['ammo', 'armor', 'ammo'] as const) this.pickups.push({ kind, pos: at.clone().add(_t1.set((Math.random() - 0.5) * 1.2, 0, (Math.random() - 0.5) * 1.2)), t: 40, station: false, up: true });
+      },
+      announce: (text, blue) => this.hud.announce(text, blue === (this.me.team === 0) ? 'us' : 'them'),
+    });
+    this.group.add(this.streaks.group);
   }
 
   /* ─────────────────────────── the match ─────────────────────────── */
@@ -353,6 +422,11 @@ export class Warzone {
     this.killedBy = null;
     this.shells.length = 0;
     this.blasts.clear();
+    this.gear.clear();
+    this.streaks.clear();
+    this.earned = [];
+    this.lifeKills = 0;
+    this.botLife.clear();
     this.hud.loadout(true, this.loadouts, this.loadouts.indexOf(this.loadout), true);
     this.placeForPreview();
   }
@@ -423,6 +497,9 @@ export class Warzone {
     this.reserve = [this.held[0].reserve, this.held[1].reserve];
     this.reloadT = this.switchT = this.cool = this.bloom = this.recoilDebt = this.recoilYawDebt = 0;
     this.adsK = this.burstLeft = this.cycleT = this.shotIndex = this.meleeT = 0;
+    this.lethalN = lo.lethal === 'claymore' || lo.lethal === 'c4' ? 1 : lo.lethal === 'throwknife' ? 2 : 1;
+    this.tacticalN = lo.tactical === 'stim' ? 1 : 2;
+    this.cookT = this.blindT = this.stunT = 0;
     const me = this.me;
     me.alive = true;
     me.hp = 100;
@@ -473,6 +550,9 @@ export class Warzone {
         this.pointsUpdate(dt);
         this.pickupsUpdate(dt);
         this.shellsUpdate(dt);
+        this.gear.update(dt);
+        this.streaks.update(dt);
+        this.botStreaks(dt);
         this.respawnFlow(dt);
         if (this.phase === 'play') {
           this.clock -= dt;
@@ -506,7 +586,7 @@ export class Warzone {
     this.hud.score(this.score, SCORE_LIMIT, this.clock);
     this.hud.points(this.points, this.me.team);
     this.hud.markers(this.points, cam, this.me);
-    this.hud.tags(this.bots, cam, this.me);
+    this.hud.tags(this.bots, cam, this.me, (u) => this.streaks.sweeps(this.me.team) || (this.streaks.jammed[this.me.team] <= 0 && this.gear.revealed(u, this.me.team)));
     this.hud.vitals(this.me.hp, this.me.armor);
     const other = this.held[1 - this.slot];
     this.hud.weapon(gun.name, gun.cls === 'melee' ? -1 : this.mag[this.slot], this.reserve[this.slot], other.name, this.reloadT > 0 ? 1 - this.reloadT / this.reloadDur : null, MODE_NAME[gun.mode] + (gun.mode === 'burst' ? ` ×${gun.burst}` : ''));
@@ -581,6 +661,8 @@ export class Warzone {
       inp.aimSlow = 0;
       this.zoom(this.baseFov, dt);
       this.hud.crosshair(null);
+      this.hud.blind(0, 0);
+      this.host.audio.setMuffled(false);
       return;
     }
     if (this.host.cutscene?.()) {
@@ -680,6 +762,7 @@ export class Warzone {
       f.yaw -= yb * 0.5;
     }
     if (this.sinceFire > gun.rate * 2.5) this.shotIndex = 0;
+    this.playerGear(dt, k);
     // the body: gun up while aiming or just after a shot, at the ready otherwise
     const up = aiming || this.sinceFire < 0.7;
     if (gun.long) {
@@ -697,6 +780,67 @@ export class Warzone {
     const spread = this.spread(k);
     const px = (Math.tan(spread) / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2))) * (innerHeight / 2);
     this.hud.crosshair({ spread: melee ? 6 : px, enemy: this.enemyUnderCrosshair(), aiming: k > 0.5, fp: this.fpActive, scope: k > 0.85 && gun.zoom <= 24 });
+  }
+
+  /** Grenades and the rest: G (RB) for the lethal, Z (LB) for the tactical. A frag cooks while you hold it. */
+  private playerGear(dt: number, k: number) {
+    const inp = this.host.input, lo = this.loadout, p = this.host.player;
+    this.blindT = Math.max(0, this.blindT - dt);
+    if (this.blindT <= 0) this.host.audio.setMuffled(false);
+    this.stunT = Math.max(0, this.stunT - dt);
+    if (this.stunT > 0) {
+      p.speedMul *= 0.5;
+      inp.aimSlow = Math.max(inp.aimSlow, 0.65);
+    }
+    if (this.cookT > 0) {
+      this.cookT += dt;
+      if (!inp.held('lethal') || this.cookT >= 3) {
+        this.throwGear('frag', Math.min(3, this.cookT));
+        this.cookT = 0;
+      }
+    } else if (inp.pressed('lethal')) {
+      if (lo.lethal === 'c4' && this.gear.hasCharge(this.me)) {
+        this.gear.detonate(this.me);
+        this.host.audio.mechanism('click');
+      } else if (this.lethalN > 0) {
+        this.lethalN--;
+        if (lo.lethal === 'frag') {
+          this.cookT = 0.001;
+          this.host.audio.mechanism('pin');
+        } else this.throwGear(lo.lethal, 0);
+      }
+    }
+    if (inp.pressed('tactical') && this.tacticalN > 0) {
+      this.tacticalN--;
+      if (lo.tactical === 'stim') {
+        this.me.hp = 100;
+        this.sinceHurt = 99;
+        this.host.audio.mechanism('magIn');
+        this.hud.announce('Stim', 'pickup');
+      } else this.throwGear(lo.tactical, 0);
+    }
+    this.hud.gear(GEAR_NAME[lo.lethal], this.lethalN + (lo.lethal === 'c4' && this.gear.hasCharge(this.me) ? 0 : 0), GEAR_NAME[lo.tactical], this.tacticalN, this.cookT > 0 ? this.cookT / 3 : null, lo.lethal === 'c4' && this.gear.hasCharge(this.me));
+    this.hud.blind(this.blindT, this.stunT);
+    if (inp.pressed('streak') && this.earned.length) {
+      const id = this.earned.shift()!;
+      const cam = this.host.camera, dir = cam.getWorldDirection(_t2);
+      const far = Math.min(80, this.host.collision.raycast(cam.position, dir, 80));
+      const at = _t1.copy(cam.position).addScaledVector(dir, far);
+      at.y = this.host.collision.groundAt(at.x, at.z, at.y + 1, 3, 0.3);
+      this.streaks.use(id, this.me, at, this.host.follow.yaw);
+    }
+    this.hud.streaks(STREAKS, this.lifeKills, this.earned.map((id) => STREAK[id].name));
+    void k;
+  }
+
+  private throwGear(kind: GearKind, cooked: number) {
+    const cam = this.host.camera, p = this.host.player;
+    const dir = cam.getWorldDirection(_t2);
+    const from = this.fpActive ? _t1.copy(cam.position).addScaledVector(dir, 0.4) : _t1.set(p.pos.x, p.pos.y + 1.6, p.pos.z).addScaledVector(dir, 0.5);
+    this.gear.throw(kind, this.me, from, dir, cooked);
+    p.act('act.throw');
+    this.switchT = Math.max(this.switchT, 0.35);
+    this.vm.swing();
   }
 
   private startReload() {
@@ -761,6 +905,7 @@ export class Warzone {
         continue;
       }
       const res = this.trace(gun, this.me, o, dir, skip);
+      if (n === 0) this.suppressAlong(o, dir, res.end);
       if (n === 0 || n % 3 === 0) this.host.tracers.shot(this.muzzle, res.end, res.hit || res.wall);
       if (res.hit) {
         anyHit = true;
@@ -824,6 +969,40 @@ export class Warzone {
       power *= 0.55;
     }
     return { hit: false, head: false, killed: false, end, wall: wallHit };
+  }
+
+  /** The bots' streaks: a sweep at four kills, a strike on their last target at seven. And a sweep means they know where you are. */
+  private botStreaks(dt: number) {
+    for (const [u, n] of this.botLife) {
+      if (!u.alive) continue;
+      if (n === 4 || n === 7) {
+        this.botLife.set(u, n + 0.5);
+        const s = u as Soldier;
+        if (n === 4) this.streaks.use('recon', u, u.pos, s.yaw);
+        else {
+          const t = s.target && s.target.alive ? s.target : this.me;
+          this.streaks.use('strike', u, t.pos.clone(), s.yaw + Math.PI / 2);
+        }
+      }
+    }
+    this.reconT -= dt;
+    if (this.reconT <= 0) {
+      this.reconT = 2;
+      const them = (1 - this.me.team) as 0 | 1;
+      if (this.streaks.sweeps(them) && this.me.alive) for (const b of this.bots) if (b.team === them && b.alive && b.pos.distanceTo(this.me.pos) < 50) b.investigate(this.me.pos, 3);
+    }
+  }
+
+  /** Rounds cracking past a bot's head make them get low. */
+  private suppressAlong(o: THREE.Vector3, dir: THREE.Vector3, end: THREE.Vector3) {
+    const len = end.distanceTo(o);
+    for (const b of this.bots) {
+      if (!b.alive || b.team === this.me.team) continue;
+      const c = _t2.set(b.pos.x, chestY(b), b.pos.z).sub(o);
+      const along = c.dot(dir);
+      if (along < 0 || along > len + 1) continue;
+      if (c.addScaledVector(dir, -along).length() < 1.8) b.suppress();
+    }
   }
 
   /** Something that flies: a rocket, a 40 mm round, a heavy bullet with drop. */
@@ -891,7 +1070,11 @@ export class Warzone {
 
   /** A blast: everyone it can reach, hurt by how close they were. You can hurt yourself; not your own side. */
   private explode(at: THREE.Vector3, gun: Gun, owner: Unit) {
-    const r = gun.blast;
+    this.blast(at, gun.blast, gun.blastDmg, owner, gun);
+  }
+
+  /** A blast of radius r, `dmg` at the centre, credited to `owner` with `gun` in the kill feed. */
+  private blast(at: THREE.Vector3, r: number, dmgMax: number, owner: Unit, gun: Gun) {
     this.blasts.boom(at, r);
     this.host.audio.explosion(at, 0.6 + r * 0.1);
     const dMe = at.distanceTo(this.me.pos);
@@ -906,8 +1089,8 @@ export class Warzone {
       if (u !== owner && u.team === owner.team) continue;
       const c = _t2.set(u.pos.x, chestY(u), u.pos.z);
       const d = c.distanceTo(at);
-      if (d > r || !this.sees(eye, c)) continue;
-      const dmg = gun.blastDmg * Math.pow(1 - d / r, 0.7) * (u === owner ? 0.5 : 1);
+      if (d > r || !this.clear(eye, c)) continue;
+      const dmg = dmgMax * Math.pow(1 - d / r, 0.7) * (u === owner ? 0.5 : 1);
       if (dmg < 1) continue;
       hits++;
       if (this.damage(u, dmg, owner, gun, false)) kills++;
@@ -1032,6 +1215,17 @@ export class Warzone {
 
   private kill(u: Unit, from: Unit, gun: Gun, head: boolean) {
     from.kills++;
+    // streaks run on kills in one life
+    if (from === this.me && u !== this.me) {
+      this.lifeKills++;
+      const s = STREAKS.find((x) => x.kills === this.lifeKills);
+      if (s) {
+        this.earned.push(s.id);
+        this.hud.announce(`${s.name} earned`, 'us');
+        this.host.input.rumble('reloadDone', 1);
+      }
+    } else if (from !== u && !from.isPlayer) this.botLife.set(from, (this.botLife.get(from) ?? 0) + 1);
+    this.botLife.delete(u);
     this.hud.feed(from.name, from.team, gun.name, u.name, u.team, head, from.isPlayer || u.isPlayer);
     // they drop what they had
     this.pickups.push({ kind: Math.random() < 0.6 ? 'ammo' : 'armor', pos: u.pos.clone(), t: 25, station: false, up: true });
@@ -1043,6 +1237,7 @@ export class Warzone {
       // you: down, and the camera pulls out over your shoulder to see who did it
       this.me.alive = false;
       this.me.deaths++;
+      this.lifeKills = 0;
       this.deadT = RESPAWN;
       this.killedBy = { name: from.name, gun: gun.name, head };
       const p = this.host.player;
@@ -1085,7 +1280,13 @@ export class Warzone {
   }
 
   /** Can an eye here see a body there (nothing solid in between)? */
+  /** Can an eye here see a body there: nothing solid in between, and no smoke. */
   private sees(a: THREE.Vector3, b: THREE.Vector3) {
+    return this.clear(a, b) && !this.gear.smokeBlocks(a, b);
+  }
+
+  /** Nothing solid between two points (a blast reaches through smoke). */
+  private clear(a: THREE.Vector3, b: THREE.Vector3) {
     const d = _s.subVectors(b, a);
     const l = d.length();
     if (l < 0.01) return true;
@@ -1195,6 +1396,8 @@ export class Warzone {
       const full = this.held.every((g, i) => this.reserve[i] >= g.reserve);
       if (full) return false;
       this.held.forEach((g, i) => (this.reserve[i] = Math.min(g.reserve * 1.5, this.reserve[i] + Math.ceil(g.reserve * 0.5))));
+      this.lethalN = Math.max(this.lethalN, 1);
+      this.tacticalN = Math.max(this.tacticalN, 1);
       this.hud.announce('Ammo', 'pickup');
     }
     this.host.audio.fight('grab', 0.6);
@@ -1342,6 +1545,13 @@ interface Shell {
 const MODE_NAME: Record<Gun['mode'], string> = { auto: 'Auto', semi: 'Semi', burst: 'Burst', bolt: 'Bolt', pump: 'Pump', lever: 'Lever', single: 'Single', swing: 'Melee' };
 /** A rifle butt or a pistol whip, for the kill feed. */
 const MELEE_HIT: Gun = { ...GUNS.knife, name: 'Melee' };
+ /** A kill-feed name for a thing that isn't a gun (a frag, fire). */
+const NAMED = new Map<string, Gun>();
+function named(name: string): Gun {
+  let g = NAMED.get(name);
+  if (!g) NAMED.set(name, (g = { ...GUNS.knife, name }));
+  return g;
+}
 const easeInOut = (k: number) => k * k * (3 - 2 * k);
 const _t1 = new THREE.Vector3();
 const _t2 = new THREE.Vector3();

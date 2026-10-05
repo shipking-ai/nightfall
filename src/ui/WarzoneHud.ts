@@ -47,6 +47,12 @@ export class WarzoneHud {
   private reserveEl: HTMLElement;
   private otherEl: HTMLElement;
   private modeEl: HTMLElement;
+  private gearEl: HTMLElement;
+  private flashEl: HTMLElement;
+  private stunEl: HTMLElement;
+  private lastGear = '';
+  private streakEl: HTMLElement;
+  private lastStreak = '';
   private scopeEl: HTMLElement;
   private reloadEl: HTMLElement;
   private cross: HTMLElement;
@@ -100,9 +106,13 @@ export class WarzoneHud {
     this.reserveEl = h('span', { class: 'wz-gun__res' });
     this.otherEl = h('span', { class: 'wz-gun__other meta' });
     this.modeEl = h('span', { class: 'wz-gun__mode meta' });
+    this.gearEl = h('div', { class: 'wz-gear' });
+    this.streakEl = h('div', { class: 'wz-streaks' });
+    this.flashEl = h('div', { class: 'wz-flash' });
+    this.stunEl = h('div', { class: 'wz-stun' });
     this.scopeEl = h('div', { class: 'wz-scope' }, h('i', { class: 'wz-scope__h' }), h('i', { class: 'wz-scope__v' }));
     this.reloadEl = h('i', { class: 'wz-gun__reload' });
-    const gun = h('div', { class: 'wz-gun' }, h('div', { class: 'wz-gun__head' }, this.modeEl, this.gunEl), h('div', { class: 'wz-gun__ammo' }, this.magEl, this.reserveEl), this.reloadEl, this.otherEl);
+    const gun = h('div', { class: 'wz-gun' }, h('div', { class: 'wz-gun__head' }, this.modeEl, this.gunEl), h('div', { class: 'wz-gun__ammo' }, this.magEl, this.reserveEl), this.reloadEl, this.otherEl, this.gearEl);
     this.cross = h('div', { class: 'wz-cross' }, h('i'), h('i'), h('i'), h('i'));
     this.dot = h('div', { class: 'wz-dot' });
     this.hitEl = h('div', { class: 'wz-hit' }, h('i'), h('i'), h('i'), h('i'));
@@ -152,6 +162,9 @@ export class WarzoneHud {
       gun,
       this.cross,
       this.scopeEl,
+      this.streakEl,
+      this.stunEl,
+      this.flashEl,
       this.dot,
       this.hitEl,
       this.annEl,
@@ -229,12 +242,15 @@ export class WarzoneHud {
   }
 
   /** Names over your teammates' heads. */
-  tags(units: (Unit & { rig?: unknown })[], cam: THREE.PerspectiveCamera, me: Unit) {
+  /** Your squad's names over their heads; enemies only when a sensor gives them away. */
+  tags(units: (Unit & { rig?: unknown })[], cam: THREE.PerspectiveCamera, me: Unit, revealed?: (u: Unit) => boolean) {
     const W = innerWidth, H = innerHeight;
     units.forEach((u, i) => {
       const e = this.tagEls[i];
       const d = u.pos.distanceTo(cam.position);
-      const show = u.alive && u.team === me.team && d < 60;
+      const spotted = u.alive && u.team !== me.team && !!revealed?.(u);
+      e.classList.toggle('is-enemy', spotted);
+      const show = (u.alive && u.team === me.team && d < 60) || spotted;
       if (!show) {
         e.style.display = 'none';
         return;
@@ -255,6 +271,37 @@ export class WarzoneHud {
     this.hpEl.style.transform = `scaleX(${Math.max(0, hp / 100).toFixed(3)})`;
     this.hpEl.parentElement!.classList.toggle('is-low', hp < 35);
     this.armorEl.style.transform = `scaleX(${Math.max(0, armor / 50).toFixed(3)})`;
+  }
+
+  /** Lethal and tactical left; `cook` 0..1 a frag in the hand; `charge` a remote charge waiting. */
+  gear(lethal: string, ln: number, tactical: string, tn: number, cook: number | null, charge: boolean) {
+    const key = `${lethal}${ln}${tactical}${tn}${cook == null ? '' : cook.toFixed(2)}${charge}`;
+    if (key === this.lastGear) return;
+    this.lastGear = key;
+    this.gearEl.replaceChildren(
+      h('span', { class: `wz-gear__item${ln ? '' : ' is-out'}${cook != null ? ' is-cook' : ''}` }, glyph('lethal'), h('b', {}, charge ? 'Detonate' : lethal), h('i', {}, `×${ln}`)),
+      h('span', { class: `wz-gear__item${tn ? '' : ' is-out'}` }, glyph('tactical'), h('b', {}, tactical), h('i', {}, `×${tn}`)),
+      ...(cook != null ? [h('i', { class: 'wz-gear__cook', style: `transform:scaleX(${cook.toFixed(3)})` })] : []),
+    );
+  }
+
+  /** The streak ladder: kills this life against what each one costs, and what's ready to use. */
+  streaks(list: { name: string; kills: number }[], kills: number, ready: string[]) {
+    const key = `${kills}|${ready.join()}`;
+    if (key === this.lastStreak) return;
+    this.lastStreak = key;
+    // nothing to show before the first kill (the controls are on screen then)
+    if (!kills && !ready.length) return this.streakEl.replaceChildren();
+    this.streakEl.replaceChildren(
+      ...(ready.length ? [h('div', { class: 'wz-streaks__ready' }, glyph('streak'), h('b', {}, ready[0]), ready.length > 1 ? h('i', {}, `+${ready.length - 1}`) : null)] : []),
+      ...list.map((s) => h('span', { class: `wz-streaks__step${kills >= s.kills ? ' is-done' : ''}`, title: s.name }, h('i', {}, String(s.kills)), h('em', {}, s.name))),
+    );
+  }
+
+  /** Flashed (white, fading) and stunned (a blue smear at the edges). */
+  blind(flash: number, stun: number) {
+    this.flashEl.style.opacity = flash > 0 ? Math.min(1, flash / 1.2).toFixed(3) : '0';
+    this.stunEl.style.opacity = stun > 0 ? Math.min(0.85, stun / 2).toFixed(3) : '0';
   }
 
   /** `mag` -1: a blade (nothing to count). */

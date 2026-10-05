@@ -308,3 +308,25 @@ body[data-mode='warzone'] .hud { display: none; }
 .gs-detail .bad { color: #f09a86; }
 .gs-help { display: flex; gap: 22px; flex-wrap: wrap; }
 @media (max-width: 760px) { .gs-body { grid-template-columns: 1fr; } .gs-draw { display: none; } }
+
+/* gear, flashed, stunned */
+.wz-gear { display: flex; gap: 12px; margin-top: 6px; position: relative; }
+.wz-gear__item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+.wz-gear__item b { font-weight: 500; letter-spacing: 0.06em; }
+.wz-gear__item i { font-style: normal; color: var(--mute); font-variant-numeric: tabular-nums; }
+.wz-gear__item.is-out { opacity: 0.35; }
+.wz-gear__item.is-cook b { color: #f0a080; }
+.wz-gear__cook { position: absolute; left: 0; right: 0; bottom: -5px; height: 2px; background: #f0a080; transform-origin: left center; display: block; }
+.wz-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; mix-blend-mode: screen; }
+.wz-stun { position: absolute; inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 50%, transparent 35%, rgba(120, 160, 230, 0.55) 100%); backdrop-filter: blur(1.5px); }
+.wz-tag.is-enemy { color: var(--red); }
+
+/* streaks (left edge, above the vitals) */
+.wz-streaks { position: absolute; left: var(--safe); bottom: calc(var(--safe) + 64px); display: grid; gap: 3px; justify-items: start; }
+.wz-streaks__ready { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; padding: 4px 8px; background: rgba(40, 70, 120, 0.55); border: 1px solid var(--blue); font-size: 12px; }
+.wz-streaks__ready b { font-weight: 500; }
+.wz-streaks__ready i { font-style: normal; color: var(--mute); }
+.wz-streaks__step { display: flex; gap: 6px; align-items: baseline; font-size: 10px; opacity: 0.45; }
+.wz-streaks__step i { font-style: normal; font-family: var(--f-meta); width: 1.4em; text-align: right; font-variant-numeric: tabular-nums; }
+.wz-streaks__step em { font-style: normal; letter-spacing: 0.06em; }
+.wz-streaks__step.is-done { opacity: 1; color: var(--blue); }

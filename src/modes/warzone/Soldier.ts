@@ -56,9 +56,15 @@ export interface Battle {
   home(team: 0 | 1): THREE.Vector3;
   /** 0..1 how sharp the bots are against the player (difficulty) */
   skill: number;
+  /** a live grenade or fire near here (to get away from) */
+  danger?(at: THREE.Vector3, r: number): THREE.Vector3 | null;
+  /** throw a grenade (or smoke, a flash) at a spot */
+  lob?(s: Soldier, kind: 'frag' | 'smoke' | 'flash' | 'stun', at: THREE.Vector3): void;
+  /** tell the squad: an enemy is there */
+  callout?(s: Soldier, at: THREE.Vector3): void;
 }
 
-type Mode = 'move' | 'fight' | 'retreat';
+type Mode = 'move' | 'fight' | 'retreat' | 'cover';
 
 /** Heights on a body: where you aim, where a head is. */
 export function chestY(u: Unit) {
@@ -117,6 +123,25 @@ export class Soldier implements Unit {
   aimPitch = 0;
   hurtT = 99;
   lastAttacker: Unit | null = null;
+  /** blinded by a flash, slowed by a stun, pinned by fire going past (seconds) */
+  blindT = 0;
+  stunT = 0;
+  suppressT = 0;
+  /** somewhere worth looking: where the enemy was last seen, a fight heard, a squadmate's callout */
+  private hunt = new THREE.Vector3();
+  private huntT = 0;
+  private lastSeen = new THREE.Vector3();
+  /** a spot out of the enemy's sight (to reload or heal behind) */
+  private coverAt = new THREE.Vector3();
+  private coverT = 0;
+  /** a flanker goes round the side: a waypoint first, then the point */
+  private via: THREE.Vector3 | null = null;
+  private flanker = Math.random() < 0.3;
+  /** what they carry this life */
+  frags = 1;
+  tac: 'smoke' | 'flash' | 'stun' = (['smoke', 'flash', 'stun'] as const)[Math.floor(Math.random() * 3)];
+  tacs = 1;
+  private lobT = 2 + Math.random() * 4;
 
   constructor(public team: 0 | 1, public name: string, public body: Body, public outfit: Outfit, gun: GunId) {
     this.parts = visibleParts(outfit, 10);
@@ -147,6 +172,34 @@ export class Soldier implements Unit {
     this.crouch = 0;
     this.anim.clear();
     this.sinceShot = 99;
+    this.blindT = this.stunT = this.suppressT = this.huntT = this.coverT = 0;
+    this.via = null;
+    this.frags = this.tacs = 1;
+    this.lobT = 2 + Math.random() * 4;
+  }
+
+  /** A flash: can't see for a while. */
+  blind(secs: number) {
+    this.blindT = Math.max(this.blindT, secs);
+    this.anim.play('react.shield', { group: 'hit', fadeIn: 0.05, fadeOut: 0.3 });
+  }
+
+  stun(secs: number) {
+    this.stunT = Math.max(this.stunT, secs);
+  }
+
+  /** Rounds cracking past: get low, shoot worse. */
+  suppress() {
+    this.suppressT = 1.2;
+  }
+
+  /** Go and look somewhere (a noise, a callout), if there's nothing better to do. */
+  investigate(at: THREE.Vector3, secs = 7) {
+    if (this.target && this.target.alive) return;
+    this.hunt.copy(at);
+    this.huntT = secs;
+    this.path = [];
+    this.repathT = 0;
   }
 
   /** Hit by something: turn to face it, and remember who. */
@@ -187,6 +240,12 @@ export class Soldier implements Unit {
       this.friction(dt, 8);
       return;
     }
+    this.blindT = Math.max(0, this.blindT - dt);
+    this.stunT = Math.max(0, this.stunT - dt);
+    this.suppressT = Math.max(0, this.suppressT - dt);
+    this.huntT = Math.max(0, this.huntT - dt);
+    this.coverT = Math.max(0, this.coverT - dt);
+    this.lobT -= dt;
     if (this.reloading > 0 && (this.reloading -= dt) <= 0) {
       this.reloading = 0;
       this.mag = this.gun.mag;
@@ -197,7 +256,8 @@ export class Soldier implements Unit {
     this.thinkT -= dt;
     if (this.thinkT <= 0) {
       this.thinkT = 0.18 + Math.random() * 0.1;
-      this.perceive(b);
+      // a flash leaves them blind: nothing new gets noticed
+      if (this.blindT <= 0) this.perceive(b);
     }
     this.goalT -= dt;
     if (this.goalT <= 0 || this.goalPoint < 0) this.chooseGoal(b);
@@ -205,6 +265,35 @@ export class Soldier implements Unit {
     let want = new THREE.Vector2();
     let speed = 4.2 * this.gun.weight;
     const t = this.target;
+    // a grenade at their feet beats everything else: run
+    const danger = b.danger?.(this.pos, 5.5);
+    if (danger) {
+      const dx = this.pos.x - danger.x, dz = this.pos.z - danger.z, d = Math.hypot(dx, dz) || 1;
+      want.set(dx / d, dz / d);
+      if (!b.nav.walkable(this.pos.x + want.x, this.pos.z + want.y)) want.set(-want.y, want.x);
+      speed = 5.2;
+      this.wantCrouch = false;
+      this.turnAim(Math.atan2(want.x, want.y), 0, dt, 6);
+      this.move(dt, b, want, speed);
+      return;
+    }
+    if (this.blindT > 0) {
+      // staggering, an arm up, aim wandering
+      this.turnAim(this.aimYaw + Math.sin(performance.now() * 0.003 + this.pos.x) * 0.8, 0.2, dt, 2);
+      want.set(Math.sin(this.aimYaw + Math.PI), Math.cos(this.aimYaw + Math.PI)).multiplyScalar(0.3);
+      this.move(dt, b, want, 1.2);
+      return;
+    }
+    if (this.mode === 'cover') {
+      const dx = this.coverAt.x - this.pos.x, dz = this.coverAt.z - this.pos.z, d = Math.hypot(dx, dz);
+      if (d > 0.5) want.set(dx / d, dz / d);
+      this.wantCrouch = d < 1;
+      if (t) this.turnAim(Math.atan2(t.pos.x - this.pos.x, t.pos.z - this.pos.z), 0, dt, 4);
+      if (!this.reloading && this.mag < this.gun.mag) this.reload();
+      if (this.coverT <= 0 || (!this.reloading && this.hp > 60 && d < 1)) this.mode = t ? 'fight' : 'move';
+      this.move(dt, b, want, 4.8 * this.gun.weight);
+      return;
+    }
     if (this.mode === 'retreat') {
       this.retreatT -= dt;
       if (this.retreatT <= 0 || !t) this.mode = t ? 'fight' : 'move';
@@ -213,8 +302,14 @@ export class Soldier implements Unit {
     if (t) this.seenT += dt;
     if (t && t.alive && this.mode !== 'retreat') {
       this.mode = 'fight';
+      this.lastSeen.copy(t.pos);
       this.fight(dt, b, t, want);
       speed = 2.1 * this.gun.weight * (this.crouch > 0.5 ? 0.5 : 1);
+      // out of rounds or hurt mid-fight: find something to get behind first
+      if (this.mode === 'fight' && (this.mag <= 0 || (this.hp < 50 && this.hurtT < 0.6)) && this.coverT <= 0 && this.findCover(b, t)) {
+        this.mode = 'cover';
+        this.coverT = 3.5;
+      }
     } else {
       if (this.mode === 'fight') this.mode = 'move';
       this.follow(dt, b, want);
@@ -230,7 +325,11 @@ export class Soldier implements Unit {
         this.turnAim(Math.atan2(p.x - this.pos.x, p.z - this.pos.z) + Math.sin(performance.now() * 0.0004 + this.pos.x) * 0.9, 0, dt, 1.5);
       }
     }
-    // move
+    this.move(dt, b, want, speed);
+  }
+
+  private move(dt: number, b: Battle, want: THREE.Vector2, speed: number) {
+    if (this.stunT > 0) speed *= 0.4;
     const l = want.length();
     if (l > 1) want.multiplyScalar(1 / l);
     const k = Math.min(1, dt * 9);
@@ -262,6 +361,25 @@ export class Soldier implements Unit {
     this.vel.z *= d;
   }
 
+  /** Somewhere near, walkable, that the target can't see (and not further from the point than we have to be). */
+  private findCover(b: Battle, t: Unit) {
+    const eye = _e.set(t.pos.x, t.pos.y + 1.5, t.pos.z);
+    let best = -Infinity;
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2 + Math.random() * 0.4, r = 2.5 + Math.random() * 4;
+      const x = this.pos.x + Math.cos(a) * r, z = this.pos.z + Math.sin(a) * r;
+      if (!b.nav.walkable(x, z)) continue;
+      if (b.sees(eye, _t.set(x, this.pos.y + 1.0, z))) continue;
+      const s = -r - Math.hypot(x - t.pos.x, z - t.pos.z) * -0.1 + Math.random();
+      if (s > best) (best = s), this.coverAt.set(x, 0, z);
+    }
+    if (best > -Infinity) {
+      this.path = [];
+      return true;
+    }
+    return false;
+  }
+
   /** Look for someone to shoot: the closest enemy we can see (or who just shot at us, or is loud nearby). */
   private perceive(b: Battle) {
     const eye = _e.set(this.pos.x, this.pos.y + 1.55 - this.crouch * 0.45, this.pos.z);
@@ -283,13 +401,31 @@ export class Soldier implements Unit {
       if (best !== this.target) {
         // a reaction time before they do anything about it
         this.target = best;
+        b.callout?.(this, best.pos);
         this.seenT = -(0.28 + Math.random() * 0.35) * (best.isPlayer ? 1.6 - b.skill * 0.6 : 1);
         this.fireT = 0;
       }
       this.lostT = 0;
     } else if (this.target) {
       this.lostT += 0.2;
+      // out of sight a moment: lob something at where they were
+      if (this.target.alive && this.lostT > 0.5 && this.lobT <= 0 && b.lob) {
+        const d = this.lastSeen.distanceTo(this.pos);
+        if (this.frags > 0 && d > 7 && d < 30 && Math.random() < 0.5) {
+          this.frags--;
+          this.lobT = 8 + Math.random() * 6;
+          b.lob(this, 'frag', this.lastSeen);
+          this.anim.play('act.throw', { group: 'hit', fadeIn: 0.1, fadeOut: 0.2 });
+        } else if (this.tacs > 0 && this.tac !== 'smoke' && d > 6 && d < 22 && Math.random() < 0.4) {
+          this.tacs--;
+          this.lobT = 6 + Math.random() * 6;
+          b.lob(this, this.tac, this.lastSeen);
+          this.anim.play('act.throw', { group: 'hit', fadeIn: 0.1, fadeOut: 0.2 });
+        }
+      }
       if (this.lostT > 2.5 || !this.target.alive) {
+        // gone: go and look where they were last seen
+        if (this.target.alive) this.investigate(this.lastSeen, 6);
         this.target = null;
         this.seenT = 0;
       }
@@ -316,11 +452,26 @@ export class Soldier implements Unit {
     this.goal.set(gx, 0, gz);
     this.path = [];
     this.repathT = 0;
+    // a flanker swings wide of the straight line to an enemy point
+    this.via = null;
+    if (this.flanker && p.owner !== this.team && p.owner !== -1) {
+      const dx = p.pos.x - this.pos.x, dz = p.pos.z - this.pos.z, d = Math.hypot(dx, dz) || 1;
+      if (d > 20) {
+        const side = Math.random() < 0.5 ? -1 : 1;
+        const [vx, vz] = b.nav.nearest(this.pos.x + dx * 0.55 + (-dz / d) * 13 * side, this.pos.z + dz * 0.55 + (dx / d) * 13 * side);
+        this.via = new THREE.Vector3(vx, 0, vz);
+      }
+    }
   }
 
   /** Walk the route to the goal (or, falling back, towards home). */
   private follow(dt: number, b: Battle, want: THREE.Vector2) {
-    const dest = this.mode === 'retreat' ? b.home(this.team) : this.goal;
+    if (this.via && Math.hypot(this.via.x - this.pos.x, this.via.z - this.pos.z) < 2.5) {
+      this.via = null;
+      this.path = [];
+    }
+    const dest = this.mode === 'retreat' ? b.home(this.team) : this.huntT > 0 ? this.hunt : this.via ?? this.goal;
+    if (this.huntT > 0 && this.hunt.distanceTo(this.pos) < 2) this.huntT = 0;
     this.repathT -= dt;
     if (!this.path.length || this.repathT <= 0) {
       this.repathT = 3 + Math.random() * 2;
@@ -352,7 +503,7 @@ export class Soldier implements Unit {
     if (this.strafeT <= 0) {
       this.strafeT = 0.6 + Math.random() * 1.1;
       this.strafe = Math.random() < 0.5 ? -1 : 1;
-      this.wantCrouch = d > 14 && Math.random() < 0.35;
+      this.wantCrouch = (d > 14 && Math.random() < 0.35) || (this.suppressT > 0 && Math.random() < 0.7);
     }
     const ideal = this.gun.range[0] * 0.8;
     const toward = d > ideal + 6 ? 0.6 : d < 4 ? -0.5 : 0;
@@ -364,6 +515,10 @@ export class Soldier implements Unit {
     }
     // hurt and outgunned: get out of sight for a moment
     if (this.hp < 35 && this.hurtT < 1 && Math.random() < dt * 1.5) {
+      if (this.tac === 'smoke' && this.tacs > 0 && b.lob) {
+        this.tacs--;
+        b.lob(this, 'smoke', _t.set(this.pos.x + dx * 0.25, 0, this.pos.z + dz * 0.25));
+      }
       this.mode = 'retreat';
       this.retreatT = 2 + Math.random() * 1.5;
       this.path = [];
@@ -391,6 +546,8 @@ export class Soldier implements Unit {
     let p = 0.62 - d * 0.006 - moving * 0.045 - (t.crouch > 0.5 && d > 10 ? 0.1 : 0) + Math.min(0.2, this.seenT * 0.1);
     if (d > this.gun.range[1]) p *= 0.5;
     if (t.isPlayer) p *= 0.45 + b.skill * 0.4;
+    if (this.suppressT > 0) p *= 0.6;
+    if (this.stunT > 0) p *= 0.4;
     p = THREE.MathUtils.clamp(p, 0.04, 0.85);
     const hit = Math.random() < p;
     b.fire(this, t, hit, hit && Math.random() < 0.12);
@@ -404,6 +561,7 @@ export class Soldier implements Unit {
   }
 
   private turnAim(yaw: number, pitch: number, dt: number, rate: number) {
+    if (this.stunT > 0) rate *= 0.3;
     this.aimYaw += wrap(yaw - this.aimYaw) * Math.min(1, dt * rate);
     this.aimPitch += (pitch - this.aimPitch) * Math.min(1, dt * rate);
   }

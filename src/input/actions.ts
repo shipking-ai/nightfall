@@ -57,6 +57,9 @@ const DEFS = {
   melee: { label: 'Melee', group: 'warzone' },
   scoreboard: { label: 'Scoreboard', group: 'warzone' },
   armor: { label: 'Armour plate', group: 'warzone' },
+  lethal: { label: 'Lethal (grenade, mine)', group: 'warzone' },
+  tactical: { label: 'Tactical (smoke, flash)', group: 'warzone' },
+  streak: { label: 'Support streak', group: 'warzone' },
   // FIGHT
   light: { label: 'Light attack', group: 'fight' },
   heavy: { label: 'Heavy attack', group: 'fight' },

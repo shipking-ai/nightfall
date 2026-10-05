@@ -53,6 +53,9 @@ export const DEFAULT_BINDINGS: Record<Action, Binding> = {
   melee: { kbm: ['KeyV'], pad: ['RS'] },
   scoreboard: { kbm: ['Tab'], pad: ['View'] },
   armor: { kbm: ['Digit4'], pad: ['Up'] },
+  lethal: { kbm: ['KeyG'], pad: ['RB'] },
+  tactical: { kbm: ['KeyZ'], pad: ['LB'] },
+  streak: { kbm: ['Digit5', 'KeyB'], pad: ['Down'] },
 
   light: { kbm: ['Mouse0', 'KeyJ'], pad: ['X'] },
   heavy: { kbm: ['Mouse2', 'KeyK'], pad: ['Y'] },

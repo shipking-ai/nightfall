@@ -8,7 +8,8 @@ import * as THREE from 'three';
  * allocates per blast.
  */
 
-const SMOKE = 220;
+const SMOKE = 700;
+const FIRE = 300;
 const SPARK = 260;
 const BALLS = 6;
 const FLY = 24;
@@ -103,7 +104,8 @@ export class Blasts {
   group = new THREE.Group();
   private smoke: Points;
   private sparks: Points;
-  private balls: { m: THREE.Mesh; t: number; r: number }[] = [];
+  private fire: Points;
+  private balls: { m: THREE.Sprite; t: number; r: number; dur: number; col: THREE.Color | null }[] = [];
   private rings: { m: THREE.Mesh; t: number; r: number }[] = [];
   private fly: THREE.InstancedMesh;
   private flyN = 0;
@@ -116,14 +118,15 @@ export class Blasts {
     const dot = softDot();
     this.smoke = new Points(SMOKE, new THREE.PointsMaterial({ size: 2.4, map: dot, vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false }), -0.35, 0.985, true);
     this.sparks = new Points(SPARK, new THREE.PointsMaterial({ size: 0.09, map: dot, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }), 9.8, 0.99, false);
-    this.group.add(this.smoke.obj, this.sparks.obj);
-    const ballGeo = new THREE.IcosahedronGeometry(1, 2);
+    this.fire = new Points(FIRE, new THREE.PointsMaterial({ size: 0.55, map: dot, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }), -2.2, 0.96, true);
+    this.group.add(this.smoke.obj, this.sparks.obj, this.fire.obj);
     for (let i = 0; i < BALLS; i++) {
-      const m = new THREE.Mesh(ballGeo, new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      // a soft billboard: the fireball is light, not a solid
+      const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: dot, color: 0xffa040, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
       m.visible = false;
       this.group.add(m);
-      this.balls.push({ m, t: 9, r: 1 });
-      const ring = new THREE.Mesh(new THREE.RingGeometry(0.85, 1, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffd8a0, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+      this.balls.push({ m, t: 9, r: 1, dur: 0.35, col: null });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.93, 1, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffd8a0, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
       ring.visible = false;
       this.group.add(ring);
       this.rings.push({ m: ring, t: 9, r: 1 });
@@ -140,7 +143,9 @@ export class Blasts {
     const b = this.balls.find((x) => x.t > 0.5) ?? this.balls[0];
     b.t = 0;
     b.r = r * 0.55;
-    b.m.position.copy(at);
+    b.dur = 0.35;
+    b.col = null;
+    b.m.position.set(at.x, at.y + r * 0.2, at.z);
     b.m.visible = true;
     const ring = this.rings.find((x) => x.t > 0.5) ?? this.rings[0];
     ring.t = 0;
@@ -151,6 +156,12 @@ export class Blasts {
       const a = Math.random() * Math.PI * 2, u = Math.random() * 0.9 + 0.1, sp = 6 + Math.random() * 16;
       this.sparks.spawn(at.x, at.y + 0.2, at.z, Math.cos(a) * sp * (1 - u * 0.5), u * sp, Math.sin(a) * sp * (1 - u * 0.5), 1, 0.4 + Math.random() * 0.9);
       this.sparks.tint(1, 0.6 + Math.random() * 0.3, 0.25);
+    }
+    // tongues of flame through the middle of it
+    for (let k = 0; k < 30; k++) {
+      const a = Math.random() * Math.PI * 2, d = Math.random() * r * 0.4;
+      this.fire.spawn(at.x + Math.cos(a) * d, at.y + Math.random() * r * 0.3, at.z + Math.sin(a) * d, Math.cos(a) * 3, 2 + Math.random() * 5, Math.sin(a) * 3, 1, 0.3 + Math.random() * 0.4);
+      this.fire.tint(1, 0.5 + Math.random() * 0.35, 0.15);
     }
     // grit thrown up (dark, falls back)
     for (let k = 0; k < 40; k++) {
@@ -163,6 +174,29 @@ export class Blasts {
       const a = Math.random() * Math.PI * 2, d = Math.random() * r * 0.5;
       this.smoke.spawn(at.x + Math.cos(a) * d, at.y + Math.random() * r * 0.4, at.z + Math.sin(a) * d, Math.cos(a) * 1.5, 1.2 + Math.random() * 2.2, Math.sin(a) * 1.5, 0.12 + Math.random() * 0.1, 3 + Math.random() * 3);
     }
+  }
+
+  /** A flash-bang's pop: a hard white (or blue) flash, no fire. */
+  pop(at: THREE.Vector3, color: number) {
+    const b = this.balls.find((x) => x.t > 0.5) ?? this.balls[0];
+    b.t = 0;
+    b.r = 1.3;
+    b.dur = 0.16;
+    b.col = new THREE.Color(color);
+    b.m.position.copy(at);
+    b.m.visible = true;
+    for (let k = 0; k < 24; k++) {
+      const a = Math.random() * Math.PI * 2, sp = 3 + Math.random() * 6;
+      this.sparks.spawn(at.x, at.y + 0.1, at.z, Math.cos(a) * sp, Math.random() * 5, Math.sin(a) * sp, 1, 0.3 + Math.random() * 0.3);
+    }
+    this.puff(at, 0.55, 2.5);
+  }
+
+  /** One lick of flame off burning ground. */
+  flame(at: THREE.Vector3) {
+    this.fire.spawn(at.x, at.y, at.z, (Math.random() - 0.5) * 0.6, 1 + Math.random() * 1.6, (Math.random() - 0.5) * 0.6, 1, 0.5 + Math.random() * 0.5);
+    this.fire.tint(1, 0.45 + Math.random() * 0.3, 0.12);
+    if (Math.random() < 0.25) this.smoke.spawn(at.x, at.y + 1.2, at.z, 0, 1.1, 0, 0.08, 3);
   }
 
   /** A puff of exhaust behind a rocket, or of dust where something lands. */
@@ -187,14 +221,16 @@ export class Blasts {
     this.fly.instanceMatrix.needsUpdate = true;
     this.smoke.update(dt);
     this.sparks.update(dt);
+    this.fire.update(dt);
     for (const b of this.balls) {
       if (b.t > 0.5) continue;
       b.t += dt;
-      const k = Math.min(1, b.t / 0.35);
-      b.m.scale.setScalar(b.r * (0.3 + 0.9 * Math.sqrt(k)));
-      const mat = b.m.material as THREE.MeshBasicMaterial;
+      const k = Math.min(1, b.t / b.dur);
+      b.m.scale.setScalar(b.r * 2.6 * (0.3 + 0.9 * Math.sqrt(k)));
+      const mat = b.m.material;
       mat.opacity = (1 - k) * 0.95;
-      mat.color.setRGB(1, 0.75 - k * 0.45, 0.35 - k * 0.3);
+      if (b.col) mat.color.copy(b.col);
+      else mat.color.setRGB(1, 0.75 - k * 0.45, 0.35 - k * 0.3);
       if (k >= 1) (b.m.visible = false), (b.t = 9);
     }
     for (const r of this.rings) {
@@ -202,7 +238,7 @@ export class Blasts {
       r.t += dt;
       const k = Math.min(1, r.t / 0.3);
       r.m.scale.setScalar(r.r * (0.2 + 0.8 * k));
-      (r.m.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.7;
+      (r.m.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.35;
       if (k >= 1) (r.m.visible = false), (r.t = 9);
     }
   }
@@ -210,6 +246,7 @@ export class Blasts {
   clear() {
     this.smoke.clear();
     this.sparks.clear();
+    this.fire.clear();
     for (const b of [...this.balls, ...this.rings]) (b.t = 9), (b.m.visible = false);
     this.fly.count = 0;
   }
