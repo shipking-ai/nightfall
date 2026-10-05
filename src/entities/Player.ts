@@ -67,6 +67,8 @@ export class Player {
   lookPitch = 0;
   /** admin: walk faster/slower; fly through everything */
   speedMul = 1;
+  /** game seconds this body has been animated (the pose's clock) */
+  private clock = 0;
   /** a soldier's moves (WARZONE): tactical sprint (sprint again while sprinting), slide (crouch while sprinting), mantle (jump at a ledge) */
   tactical = false;
   /** seconds of tactical sprint left, and before it's back */
@@ -213,6 +215,7 @@ export class Player {
   }
 
   update(dt: number, input: Input | null, camYaw: number, col: Collision, obstacles: { x: number; z: number; r: number }[]) {
+    this.clock += dt;
     this.anim.update(dt);
     const m = this.motion;
     // The feet find kerbs, steps and slopes for themselves. The probe samples a
@@ -502,7 +505,9 @@ export class Player {
   real: { group: THREE.Object3D; ready: boolean; pose(camDist: number): void } | null = null;
 
   private draw() {
-    solve(this.rig, this.root, this.body, this.outfit, this.motion, performance.now() / 1000, this.anim);
+    // game time, not the wall clock: the walk reads the body's speed from how far it moved in
+    // this much time, so a slow frame, slow motion or a skipped frame must not change the answer
+    solve(this.rig, this.root, this.body, this.outfit, this.motion, this.clock, this.anim);
     if (this.real?.ready) {
       this.real.pose(0);
       this.batch.group.visible = false;

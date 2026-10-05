@@ -18,6 +18,11 @@ The owner's "MASTER AAA QUALITY UPGRADE" brief, built in stages; each was commit
 - **Q6, Warzone** — see the Warzone section below.
 - **Q7**: zoom-scaled aim sensitivity added to the controller settings (everything else the brief lists was already there); `docs/platforms.md` updated; full test pass.
 
+**City follow-ups (C1–C3), from the owner's list:**
+- **C1, real interiors** (`world/builders/homes.ts`, wired from `interiors.ts` `generateInterior`): each of the 87 generated buildings is a floor plan (a front room, two back rooms with doorways, a stair hall and an upper floor in tall buildings), with rooms by kind (home, shop, office, warehouse), a light and a night window in every room, and residents, clerks and workers as crowd NPC spots. There are 572 searchable drawers, tills and safes (`search:` points; money goes to `save.data.cash`; a burglary if someone on the same floor is within 9 m) and 124 beds (`sleep:` points: heal, and it's still 3:17). Standing NPCs more than 90 m from you are skipped entirely (`Crowd.update`), so indoor residents cost almost nothing. Test: `homes.mjs`.
+- **C2, traffic** (`layout.ts` `CAR_ROUTES`, `Traffic.ts`): a pool of 14 cars scaled by Population, new routes for the Avenue south of Linden and through-routes on Harbor and River, and new cars pick the emptiest road. Test: `city-traffic.mjs`.
+- **C3, conversations** (`systems/CityTalk.ts`, the RPG's `Talk` card): names, manner from persona, topics (time, somewhere open with directions, themselves, rumours leading to real places), give $20 (they warm up and tip you), threaten (wallet or a shove). Test: `city-talk.mjs`.
+
 Another session (commit 2e295b8) added cinematic rendering and adaptive quality (`render/Capability.ts`, `Governor.ts`), military APCs, every car drivable, procedural enterable interiors (`world/builders/interiors.ts`), a bank (`bank.ts`), powers on V / Z / X (`systems/Powers.ts`, city only), ragdolls (`anim/Ragdoll.ts`) and more admin tools. PR #2 (shipking-ai/nightfall) is open from this branch into `main`. It also committed a stray `.freebuff/project-id` file from some other tool; check before merging.
 
 ## NIGHTFALL: RPG, the fifth mode (in progress, 2026-09-28)

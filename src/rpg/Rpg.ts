@@ -112,6 +112,7 @@ export class Rpg {
   private cityLamps: Lamp[] = [];
   private tmp = new THREE.Vector3();
   private tmp2 = new THREE.Vector3();
+  private simT = 0;
   /** you, as the RPG draws you */
   private hero: RealHuman | null = null;
   /** a new look being built (it replaces the old one once it's ready) */
@@ -272,7 +273,9 @@ export class Rpg {
     this.sea.update(h.camera.position, h.fog.density, now.wind, now.rain);
     this.precip.update(h.camera.position, now.snow, now.dust, now.windDir, now.wind, this.atmos.daylight);
     this.far.update(p, h.fog, h.sky.uniforms.uSunCol.value);
-    this.populace.update(dt, performance.now() / 1000, this.atmos.minutes, p, h.camera, now.rain);
+    // game time for the walkers' gait (it reads speed from distance over time; the wall clock lies on a slow frame)
+    this.simT += dt;
+    this.populace.update(dt, this.simT, this.atmos.minutes, p, h.camera, now.rain);
     h.vehicles.grip = this.atmos.now.grip;
     // roads stay wet a while after the rain; headlights on from dusk
     h.vehicles.wet += (Math.min(1, now.rain * 1.4 + now.snow * 0.6) - h.vehicles.wet) * Math.min(1, dt * (now.rain > h.vehicles.wet ? 0.5 : 0.02));
