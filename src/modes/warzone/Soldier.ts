@@ -6,6 +6,7 @@ import { Animator } from '../../anim/Animator';
 import '../../anim/clips';
 import type { Collision } from '../../world/Collision';
 import type { NavGrid } from './NavGrid';
+import type { VoiceSpec } from '../../audio/Voice';
 import { GUNS, MAX_ARMOR, type Gun, type GunId } from './weapons';
 
 /**
@@ -62,6 +63,8 @@ export interface Battle {
   lob?(s: Soldier, kind: 'frag' | 'smoke' | 'flash' | 'stun', at: THREE.Vector3): void;
   /** tell the squad: an enemy is there */
   callout?(s: Soldier, at: THREE.Vector3): void;
+  /** a bot calls something out (its squad hears it) */
+  shout?(s: Soldier, what: 'contact' | 'frag' | 'smoke' | 'flash' | 'stun' | 'reload' | 'grenade'): void;
   /** the mode's own idea of where this one should be (a flag, a site, the zone); null: the points */
   goal?(s: Soldier): THREE.Vector3 | null;
 }
@@ -146,6 +149,9 @@ export class Soldier implements Unit {
   /** a flanker goes round the side: a waypoint first, then the point */
   private via: THREE.Vector3 | null = null;
   private flanker = Math.random() < 0.3;
+  /** their voice (callouts are spoken), and when they last spoke */
+  voice: VoiceSpec = { pitch: 95 + Math.random() * 70, tract: 0.88 + Math.random() * 0.18, rate: 5.5 + Math.random() * 1.5, breath: 0.2 + Math.random() * 0.4 };
+  lastSaid = -99;
   /** what they carry this life */
   frags = 1;
   tac: 'smoke' | 'flash' | 'stun' = (['smoke', 'flash', 'stun'] as const)[Math.floor(Math.random() * 3)];
@@ -293,6 +299,7 @@ export class Soldier implements Unit {
     // a grenade at their feet beats everything else: run
     const danger = b.danger?.(this.pos, 5.5);
     if (danger) {
+      b.shout?.(this, 'grenade');
       const dx = this.pos.x - danger.x, dz = this.pos.z - danger.z, d = Math.hypot(dx, dz) || 1;
       want.set(dx / d, dz / d);
       if (!b.nav.walkable(this.pos.x + want.x, this.pos.z + want.y)) want.set(-want.y, want.x);
@@ -427,6 +434,7 @@ export class Soldier implements Unit {
         // a reaction time before they do anything about it
         this.target = best;
         b.callout?.(this, best.pos);
+        b.shout?.(this, 'contact');
         this.seenT = -(0.28 + Math.random() * 0.35) * (best.isPlayer ? 1.6 - b.skill * 0.6 : 1);
         this.fireT = 0;
       }
@@ -440,11 +448,13 @@ export class Soldier implements Unit {
           this.frags--;
           this.lobT = 8 + Math.random() * 6;
           b.lob(this, 'frag', this.lastSeen);
+          b.shout?.(this, 'frag');
           this.anim.play('act.throw', { group: 'hit', fadeIn: 0.1, fadeOut: 0.2 });
         } else if (this.tacs > 0 && this.tac !== 'smoke' && d > 6 && d < 22 && Math.random() < 0.4) {
           this.tacs--;
           this.lobT = 6 + Math.random() * 6;
           b.lob(this, this.tac, this.lastSeen);
+          b.shout?.(this, this.tac);
           this.anim.play('act.throw', { group: 'hit', fadeIn: 0.1, fadeOut: 0.2 });
         }
       }
@@ -558,6 +568,7 @@ export class Soldier implements Unit {
       if (this.tac === 'smoke' && this.tacs > 0 && b.lob) {
         this.tacs--;
         b.lob(this, 'smoke', _t.set(this.pos.x + dx * 0.25, 0, this.pos.z + dz * 0.25));
+        b.shout?.(this, 'smoke');
       }
       this.mode = 'retreat';
       this.retreatT = 2 + Math.random() * 1.5;
@@ -565,7 +576,10 @@ export class Soldier implements Unit {
       return;
     }
     if (this.reloading > 0) return;
-    if (this.mag <= 0) return this.reload();
+    if (this.mag <= 0) {
+      b.shout?.(this, 'reload');
+      return this.reload();
+    }
     if (this.seenT < 0) return;
     // on target yet?
     const off = Math.abs(wrap(yaw - this.aimYaw));

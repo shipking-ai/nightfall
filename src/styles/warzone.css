@@ -386,3 +386,24 @@ body[data-mode='warzone'] .hud { display: none; }
 .wzm-next { margin: 0 0 10px; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; line-height: 1.4; }
 .wzm-controls { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px 22px; max-width: 980px; }
 @media (max-width: 760px) { .wzm-cols { grid-template-columns: 1fr; } .wzm-go { margin-left: 0; width: 100%; } }
+
+/* minimap and compass */
+.wz-minimap { position: absolute; left: var(--safe); top: calc(var(--safe) + 44px); width: 150px; height: 150px; }
+.wz-minimap__c { width: 100%; height: 100%; display: block; }
+.wz-compass { position: absolute; left: 50%; top: calc(var(--safe) + 62px); width: min(480px, 60vw); height: 30px; transform: translateX(-50%); overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent); }
+.wz-compass__strip { position: absolute; left: 50%; top: 0; height: 100%; }
+.wz-compass__strip i { position: absolute; top: 0; width: 0; height: 6px; border-left: 1px solid rgba(233, 229, 220, 0.45); font-style: normal; font-family: var(--f-meta); font-size: 9px; color: var(--mute); }
+.wz-compass__strip i.is-mid { height: 9px; }
+.wz-compass__strip i.is-card { height: 10px; border-color: var(--paper); color: var(--paper); font-size: 12px; font-weight: 600; }
+.wz-compass__strip i { line-height: 34px; text-indent: -0.5ch; white-space: nowrap; }
+.wz-compass__pips span { position: absolute; top: 12px; transform: translateX(-50%); font-family: var(--f-meta); font-size: 10px; font-weight: 600; padding: 0 3px; border: 1px solid currentColor; color: var(--paper); background: rgba(10, 11, 12, 0.7); }
+.wz-compass__pips span.is-us { color: var(--blue); }
+.wz-compass__pips span.is-them { color: var(--red); }
+.wz-compass__mark { position: absolute; left: 50%; top: 0; width: 2px; height: 12px; background: var(--accent); transform: translateX(-50%); }
+.wzhud.is-hardline .wz-minimap, .wzhud.is-hardline .wz-compass, .wzhud.is-hardline .wz-marker, .wzhud.is-hardline .wz-cross { display: none; }
+
+.wz-radio { position: absolute; left: var(--safe); top: calc(var(--safe) + 204px); display: grid; gap: 3px; font-size: 12px; max-width: 280px; }
+.wz-radio__line { padding: 3px 8px; background: rgba(10, 11, 12, 0.6); border-left: 2px solid var(--blue); transition: opacity 600ms; }
+.wz-radio__line b { color: var(--blue); font-weight: 500; }
+.wz-radio__line.is-gone { opacity: 0; }

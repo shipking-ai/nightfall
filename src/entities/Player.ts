@@ -67,6 +67,19 @@ export class Player {
   lookPitch = 0;
   /** admin: walk faster/slower; fly through everything */
   speedMul = 1;
+  /** a soldier's moves (WARZONE): tactical sprint (sprint again while sprinting), slide (crouch while sprinting), mantle (jump at a ledge) */
+  tactical = false;
+  /** seconds of tactical sprint left, and before it's back */
+  tacT = 0;
+  private tacCool = 0;
+  private sinceSprint = 99;
+  slideT = 0;
+  private slideDx = 0;
+  private slideDz = 0;
+  /** climbing over something: progress 0..1 from `mantleFrom` to `mantleTo` */
+  mantleT = 0;
+  private mantleFrom = new THREE.Vector3();
+  private mantleTo = new THREE.Vector3();
   fly = false;
   /** in the river: floating at the surface, slow; Space by the quay wall climbs out */
   swimming = false;
@@ -177,6 +190,28 @@ export class Player {
     if (opts.hold) setTimeout(() => (this.busy = false), 900);
   }
 
+  /** A ledge in front, between knee and head height, with room on top: climb it. */
+  private tryMantle(col: Collision) {
+    const dx = Math.sin(this.facing), dz = Math.cos(this.facing);
+    for (const reach of [0.55, 0.85]) {
+      const ax = this.pos.x + dx * reach, az = this.pos.z + dz * reach;
+      const top = col.groundAt(ax, az, this.pos.y + 2.1, 2.2, 0.15);
+      const rise = top - this.pos.y;
+      if (rise < 0.55 || rise > 2.1) continue;
+      // room to stand up there?
+      _probe.set(ax + dx * 0.25, top + 0.1, az + dz * 0.25);
+      const head = col.raycast(_probe, _upv, 1.6);
+      if (head < 1.5) continue;
+      this.mantleFrom.copy(this.pos);
+      this.mantleTo.set(ax + dx * 0.25, top, az + dz * 0.25);
+      this.mantleT = 0.001;
+      this.slideT = 0;
+      this.anim.play('act.climb', { group: 'act', fadeIn: 0.05 });
+      return true;
+    }
+    return false;
+  }
+
   update(dt: number, input: Input | null, camYaw: number, col: Collision, obstacles: { x: number; z: number; r: number }[]) {
     this.anim.update(dt);
     const m = this.motion;
@@ -205,8 +240,35 @@ export class Player {
     // held emotes end when you walk off; the rest play on over the walk
     if (moving && this.emote?.hold) this.stopEmote(0.3);
 
+    const wasSprint = this.sprinting;
+    // (look before the hold-or-toggle logic uses the press up)
+    const crouchTap = !!input && input.peek('crouch'), sprintTap = !!input && input.peek('sprint');
     this.crouching = this.canCrouch && !!input && input.state('crouch') && !this.swimming;
     this.sprinting = !!input && moving && input.state('sprint', !moving) && mv.mag > 0.5 && !this.crouching;
+    if (this.tactical && input && !this.busy) {
+      this.tacCool = Math.max(0, this.tacCool - dt);
+      // sprint again while sprinting: a burst, gun up and away
+      // (a hold-to-sprint player lets go and presses again: a moment's gap still counts)
+      this.sinceSprint = wasSprint ? 0 : this.sinceSprint + dt;
+      if (this.sprinting && sprintTap && this.sinceSprint < 0.35 && this.tacCool <= 0 && this.tacT <= 0) {
+        this.tacT = 3;
+        this.tacCool = 8;
+      }
+      this.tacT = this.sprinting ? Math.max(0, this.tacT - dt) : 0;
+      // crouch at a run: a slide
+      if (wasSprint && this.grounded && this.slideT <= 0 && crouchTap) {
+        const v = Math.hypot(this.vel.x, this.vel.z) || 1;
+        this.slideDx = this.vel.x / v;
+        this.slideDz = this.vel.z / v;
+        this.slideT = 0.8;
+        this.onStep?.(1);
+      }
+    }
+    if (this.slideT > 0) {
+      this.slideT -= dt;
+      this.crouching = true;
+      this.sprinting = false;
+    }
     // (undefined from waterAt: a handcrafted place with its own water rules — District 03's river)
     const openW = this.waterAt && !this.fly ? this.waterAt(this.pos.x, this.pos.z) : undefined;
     this.openWater = openW !== undefined;
@@ -217,7 +279,7 @@ export class Player {
       if (openW != null) this.swimLevel = openW;
     } else this.swimming = !this.fly && inRiver(this.pos.x, this.pos.z, this.pos.y);
     const push = Math.min(1, mv.mag * 1.15);
-    const base = this.sprinting ? SPRINT : WALK * (this.crouching ? 0.55 : 1) * (0.35 + 0.65 * push);
+    const base = this.sprinting ? SPRINT * (this.tacT > 0 ? 1.22 : 1) : WALK * (this.crouching ? 0.55 : 1) * (0.35 + 0.65 * push);
     const speed = this.swimming ? (this.sprinting ? 2.9 : 1.8) : (this.sitting ? 0 : base) * this.speedMul * (this.aimYaw != null && !this.fly ? 0.7 : 1);
     const fwdX = Math.sin(camYaw), fwdZ = Math.cos(camYaw);
     let wx = fwdX * iz + fwdZ * ix;
@@ -231,6 +293,12 @@ export class Player {
     const rate = (moving ? ACCEL : DECEL) * (this.grounded ? 1 : 0.35);
     this.vel.x += clampAbs(tx - this.vel.x, rate * dt);
     this.vel.z += clampAbs(tz - this.vel.z, rate * dt);
+    if (this.slideT > 0) {
+      // the slide carries you, fading
+      const k = this.slideT / 0.8, v = SPRINT * (0.45 + 0.95 * k) * this.speedMul;
+      this.vel.x = this.slideDx * v;
+      this.vel.z = this.slideDz * v;
+    }
 
     if (this.swimming && this.openWater) {
       // open water: float, and wade out wherever the bottom comes up to meet you
@@ -283,14 +351,27 @@ export class Player {
       this.pos.z += this.vel.z * dt;
       this.pos.y = Math.max(0.15, this.pos.y + this.vel.y * dt);
       this.grounded = false;
-    } else if (input && this.grounded && !this.sitting && !this.busy && input.pressed('jump')) {
+    } else if (input && this.grounded && !this.sitting && !this.busy && input.pressed('jump') && !(this.tactical && this.tryMantle(col))) {
       this.vel.y = JUMP_V;
       this.grounded = false;
       this.stopEmote(0.1);
     }
-    if (!this.fly && !this.swimming) this.vel.y -= GRAVITY * dt;
+    if (this.mantleT > 0) {
+      // up and over: a hand on the edge, the body follows
+      this.mantleT = Math.min(1, this.mantleT + dt / 0.42);
+      const k = this.mantleT, up = Math.min(1, k * 1.6), fwd = Math.max(0, (k - 0.35) / 0.65);
+      this.pos.set(
+        THREE.MathUtils.lerp(this.mantleFrom.x, this.mantleTo.x, fwd),
+        THREE.MathUtils.lerp(this.mantleFrom.y, this.mantleTo.y, up * up * (3 - 2 * up)),
+        THREE.MathUtils.lerp(this.mantleFrom.z, this.mantleTo.z, fwd),
+      );
+      this.vel.set(0, 0, 0);
+      this.grounded = true;
+      if (this.mantleT >= 1) this.mantleT = 0;
+    }
+    if (!this.fly && !this.swimming && this.mantleT <= 0) this.vel.y -= GRAVITY * dt;
 
-    if (!this.sitting && !this.fly && !this.swimming) {
+    if (!this.sitting && !this.fly && !this.swimming && this.mantleT <= 0) {
       this.pos.x += this.vel.x * dt;
       this.pos.z += this.vel.z * dt;
       this.pos.y += this.vel.y * dt;
@@ -476,3 +557,6 @@ export function wrap(a: number) {
   while (a < -Math.PI) a += Math.PI * 2;
   return a;
 }
+
+const _probe = new THREE.Vector3();
+const _upv = new THREE.Vector3(0, 1, 0);

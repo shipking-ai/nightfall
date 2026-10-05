@@ -5,6 +5,7 @@ import type { Action } from '../input/actions';
 import type { CapturePoint, Unit } from '../modes/warzone/Soldier';
 import type { Loadout } from '../modes/warzone/weapons';
 import { WEAPON } from '../modes/warzone/arsenal';
+import { Minimap } from './Minimap';
 
 /**
  * WARZONE's interface: the score and the clock at the top with the three
@@ -53,6 +54,8 @@ export class WarzoneHud {
   private lastGear = '';
   private streakEl: HTMLElement;
   private progEl: HTMLElement;
+  minimap = new Minimap();
+  private radioEl: HTMLElement;
   private lastStreak = '';
   private scopeEl: HTMLElement;
   private reloadEl: HTMLElement;
@@ -109,6 +112,7 @@ export class WarzoneHud {
     this.modeEl = h('span', { class: 'wz-gun__mode meta' });
     this.gearEl = h('div', { class: 'wz-gear' });
     this.streakEl = h('div', { class: 'wz-streaks' });
+    this.radioEl = h('div', { class: 'wz-radio' });
     this.progEl = h('div', { class: 'wz-prog' }, h('span', { class: 'meta' }), h('i', {}, h('b')));
     this.flashEl = h('div', { class: 'wz-flash' });
     this.stunEl = h('div', { class: 'wz-stun' });
@@ -163,6 +167,9 @@ export class WarzoneHud {
       vitals,
       gun,
       this.cross,
+      this.minimap.el,
+      this.radioEl,
+      this.minimap.compass,
       this.scopeEl,
       this.streakEl,
       this.progEl,
@@ -210,6 +217,20 @@ export class WarzoneHud {
     }
     const c = Math.max(0, Math.ceil(clock));
     this.clockEl.textContent = `${Math.floor(c / 60)}:${String(c % 60).padStart(2, '0')}`;
+  }
+
+  /** Your squad on the radio: a line that fades. */
+  radio(name: string, text: string) {
+    const row = h('div', { class: 'wz-radio__line' }, h('b', {}, name), ` ${text}`);
+    this.radioEl.prepend(row);
+    while (this.radioEl.children.length > 3) this.radioEl.lastChild!.remove();
+    setTimeout(() => row.classList.add('is-gone'), 3500);
+    setTimeout(() => row.remove(), 4200);
+  }
+
+  /** Hardline hides the map, the compass and the markers. */
+  hardline(on: boolean) {
+    this.el.classList.toggle('is-hardline', on);
   }
 
   /** A held action's progress in the middle of the screen (planting, defusing); null hides it. */

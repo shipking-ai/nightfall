@@ -57,6 +57,7 @@ for (let i = 0; i < 40; i++) {
   await step(1);
   lobs += await ev(() => window.nf.warzone.gear.thrown.filter((x) => !x.owner.isPlayer && x.age < 1).length);
 }
+console.log('radio lines', await ev(() => document.querySelectorAll('.wz-radio__line').length));
 console.log('bot throws seen', lobs, 'modes', await ev(() => window.nf.warzone.bots.map((b) => b.mode).join(',')));
 await shot('wzg-08-later');
 console.log('snapshot', JSON.stringify(await ev(() => window.nf.warzone.snapshot)));

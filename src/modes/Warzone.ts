@@ -21,6 +21,7 @@ import { LADDER, MODE, type ModeId } from './warzone/modes';
 import { Viewmodel } from './warzone/Viewmodel';
 import { ARMOR_SOAK, BOT_PRIMARIES, GUNS, MAX_ARMOR, allLoadouts, damageAt, loadoutGuns, type Gun, type Loadout } from './warzone/weapons';
 import { WarzoneHud } from '../ui/WarzoneHud';
+import type { Blip } from '../ui/Minimap';
 import { WarzoneMenu, type MenuState } from '../ui/WarzoneMenu';
 import { Career } from './warzone/career';
 import { Gunsmith } from '../ui/Gunsmith';
@@ -311,6 +312,7 @@ export class Warzone {
       skill: this.skill,
       danger: (at, r) => this.gear.danger(at, r),
       goal: (bot) => this.goalFor(bot),
+      shout: (bot, what) => this.shout(bot, what),
       lob: (s, kind, at) => this.gear.lob(kind, s, _t1.set(s.pos.x, s.pos.y + 1.6, s.pos.z), at),
       callout: (s, at) => {
         for (const b of this.bots) if (b !== s && b.alive && b.team === s.team && b.pos.distanceTo(s.pos) < 28) b.investigate(at, 5);
@@ -379,6 +381,7 @@ export class Warzone {
       c.add(B.x0, 0, B.z1, B.x1, 4, B.z1 + 0.4, false),
     ];
     this.nav ??= new NavGrid(c, B.x0, B.z0, B.x1, B.z1, 0.38);
+    this.hud.minimap.setYard([...c.query(B.x0, B.z0, B.x1, B.z1)], B);
     this.battle.nav = this.nav;
     // you, in fatigues, with your own face
     const r = mulberry32(77);
@@ -391,6 +394,7 @@ export class Warzone {
     o.glasses = face.outfit.glasses;
     this.host.player.wear(o, face.body);
     this.host.player.canCrouch = true;
+    this.host.player.tactical = true;
     this.host.player.gun.visible = false;
     this.lookRange();
     this.makeBots();
@@ -439,6 +443,8 @@ export class Warzone {
     this.hud.show(false);
     const p = this.host.player, f = this.host.follow;
     p.canCrouch = false;
+    p.tactical = false;
+    p.tacT = p.slideT = p.mantleT = 0;
     p.armPose = p.armPoseL = null;
     p.aimYaw = null;
     p.speedMul = 1;
@@ -713,6 +719,7 @@ export class Warzone {
     this.hud.markers(this.points, cam, this.me, labels);
     this.hud.tags(this.bots, cam, this.me, (u) => this.streaks.sweeps(this.me.team) || (this.streaks.jammed[this.me.team] <= 0 && this.gear.revealed(u, this.me)));
     this.hud.vitals(this.me.hp, this.me.armor);
+    this.drawMap(labels);
     const other = this.held[1 - this.slot];
     this.hud.weapon(gun.name, gun.cls === 'melee' ? -1 : this.mag[this.slot], this.reserve[this.slot], other.name, this.reloadT > 0 ? 1 - this.reloadT / this.reloadDur : null, MODE_NAME[gun.mode] + (gun.mode === 'burst' ? ` ×${gun.burst}` : ''));
     this.hud.update(dt);
@@ -845,6 +852,8 @@ export class Warzone {
     f.aim = k > 0.5;
     this.zoom(this.baseFov + (gun.zoom - this.baseFov) * easeInOut(k), dt, true);
     p.speedMul = gun.weight * (1 - k * 0.38) * (this.reloadT > 0 ? 0.9 : 1);
+    // first person keeps the body turned with the view (aimYaw), which the walk treats as aiming: undo that when you're not
+    if (this.fpActive && k < 0.5 && this.sinceFire > 0.7) p.speedMul /= 0.7;
     this.aimAssist(aiming);
     this.wasAiming = aiming;
     // fire
@@ -1663,6 +1672,53 @@ export class Warzone {
     }
   }
 
+  private lastShout = -99;
+
+  /** A bot calls it out: spoken where they stand, and on your radio if they're on your side. */
+  private shout(s: Soldier, what: 'contact' | 'frag' | 'smoke' | 'flash' | 'stun' | 'reload' | 'grenade') {
+    const now = performance.now() / 1000;
+    if (now - s.lastSaid < 5 || now - this.lastShout < 1.2) return;
+    const mate = !foe(this.me, s);
+    const near = s.pos.distanceTo(this.me.pos);
+    if (!mate && near > 22) return;
+    s.lastSaid = now;
+    this.lastShout = now;
+    let line = '';
+    if (what === 'contact') {
+      const t = s.target;
+      const dir = t ? ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][Math.round(((((Math.PI - Math.atan2(t.pos.x - s.pos.x, t.pos.z - s.pos.z)) * 180) / Math.PI + 360) % 360) / 45) % 8] : '';
+      line = pick(['Contact', 'Enemy', 'Got one', 'Eyes on']) + (dir ? `, ${dir}!` : '!');
+    } else
+      line = {
+        frag: pick(['Frag out!', 'Grenade out!']),
+        smoke: pick(['Popping smoke!', 'Smoke out!']),
+        flash: 'Flash out!',
+        stun: 'Stun out!',
+        reload: pick(['Reloading!', 'Changing mags!', 'Cover me, reloading!']),
+        grenade: pick(['Grenade!', 'Get clear!']),
+      }[what];
+    this.host.audio.say(s.voice, line, 'annoyed', s.pos, mate ? 1 : 0.7);
+    if (mate) this.hud.radio(s.name, line);
+  }
+
+  /** The minimap: your squad, the objectives, and enemies who've given themselves away. */
+  private drawMap(labels?: string[]) {
+    this.hud.hardline(this.hardline);
+    if (this.hardline || this.phase !== 'play') return;
+    const me = this.me, blips: Blip[] = [];
+    const swept = this.streaks.sweeps(me.team), jammed = this.streaks.jammed[me.team] > 0;
+    for (const b of this.bots) {
+      if (!b.alive) continue;
+      if (!foe(me, b)) blips.push({ x: b.pos.x, z: b.pos.z, kind: 'mate' });
+      else if (!jammed && (b.sinceShot < 1.2 || swept || this.gear.revealed(b, me))) blips.push({ x: b.pos.x, z: b.pos.z, kind: 'enemy' });
+    }
+    this.points.forEach((p, i) => {
+      const own = p.owner < 0 ? 'objective' : p.owner === me.team ? 'us' : 'them';
+      blips.push({ x: p.pos.x, z: p.pos.z, kind: this.modeId === 'ctf' ? (p.owner === me.team ? 'flag-us' : 'flag-them') : own, label: labels?.[i] ?? p.id });
+    });
+    this.hud.minimap.draw(me.pos.x, me.pos.z, this.host.follow.yaw, blips);
+  }
+
   /* ─────────────────────────── the modes ─────────────────────────── */
 
   /** Called when a match ends (progression listens). */
@@ -2056,6 +2112,7 @@ function named(name: string): Gun {
   if (!g) NAMED.set(name, (g = { ...GUNS.knife, name }));
   return g;
 }
+const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)];
 const easeInOut = (k: number) => k * k * (3 - 2 * k);
 const _t1 = new THREE.Vector3();
 const _t2 = new THREE.Vector3();
