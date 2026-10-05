@@ -25,6 +25,8 @@ const CROOKS = 4;
 type CrookState = 'idle' | 'approach' | 'flee' | 'hostile' | 'loiter';
 
 export interface Npc {
+  /** hidden for standing far from you (Crowd.update brings them back) */
+  away?: boolean;
   mode: Mode;
   pos: THREE.Vector3;
   yaw: number;
@@ -1157,13 +1159,21 @@ export class Crowd {
         this.batch.write(i, n.rig, n.parts, false);
         return;
       }
-      if (n.culled) {
+      // people standing somewhere (a doorway, a sofa indoors) far from you: not simulated or drawn at all
+      const away = !!player && n.mode !== 'walk' && n.mode !== 'cop' && n.mode !== 'crook' && n.mode !== 'watcher' && n.dead < 0 && (n.pos.x - player.x) ** 2 + (n.pos.z - player.z) ** 2 > 8100;
+      if (n.culled || away) {
         if (n.lod !== -1 || n.visible) {
+          if (away && n.visible) n.away = true;
           n.visible = false;
           this.batch.hide(i);
           n.lod = -1;
         }
         return;
+      }
+      // back in range: show the ones we hid for being far away
+      if (n.away) {
+        n.away = false;
+        n.visible = true;
       }
       if (n.dead >= 0) this.down(n, dt, player);
       else if (n.mode === 'cop' || n.mode === 'crook') {

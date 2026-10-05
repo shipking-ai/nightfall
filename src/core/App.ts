@@ -59,7 +59,7 @@ import { TouchControls, isTouch } from '../ui/TouchControls';
 import { Boats, WATER_Y, QUAY_Z, RIVER_Z0, type Boat } from '../entities/Boats';
 import { Police } from '../entities/Police';
 import { DISTRICTS } from '../world/layout';
-import { INTERIORS } from '../world/builders/interiors';
+import { INTERIORS, HOMES, SEARCHES } from '../world/builders/interiors';
 import { INTERACTIONS } from '../data/interactions';
 import type { Npc } from '../entities/Crowd';
 import { cleanLook, type Look } from '../entities/Look';
@@ -2664,6 +2664,8 @@ export class App {
     if (def.action === 'exit') return this.goOutside();
     if (def.action === 'bell') this.audio.bell();
     if (def.action === 'rob') return this.startRob();
+    if (def.action === 'search') return this.search(spot.id);
+    if (def.action === 'sleep') return this.sleep();
     // side quests may have something to say here instead
     this.questFromUse = true;
     const ql = this.rules.quests ? this.quests.use(spot.id) : null;
@@ -2686,6 +2688,60 @@ export class App {
       const id = unlock;
       setTimeout(() => this.discovery.unlock(id), 1400);
     }
+  }
+
+  /** drawers already gone through this session */
+  private searched = new Set<string>();
+
+  /**
+   * Going through someone's drawers. What's in there is mostly nothing, now
+   * and then money. If anyone's home and sees you, that's a burglary: they
+   * react, and the wanted level goes up.
+   */
+  private search(id: string) {
+    const s = SEARCHES.get(id);
+    if (!s) return;
+    this.player.act('act.search');
+    if (this.searched.has(id)) {
+      this.hud.say(['Already been through it.'], s.name);
+      return;
+    }
+    this.searched.add(id);
+    const home = HOMES.get(s.home);
+    // anyone in here, alive, who can see you?
+    this.crowd.bodies(this.peopleOnFoot);
+    const me = this.player.pos;
+    const witness = home && this.peopleOnFoot.some((b) => b.visible && b.dead < 0 && b.pos.x > home.bounds[0] && b.pos.x < home.bounds[2] && b.pos.z > home.bounds[1] && b.pos.z < home.bounds[3] && Math.abs(b.pos.y - me.y) < 1.5 && Math.hypot(b.pos.x - me.x, b.pos.z - me.z) < 9);
+    const r = Math.random();
+    const cash = r < 0.45 ? 0 : Math.round(s.cash[0] + Math.random() * (s.cash[1] - s.cash[0]));
+    const finds = ['Old receipts and a spare key.', 'Batteries, a torch, a birthday card nobody sent.', 'Paperwork. A photograph of the pier, years ago.', 'A watch that stopped at 3:17.', 'Nothing worth taking.'];
+    const lines = [cash > 0 ? `${fmtMoney(cash)}, folded small.` : finds[Math.floor(Math.random() * finds.length)]];
+    if (cash > 0) {
+      this.save.data.cash = (this.save.data.cash ?? 0) + cash;
+      this.hud.toast(`${fmtMoney(cash)} · you have ${fmtMoney(this.save.data.cash)}`);
+    }
+    if (witness) {
+      lines.push(home!.kind === 'shop' || home!.kind === 'office' ? '"Hey! Put that back!"' : '"Who are you? Get out of my house!"');
+      this.combat.crime(home!.kind === 'shop' ? 1.2 : 1);
+      this.crowd.shock(this.player.pos.x, this.player.pos.z);
+      this.audio.say({ pitch: 150, tract: 1, rate: 6, breath: 0.3 }, lines[1], 'scared', this.player.pos, 1);
+    }
+    this.hud.say(lines, s.name);
+    this.sayingUntil = performance.now() + 1800;
+  }
+
+  /** A bed: lie down, the screen goes dark, you wake rested. It's still 3:17. */
+  private async sleep() {
+    if (this.doorBusy) return;
+    this.doorBusy = true;
+    this.player.act('act.lieDown', { hold: true });
+    await this.fade(true, 900);
+    this.combat.health = 100;
+    await new Promise((r) => setTimeout(r, 1200));
+    this.player.act('act.stand');
+    this.fade(false, 900);
+    this.hud.say(['You sleep, properly, for the first time in a while.', 'When you wake it is still 3:17.'], 'Bed');
+    this.doorBusy = false;
   }
 
   /* ─────────────────────────── powers ─────────────────────────── */

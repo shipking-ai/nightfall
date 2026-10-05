@@ -9,6 +9,8 @@ export interface SaveData {
   player: { x: number; y: number; z: number; yaw: number } | null;
   clock: number;
   lastPlace: string | null;
+  /** money you've found (or taken) in the city */
+  cash?: number;
   /** ms since epoch of the last flush; decides whose position wins in a merge */
   savedAt?: number;
 }

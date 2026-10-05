@@ -5,6 +5,7 @@ import { itex } from '../interiorTextures';
 import { mulberry32, type Rng } from '../rng';
 import { ROADS } from '../layout';
 import { INTERACTIONS } from '../../data/interactions';
+import { buildHome, type HomeKind } from './homes';
 
 /**
  * The places you can walk into. Each is a small hand-built room, built with
@@ -106,7 +107,7 @@ function planFor(w: number, d: number, h: number, district: string): Plan {
     const cw = wide / cells;
     rooms.push({ w: cw - 0.5, d: deep - 0.5, h: rh, cx: -wide / 2 + cw * (i + 0.5), cz: 0 });
   }
-  const kind: InteriorKind = district === 'garden' || district === 'riverside' ? 'flat' : district === 'quarter' ? 'house' : district === 'yard' ? 'store' : h > 20 ? 'office' : 'shop';
+  const kind: InteriorKind = district === 'garden' || district === 'riverside' ? 'flat' : district === 'quarter' ? (h > 14 ? 'flat' : 'house') : district === 'yard' ? 'store' : h > 20 ? 'office' : district === 'market' ? 'shop' : (Math.floor(w * 13 + d * 7) % 3 === 0 ? 'flat' : 'shop');
   return { kind, rooms, stair: h > 12 };
 }
 
@@ -227,12 +228,9 @@ function furnish(ctx: WorldContext, p: Plan, r: Plan['rooms'][number], ox: numbe
 export function generateInterior(ctx: WorldContext, lot: { x0: number; z0: number; x1: number; z1: number }, h: number, district: string, id: string, rng: Rng) {
   const w = lot.x1 - lot.x0, d = lot.z1 - lot.z0;
   const p = planFor(w, d, h, district);
-  // lay the out-of-city row out so two interiors never overlap
-  const span = Math.max(d, 14) + 6;
-  if (genZ + span > GEN_ROW * 4) { genZ = 1000; genX += 90; }
-  const oz = genZ;
-  genZ += span;
-  const ox = genX;
+  // its own square of the out-of-city grid, in rows of ten, well clear of the hand-built rooms
+  const n = genN++;
+  const ox = 1000 + (n % 10) * 42, oz = 1300 + Math.floor(n / 10) * 42;
 
   const f = streetFace(lot);
   const dx = f.x + f.nx * 0.05, dz = f.z + f.nz * 0.05;
@@ -242,40 +240,51 @@ export function generateInterior(ctx: WorldContext, lot: { x0: number; z0: numbe
   // far enough out that the building's own wall can't swallow the trigger
   const px = dx + f.nx * 1.5, pz = dz + f.nz * 1.5;
   ctx.point(`enter:${id}`, new THREE.Vector3(px, 0.15, pz), 2.4);
-  // and the interior needs a "leave" spot, just inside the first room, where
-  // you spawn: without it you can go in but you can never get back out
-  ctx.point(`exit:${id}`, new THREE.Vector3(ox, 0.15, oz - p.rooms[0].d / 2 + 1.2), 1.8, Math.PI);
 
-  // the interior itself
-  for (const r of p.rooms) {
-    const rx = ox + r.cx, rz = oz + r.cz;
-    room(ctx, rx, rz, r.w, r.d, r.h, 0x3d3630, 0x6a6258);
-    furnish(ctx, p, r, ox, oz, rng);
+  // the inside: a real floor plan (world/builders/homes.ts)
+  const home = buildHome(ctx, id, ox, oz, w, d, h, p.kind, rng);
+  ctx.point(`exit:${id}`, home.exit, 1.6, 0);
+  for (const r of home.residents) ctx.npcSpots.push(r);
+  const name = streetName(lot, district, p.kind);
+  HOMES.set(id, { id, kind: p.kind, name, residents: home.residents.map((r) => r.pos.clone()), bounds: home.bounds });
+  for (const sp of home.searches) {
+    SEARCHES.set(sp.id, { home: id, cash: sp.cash, name: sp.name });
+    INTERACTIONS[sp.id] = { name: sp.name, verb: 'Search', lines: [], action: 'search' };
   }
-  if (p.stair) {
-    batchLanding(ctx, ox, oz, p.rooms[0].w, p.rooms[0].d);
-  }
+  for (const bd of home.beds) INTERACTIONS[bd.id] = { name: 'Bed', verb: 'Sleep', lines: [], action: 'sleep' };
 
   def({
     id,
-    name: streetName(lot, district),
+    name,
     code: 'GEN',
     // where you end up when you come back out: on the pavement, facing the street
     door: { x: px, z: pz, yaw: yaw + Math.PI },
-    spawn: { x: ox, y: 0.15, z: oz - p.rooms[0].d / 2 + 1.2, yaw: 0 },
-    bounds: [ox - w / 2 - 2, oz - d / 2 - 2, ox + w / 2 + 2, oz + d / 2 + 2],
+    spawn: home.spawn,
+    bounds: home.bounds,
   });
   // the static definitions table only knows the five hand-built doors, so the
   // generated ones have to introduce themselves; without these the interaction
   // system has nothing to show a prompt for
-  INTERACTIONS[`enter:${id}`] = { name: streetName(lot, district), verb: 'Enter', lines: [], action: 'enter' };
+  INTERACTIONS[`enter:${id}`] = { name, verb: 'Enter', lines: [], action: 'enter' };
   INTERACTIONS[`exit:${id}`] = { name: 'Back to the street', verb: 'Leave', lines: [], action: 'exit' };
 }
 
+/** Every generated building: what it is, who lives or works there (for the burglary rules). */
+export const HOMES = new Map<string, { id: string; kind: HomeKind; name: string; residents: THREE.Vector3[]; bounds: [number, number, number, number] }>();
+/** Every drawer, till and safe that can be searched. */
+export const SEARCHES = new Map<string, { home: string; cash: [number, number]; name: string }>();
+let genN = 0;
+
 /** A display name for a generated door, from its lot and district. */
-function streetName(lot: { x0: number; z0: number; x1: number; z1: number }, district: string): string {
+function streetName(lot: { x0: number; z0: number; x1: number; z1: number }, district: string, kind?: string): string {
   const cx = Math.round((lot.x0 + lot.x1) / 2);
   const cz = Math.round((lot.z0 + lot.z1) / 2);
+  const no = (Math.abs(cx * 7 + cz * 13) % 89) + 1;
+  if (kind === 'house') return `No. ${no}, Quarter`;
+  if (kind === 'flat') return `Flat ${no}`;
+  if (kind === 'shop') return ['Corner shop', 'Late-night store', 'Tobacconist', 'Hardware', 'Newsagent', 'Off-licence'][no % 6];
+  if (kind === 'office') return ['Offices', 'Insurance office', 'Solicitors', 'Shipping agent'][no % 4];
+  if (kind === 'store') return 'Warehouse';
   const place = district === 'market' ? 'Market' : district === 'quarter' ? 'Quarter' : district === 'yard' ? 'Yard' : district === 'riverside' ? 'Riverside' : district === 'garden' ? 'Garden' : district === 'station' ? 'Station' : 'Avenue';
   return `${place} ${cx},${cz}`;
 }

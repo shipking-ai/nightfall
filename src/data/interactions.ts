@@ -4,11 +4,11 @@
  */
 export interface InteractionDef {
   name: string;
-  verb: 'Inspect' | 'Read' | 'Use' | 'Listen' | 'Sit' | 'Answer' | 'Enter' | 'Leave' | 'Ring' | 'Talk' | 'Open';
+  verb: 'Inspect' | 'Read' | 'Use' | 'Listen' | 'Sit' | 'Answer' | 'Enter' | 'Leave' | 'Ring' | 'Talk' | 'Open' | 'Search' | 'Sleep';
   lines: string[];
   again?: string[];
   unlock?: string;
-  action?: 'sit' | 'phone' | 'vend' | 'mark' | 'enter' | 'exit' | 'bell' | 'rob';
+  action?: 'sit' | 'phone' | 'vend' | 'mark' | 'enter' | 'exit' | 'bell' | 'rob' | 'search' | 'sleep';
 }
 
 export const INTERACTIONS: Record<string, InteractionDef> = {

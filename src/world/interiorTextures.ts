@@ -18,6 +18,76 @@ function canvas(w: number, h: number, draw: (c: CanvasRenderingContext2D, w: num
 }
 
 export const itex = {
+  /** A window at night: the city through rain, lit windows across the street, streaks on the glass. */
+  nightWindow: () =>
+    canvas(256, 192, (c, w, h) => {
+      const g = c.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, '#0b1018');
+      g.addColorStop(1, '#151a22');
+      c.fillStyle = g;
+      c.fillRect(0, 0, w, h);
+      let s = 17;
+      const rnd = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+      // the building opposite: rows of windows, a few lit
+      c.fillStyle = '#0e1218';
+      c.fillRect(0, h * 0.25, w, h);
+      for (let y = h * 0.3; y < h; y += 22)
+        for (let x = 8; x < w; x += 26) {
+          const lit = rnd() < 0.3;
+          c.fillStyle = lit ? `rgba(${230 + rnd() * 25}, ${170 + rnd() * 50}, ${90 + rnd() * 50}, 0.9)` : 'rgba(30, 36, 46, 0.9)';
+          c.fillRect(x, y, 14, 12);
+        }
+      // rain on the glass
+      c.strokeStyle = 'rgba(180, 200, 230, 0.18)';
+      for (let i = 0; i < 60; i++) {
+        const x = rnd() * w, y = rnd() * h;
+        c.beginPath();
+        c.moveTo(x, y);
+        c.lineTo(x + rnd() * 2, y + 6 + rnd() * 18);
+        c.stroke();
+      }
+      // the frame and the cross bar
+      c.strokeStyle = '#2a2420';
+      c.lineWidth = 10;
+      c.strokeRect(0, 0, w, h);
+      c.lineWidth = 6;
+      c.beginPath();
+      c.moveTo(w / 2, 0);
+      c.lineTo(w / 2, h);
+      c.stroke();
+    }),
+
+  /** A framed picture: a few soft fields of colour (someone's taste, not anyone's art). */
+  painting: (seed: number) =>
+    canvas(160, 120, (c, w, h) => {
+      let s = seed * 131;
+      const rnd = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+      c.fillStyle = '#3a2a1e';
+      c.fillRect(0, 0, w, h);
+      const hue = Math.floor(rnd() * 360);
+      for (let i = 0; i < 4; i++) {
+        c.fillStyle = `hsl(${(hue + i * 40) % 360}, ${25 + rnd() * 30}%, ${30 + rnd() * 35}%)`;
+        c.fillRect(10, 10 + i * ((h - 20) / 4), w - 20, (h - 20) / 4 + 1);
+      }
+      c.strokeStyle = '#c8a064';
+      c.lineWidth = 4;
+      c.strokeRect(6, 6, w - 12, h - 12);
+    }),
+
+  /** A television left on: a pale blue glow and a ghost of a picture. */
+  tvGlow: () =>
+    canvas(160, 96, (c, w, h) => {
+      c.fillStyle = '#0a0c10';
+      c.fillRect(0, 0, w, h);
+      const g = c.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w * 0.6);
+      g.addColorStop(0, '#9ab8e0');
+      g.addColorStop(1, '#2a3a5a');
+      c.fillStyle = g;
+      c.fillRect(6, 6, w - 12, h - 12);
+      c.fillStyle = 'rgba(20, 30, 50, 0.5)';
+      c.fillRect(30, 40, 50, 40);
+    }),
+
   reception: () =>
     canvas(512, 128, (c, w, h) => {
       c.fillStyle = '#16100b';
