@@ -330,3 +330,10 @@ body[data-mode='warzone'] .hud { display: none; }
 .wz-streaks__step i { font-style: normal; font-family: var(--f-meta); width: 1.4em; text-align: right; font-variant-numeric: tabular-nums; }
 .wz-streaks__step em { font-style: normal; letter-spacing: 0.06em; }
 .wz-streaks__step.is-done { opacity: 1; color: var(--blue); }
+
+/* planting, defusing */
+.wz-prog { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); display: grid; justify-items: center; gap: 6px; opacity: 0; transition: opacity 150ms; }
+.wz-prog.is-on { opacity: 1; }
+.wz-prog span { font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; }
+.wz-prog i { display: block; width: 220px; height: 4px; background: rgba(255,255,255,0.15); }
+.wz-prog b { display: block; height: 100%; background: var(--accent); transform-origin: left center; transform: scaleX(0); }

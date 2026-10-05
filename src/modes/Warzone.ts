@@ -12,11 +12,12 @@ import type { FollowCamera } from '../camera/FollowCamera';
 import type { Tracers } from '../fx/Tracers';
 import type { Blood } from '../fx/Blood';
 import { NavGrid } from './warzone/NavGrid';
-import { Soldier, chestY, headY, wrap, type Battle, type CapturePoint, type Unit } from './warzone/Soldier';
+import { RULES, Soldier, chestY, foe, headY, wrap, type Battle, type CapturePoint, type Unit } from './warzone/Soldier';
 import { GunMeshes } from './warzone/Guns';
 import { Blasts } from './warzone/Blasts';
 import { Gear, GEAR_NAME, type GearKind } from './warzone/Gear';
 import { STREAK, STREAKS, Streaks, type StreakId } from './warzone/Streaks';
+import { LADDER, MODE, type ModeId } from './warzone/modes';
 import { Viewmodel } from './warzone/Viewmodel';
 import { ARMOR_SOAK, BOT_PRIMARIES, GUNS, MAX_ARMOR, allLoadouts, damageAt, loadoutGuns, type Gun, type Loadout } from './warzone/weapons';
 import { WarzoneHud } from '../ui/WarzoneHud';
@@ -109,7 +110,9 @@ class Me implements Unit {
 }
 
 interface Pickup {
-  kind: 'ammo' | 'armor';
+  kind: 'ammo' | 'armor' | 'tag';
+  /** a tag: whose it was */
+  team?: 0 | 1;
   pos: THREE.Vector3;
   /** seconds left on the ground (dropped), or until it's back (a station) */
   t: number;
@@ -150,10 +153,28 @@ export class Warzone {
   private stunT = 0;
   private nav: NavGrid | null = null;
   private walls: Box[] = [];
-  private points: CapturePoint[] = POINTS.map(([id, x, z]) => ({ id, pos: new THREE.Vector3(x, 0, z), owner: -1, cap: 0, capTeam: -1, contested: false, radius: 5 }));
+  /** the three Domination points; `points` is what this mode is playing for right now */
+  private allPoints: CapturePoint[] = POINTS.map(([id, x, z]) => ({ id, pos: new THREE.Vector3(x, 0, z), owner: -1, cap: 0, capTeam: -1, contested: false, radius: 5 }));
+  private points: CapturePoint[] = [];
   private pointMeshes: { ring: THREE.Mesh; disc: THREE.Mesh; pillar: THREE.Mesh }[] = [];
   private pickups: Pickup[] = [];
-  private pickupMesh: Record<'ammo' | 'armor', THREE.InstancedMesh>;
+  private pickupMesh: Record<'ammo' | 'armor' | 'tag', THREE.InstancedMesh>;
+  /** the mode being played, and Hardline on top of it */
+  modeId: ModeId = 'dom';
+  hardline = false;
+  private flagMeshes: THREE.Group[] = [];
+  private chargeMesh: THREE.Mesh;
+  private flags: { team: 0 | 1; home: THREE.Vector3; pos: THREE.Vector3; carrier: Unit | null; home_: boolean; t: number }[] = [];
+  /** Hotspot: which spot is live, and how long until it moves */
+  private hotI = 0;
+  private hotT = 60;
+  private hotAcc = 0;
+  /** Gun Ladder: each unit's rung */
+  private rung = new Map<Unit, number>();
+  /** Last Charge */
+  private round = { n: 0, attackers: 0 as 0 | 1, carrier: null as Unit | null, at: new THREE.Vector3(), planted: false, site: -1, fuse: 0, plantT: 0, defuseT: 0, over: 0, by: null as Unit | null };
+  /** the range: who stands where */
+  private targets: { s: Soldier; x: number; z: number }[] = [];
   private score: [number, number] = [0, 0];
   private clock = MATCH_TIME;
   private tickT = 0;
@@ -207,7 +228,7 @@ export class Warzone {
     this.group.add(this.batch.group, this.guns.group, this.vm.group, this.blasts.group);
     this.group.visible = false;
     // the points: a ring on the ground, a faint disc, a thin beam of light
-    for (const p of this.points) {
+    for (const p of this.allPoints) {
       const ring = new THREE.Mesh(new THREE.RingGeometry(p.radius - 0.25, p.radius, 64).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthWrite: false, fog: false }));
       const disc = new THREE.Mesh(new THREE.CircleGeometry(p.radius - 0.25, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.06, depthWrite: false }));
       const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 9, 8, 1, true).translate(0, 4.5, 0), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
@@ -218,16 +239,29 @@ export class Warzone {
       }
       this.pointMeshes.push({ ring, disc, pillar });
     }
-    const box = (kind: 'ammo' | 'armor') => {
-      const g = kind === 'ammo' ? new THREE.BoxGeometry(0.55, 0.3, 0.35) : new THREE.BoxGeometry(0.45, 0.55, 0.08);
-      const mat = new THREE.MeshStandardMaterial({ color: kind === 'ammo' ? 0x4a5236 : 0x3a4656, roughness: 0.6, emissive: kind === 'ammo' ? 0x8a7a40 : 0x3a78c0, emissiveIntensity: kind === 'ammo' ? 0.22 : 0.45 });
+    const box = (kind: 'ammo' | 'armor' | 'tag') => {
+      const g = kind === 'ammo' ? new THREE.BoxGeometry(0.55, 0.3, 0.35) : kind === 'armor' ? new THREE.BoxGeometry(0.45, 0.55, 0.08) : new THREE.BoxGeometry(0.16, 0.24, 0.02);
+      const mat = new THREE.MeshStandardMaterial({ color: kind === 'ammo' ? 0x4a5236 : kind === 'armor' ? 0x3a4656 : 0xc8c0a0, roughness: 0.6, metalness: kind === 'tag' ? 0.8 : 0, emissive: kind === 'ammo' ? 0x8a7a40 : kind === 'armor' ? 0x3a78c0 : 0xe0c060, emissiveIntensity: kind === 'ammo' ? 0.22 : 0.45 });
       const m = new THREE.InstancedMesh(g, mat, 32);
       m.count = 0;
       m.frustumCulled = false;
       this.group.add(m);
       return m;
     };
-    this.pickupMesh = { ammo: box('ammo'), armor: box('armor') };
+    this.pickupMesh = { ammo: box('ammo'), armor: box('armor'), tag: box('tag') };
+    // the flags (Capture the Flag) and the charge (Last Charge)
+    for (const team of [0, 1] as const) {
+      const g = new THREE.Group();
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 2.2, 6).translate(0, 1.1, 0), new THREE.MeshStandardMaterial({ color: 0x8a8a8a, metalness: 0.6, roughness: 0.4 }));
+      const cloth = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.5).translate(0.4, 1.9, 0), new THREE.MeshStandardMaterial({ color: team ? 0xc0503a : 0x3f7ac0, emissive: team ? 0x501810 : 0x102850, side: THREE.DoubleSide, roughness: 0.8 }));
+      g.add(pole, cloth);
+      g.visible = false;
+      this.flagMeshes.push(g);
+      this.group.add(g);
+    }
+    this.chargeMesh = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.18, 0.24), new THREE.MeshStandardMaterial({ color: 0x2c3326, emissive: 0x401010, roughness: 0.7 }));
+    this.chargeMesh.visible = false;
+    this.group.add(this.chargeMesh);
     this.hud = new WarzoneHud(host.ui, {
       again: () => this.again(),
       level: () => this.cycleSkill(),
@@ -246,6 +280,7 @@ export class Warzone {
       home: (team) => this.spawnCentre(team),
       skill: this.skill,
       danger: (at, r) => this.gear.danger(at, r),
+      goal: (bot) => this.goalFor(bot),
       lob: (s, kind, at) => this.gear.lob(kind, s, _t1.set(s.pos.x, s.pos.y + 1.6, s.pos.z), at),
       callout: (s, at) => {
         for (const b of this.bots) if (b !== s && b.alive && b.team === s.team && b.pos.distanceTo(s.pos) < 28) b.investigate(at, 5);
@@ -402,23 +437,33 @@ export class Warzone {
     }
   }
 
+  get rules() {
+    return MODE[this.modeId];
+  }
+
   private newMatch() {
     this.score = [0, 0];
-    this.clock = MATCH_TIME;
+    this.clock = this.rules.time || 1e9;
     this.tickT = TICK;
-    for (const p of this.points) Object.assign(p, { owner: -1, cap: 0, capTeam: -1, contested: false });
+    RULES.ffa = this.rules.ffa;
+    for (const p of this.allPoints) Object.assign(p, { owner: -1, cap: 0, capTeam: -1, contested: false, radius: 5 });
+    this.setupObjectives();
     this.units.length = 0;
     this.units.push(this.me, ...this.bots);
     for (const u of this.units) u.kills = u.deaths = u.caps = 0;
-    this.pickups = STATIONS.map(([kind, x, z]) => ({ kind, pos: new THREE.Vector3(x, 0, z), t: 0, station: true, up: true }));
-    for (const b of this.bots) this.spawnBot(b);
+    this.pickups = this.modeId === 'range' ? [] : STATIONS.map(([kind, x, z]) => ({ kind, pos: new THREE.Vector3(x, 0, z), t: 0, station: true, up: true }));
+    this.rung.clear();
+    for (const b of this.bots) b.dummy = false;
+    if (this.modeId === 'range') this.setupRange();
+    else for (const b of this.bots) this.spawnBot(b);
+    if (this.modeId === 'charge') this.newRound(true);
     this.hud.showEnd(null);
     this.hud.feedClear();
     this.hintT = 0;
     this.hud.showHints(true);
     this.phase = 'loadout';
     this.me.alive = false;
-    this.deadT = RESPAWN;
+    this.deadT = this.rules.respawn;
     this.killedBy = null;
     this.shells.length = 0;
     this.blasts.clear();
@@ -464,13 +509,14 @@ export class Warzone {
 
   /** Somewhere in the team's spawn that's walkable and not in an enemy's face. */
   private spawnSpot(team: 0 | 1): [number, number] {
-    const s = SPAWNS[team];
+    // everyone for themselves: anywhere in the yard, as far from everyone as can be found
+    const s = this.rules.ffa ? [YARD_BOUNDS.x0 + 2, YARD_BOUNDS.z0 + 2, YARD_BOUNDS.x1 - 2, YARD_BOUNDS.z1 - 2] : SPAWNS[team];
     let best: [number, number] = [(s[0] + s[2]) / 2, (s[1] + s[3]) / 2], bestD = -1;
-    for (let k = 0; k < 8; k++) {
+    for (let k = 0; k < (this.rules.ffa ? 24 : 8); k++) {
       const x = s[0] + Math.random() * (s[2] - s[0]), z = s[1] + Math.random() * (s[3] - s[1]);
       if (this.nav && !this.nav.walkable(x, z)) continue;
       let near = Infinity;
-      for (const u of this.units) if (u.alive && u.team !== team) near = Math.min(near, Math.hypot(u.pos.x - x, u.pos.z - z));
+      for (const u of this.units) if (u.alive && (this.rules.ffa || u.team !== team)) near = Math.min(near, Math.hypot(u.pos.x - x, u.pos.z - z));
       if (near > bestD) (bestD = near), (best = [x, z]);
     }
     return best;
@@ -482,9 +528,11 @@ export class Warzone {
   }
 
   private spawnBot(b: Soldier) {
+    if (this.modeId === 'range') return this.placeTarget(b);
     const [x, z] = this.spawnSpot(b.team);
     const gun = BOT_PRIMARIES[Math.floor(Math.random() * BOT_PRIMARIES.length)];
-    b.spawn(x, z, this.host.collision.groundAt(x, z, 2, 3, 0.3), this.faceInto(x, z), gun);
+    b.spawn(x, z, this.host.collision.groundAt(x, z, 2, 3, 0.3), this.faceInto(x, z), this.modeId === 'ladder' ? LADDER[this.rung.get(b) ?? 0] : gun);
+    if (this.hardline) b.hp = 60;
   }
 
   /** Into the fight with the chosen loadout. */
@@ -492,6 +540,7 @@ export class Warzone {
     const lo = this.loadout;
     const firstDrop = this.phase === 'loadout';
     this.held = loadoutGuns(lo);
+    if (this.modeId === 'ladder') this.held = [GUNS[LADDER[this.rung.get(this.me) ?? 0]], GUNS.knife];
     this.slot = 0;
     this.mag = [this.held[0].mag, this.held[1].mag];
     this.reserve = [this.held[0].reserve, this.held[1].reserve];
@@ -502,9 +551,9 @@ export class Warzone {
     this.cookT = this.blindT = this.stunT = 0;
     const me = this.me;
     me.alive = true;
-    me.hp = 100;
+    me.hp = this.hardline ? 60 : 100;
     me.armor = MAX_ARMOR;
-    const [x, z] = this.spawnSpot(0);
+    const [x, z] = this.modeId === 'range' ? [52, -20] : this.spawnSpot(this.me.team);
     const p = this.host.player;
     p.anim.clear();
     p.busy = false;
@@ -544,10 +593,11 @@ export class Warzone {
         this.playerGuns(dt);
         for (const b of this.bots) {
           b.update(dt, this.battle);
-          if (!b.alive && (b.respawnT -= dt) <= 0) this.spawnBot(b);
+          if (!b.alive && this.rules.respawn > 0 && (b.respawnT -= dt) <= 0) this.spawnBot(b);
         }
         this.separate();
-        this.pointsUpdate(dt);
+        if (this.modeId === 'dom' || this.modeId === 'hotspot') this.pointsUpdate(dt);
+        this.objectivesUpdate(dt);
         this.pickupsUpdate(dt);
         this.shellsUpdate(dt);
         this.gear.update(dt);
@@ -556,7 +606,7 @@ export class Warzone {
         this.respawnFlow(dt);
         if (this.phase === 'play') {
           this.clock -= dt;
-          if (this.clock <= 0 || this.score[0] >= SCORE_LIMIT || this.score[1] >= SCORE_LIMIT) this.over();
+          if (this.modeId !== 'charge' && this.modeId !== 'range' && (this.clock <= 0 || this.reached())) this.over();
         }
       }
       if ((this.hintT += dt) > 16) this.hud.showHints(false);
@@ -583,10 +633,12 @@ export class Warzone {
     this.drawPoints(t);
     this.drawPickups(t);
     // the HUD
-    this.hud.score(this.score, SCORE_LIMIT, this.clock);
-    this.hud.points(this.points, this.me.team);
-    this.hud.markers(this.points, cam, this.me);
-    this.hud.tags(this.bots, cam, this.me, (u) => this.streaks.sweeps(this.me.team) || (this.streaks.jammed[this.me.team] <= 0 && this.gear.revealed(u, this.me.team)));
+    const shown = this.shownScore();
+    this.hud.score(shown, Math.max(1, this.limit), this.modeId === 'range' ? 0 : this.clock);
+    const labels = this.modeId === 'hotspot' ? ['H'] : this.modeId === 'ctf' ? ['⚑', '⚑'] : undefined;
+    this.hud.points(this.points, this.me.team, labels);
+    this.hud.markers(this.points, cam, this.me, labels);
+    this.hud.tags(this.bots, cam, this.me, (u) => this.streaks.sweeps(this.me.team) || (this.streaks.jammed[this.me.team] <= 0 && this.gear.revealed(u, this.me)));
     this.hud.vitals(this.me.hp, this.me.armor);
     const other = this.held[1 - this.slot];
     this.hud.weapon(gun.name, gun.cls === 'melee' ? -1 : this.mag[this.slot], this.reserve[this.slot], other.name, this.reloadT > 0 ? 1 - this.reloadT / this.reloadDur : null, MODE_NAME[gun.mode] + (gun.mode === 'burst' ? ` ×${gun.burst}` : ''));
@@ -647,7 +699,7 @@ export class Warzone {
     this.cool -= dt;
     this.bloom = Math.max(0, this.bloom - dt * 0.12);
     // armor doesn't come back; health does, out of the fight
-    if (me.alive && this.sinceHurt > 5 && me.hp < 100) me.hp = Math.min(100, me.hp + dt * 22);
+    if (me.alive && !this.hardline && this.sinceHurt > 5 && me.hp < 100) me.hp = Math.min(100, me.hp + dt * 22);
     if (inp.pressed('screen')) {
       this.firstPerson = !this.firstPerson;
       this.lookRange();
@@ -947,7 +999,7 @@ export class Warzone {
     const end = _e.copy(o);
     for (let pass = 0; pass < 2; pass++) {
       const wall = this.host.collision.raycast(start, dir, 160);
-      const hit = this.rayUnits(start, dir, wall, from.team);
+      const hit = this.rayUnits(start, dir, wall, from);
       if (hit) {
         end.copy(start).addScaledVector(dir, hit.t);
         const limb = !hit.head && end.y < hit.u.pos.y + 0.85;
@@ -997,7 +1049,7 @@ export class Warzone {
   private suppressAlong(o: THREE.Vector3, dir: THREE.Vector3, end: THREE.Vector3) {
     const len = end.distanceTo(o);
     for (const b of this.bots) {
-      if (!b.alive || b.team === this.me.team) continue;
+      if (!b.alive || !foe(this.me, b)) continue;
       const c = _t2.set(b.pos.x, chestY(b), b.pos.z).sub(o);
       const along = c.dot(dir);
       if (along < 0 || along > len + 1) continue;
@@ -1024,7 +1076,7 @@ export class Warzone {
       const dir = _t2.copy(step).divideScalar(len || 1);
       const wall = this.host.collision.raycast(s.pos, dir, len);
       const ground = s.pos.y + step.y < 0.02;
-      const hit = this.rayUnits(s.pos, dir, Math.min(wall, len), s.owner.team);
+      const hit = this.rayUnits(s.pos, dir, Math.min(wall, len), s.owner);
       if (s.kind === 'bullet') {
         if (hit) {
           const at = _e.copy(s.pos).addScaledVector(dir, hit.t);
@@ -1086,7 +1138,7 @@ export class Warzone {
     const eye = _t3.copy(at).setY(at.y + 0.3);
     for (const u of this.units) {
       if (!u.alive) continue;
-      if (u !== owner && u.team === owner.team) continue;
+      if (u !== owner && !foe(owner, u)) continue;
       const c = _t2.set(u.pos.x, chestY(u), u.pos.z);
       const d = c.distanceTo(at);
       if (d > r || !this.clear(eye, c)) continue;
@@ -1116,7 +1168,7 @@ export class Warzone {
     const reach = blade ? gun.range[0] : 1.8;
     let best: Unit | null = null, bestD = Infinity;
     for (const u of this.units) {
-      if (!u.alive || u.team === this.me.team) continue;
+      if (!u.alive || !foe(this.me, u)) continue;
       const dx = u.pos.x - p.pos.x, dz = u.pos.z - p.pos.z, d = Math.hypot(dx, dz);
       if (d > reach + 0.4 || Math.abs(u.pos.y - p.pos.y) > 1.2) continue;
       const ang = Math.abs(wrap(Math.atan2(dx, dz) - f.yaw));
@@ -1135,10 +1187,10 @@ export class Warzone {
   }
 
   /** The first enemy body a ray meets before `max`: a head, or the cylinder of a body. */
-  private rayUnits(o: THREE.Vector3, d: THREE.Vector3, max: number, team: 0 | 1) {
+  private rayUnits(o: THREE.Vector3, d: THREE.Vector3, max: number, from: Unit) {
     let best: { u: Unit; t: number; head: boolean } | null = null;
     for (const u of this.units) {
-      if (u.team === team || !u.alive) continue;
+      if (!foe(from, u) || !u.alive) continue;
       const hy = headY(u);
       const th = raySphere(o, d, u.pos.x, hy, u.pos.z, 0.16);
       if (th >= 0 && th < max && (!best || th < best.t)) best = { u, t: th, head: true };
@@ -1153,7 +1205,7 @@ export class Warzone {
     const d = cam.getWorldDirection(_d);
     const o = _o.copy(cam.position);
     const wall = this.host.collision.raycast(o, d, 120);
-    return !!this.rayUnits(o, d, wall, this.me.team);
+    return !!this.rayUnits(o, d, wall, this.me);
   }
 
   /**
@@ -1171,7 +1223,7 @@ export class Warzone {
     const fwd = cam.getWorldDirection(_d);
     let best: Unit | null = null, bestA = Infinity;
     for (const u of this.units) {
-      if (u.team === this.me.team || !u.alive) continue;
+      if (!foe(this.me, u) || !u.alive) continue;
       const to = _o.set(u.pos.x - cam.position.x, chestY(u) - cam.position.y, u.pos.z - cam.position.z);
       const dist = to.length();
       if (dist > 70) continue;
@@ -1226,19 +1278,20 @@ export class Warzone {
       }
     } else if (from !== u && !from.isPlayer) this.botLife.set(from, (this.botLife.get(from) ?? 0) + 1);
     this.botLife.delete(u);
+    this.onKill(u, from, gun);
     this.hud.feed(from.name, from.team, gun.name, u.name, u.team, head, from.isPlayer || u.isPlayer);
     // they drop what they had
-    this.pickups.push({ kind: Math.random() < 0.6 ? 'ammo' : 'armor', pos: u.pos.clone(), t: 25, station: false, up: true });
+    if (this.modeId !== 'range') this.pickups.push({ kind: Math.random() < 0.6 ? 'ammo' : 'armor', pos: u.pos.clone(), t: 25, station: false, up: true });
     if (this.pickups.length > 30) this.pickups.splice(this.pickups.findIndex((p) => !p.station), 1);
     if (u instanceof Soldier) {
       u.die(from);
-      u.respawnT = RESPAWN + Math.random() * 2;
+      u.respawnT = this.modeId === 'range' ? 1.2 : this.rules.respawn + Math.random() * 2;
     } else {
       // you: down, and the camera pulls out over your shoulder to see who did it
       this.me.alive = false;
       this.me.deaths++;
       this.lifeKills = 0;
-      this.deadT = RESPAWN;
+      this.deadT = this.rules.respawn > 0 ? this.rules.respawn : Infinity;
       this.killedBy = { name: from.name, gun: gun.name, head };
       const p = this.host.player;
       p.busy = true;
@@ -1375,6 +1428,14 @@ export class Warzone {
         continue;
       }
       const me = this.me;
+      if (k.kind === 'tag') {
+        const by = this.units.find((u) => u.alive && Math.hypot(u.pos.x - k.pos.x, u.pos.z - k.pos.z) < 1.1);
+        if (by) {
+          this.pickups.splice(i, 1);
+          this.tagTaken(k, by);
+        }
+        continue;
+      }
       if (me.alive && Math.hypot(me.pos.x - k.pos.x, me.pos.z - k.pos.z) < 1.1 && this.collect(k, me)) this.take(i, k);
       else
         for (const b of this.bots)
@@ -1460,16 +1521,17 @@ export class Warzone {
 
   private over() {
     this.phase = 'over';
-    const [b, r] = this.score;
+    const [b, r] = this.modeId === 'ffa' || this.modeId === 'ladder' ? this.shownScore() : this.score;
     const won = b > r, draw = b === r;
     const me = this.me;
+    this.onMatchEnd?.(won, draw);
     // the end of it, on camera: round you slowly, time running slow, before the numbers
     const p = this.host.player;
     const you = subject(() => p.pos, () => p.facing, 1.6);
     this.host.scene?.({ slow: 0.4, blendIn: 0.8, blendOut: 0.6, shots: [{ kind: 'low', a: you, dur: 1.8, side: 1 }, { kind: 'orbit', a: you, dur: 3.6, side: -1, dist: 3.8 }] });
     this.hud.showEnd({
       title: draw ? 'Draw' : won ? 'Victory' : 'Defeat',
-      lines: [`Blue ${b} – ${r} Red`, `${me.kills} kills · ${me.deaths} deaths · ${me.caps} captures`],
+      lines: [this.rules.ffa ? `You ${b} – ${r} the leader` : `Blue ${b} – ${r} Red · ${this.rules.name}`, `${me.kills} kills · ${me.deaths} deaths · ${me.caps} ${this.modeId === 'ctf' ? 'flags' : this.modeId === 'tagged' ? 'tags' : 'captures'}`],
     });
     this.hud.loadout(false);
     this.hud.death(null);
@@ -1491,8 +1553,13 @@ export class Warzone {
 
   private drawPoints(t: number) {
     const col = (o: number) => (o === 0 ? 0x5a9cff : o === 1 ? 0xff6a4a : 0xe9e5dc);
-    this.points.forEach((p, i) => {
-      const m = this.pointMeshes[i];
+    this.pointMeshes.forEach((m, i) => {
+      const p = this.points[i];
+      for (const x of [m.ring, m.disc, m.pillar]) x.visible = !!p && this.modeId !== 'ctf';
+      if (!p) return;
+      for (const x of [m.ring, m.disc, m.pillar]) x.position.set(p.pos.x, 0.04, p.pos.z);
+      m.ring.scale.setScalar(p.radius / 5);
+      m.disc.scale.setScalar(p.radius / 5);
       const c = col(p.owner);
       (m.ring.material as THREE.MeshBasicMaterial).color.setHex(p.contested ? 0xffd070 : c);
       (m.disc.material as THREE.MeshBasicMaterial).color.setHex(p.capTeam >= 0 ? col(p.capTeam) : c);
@@ -1503,12 +1570,12 @@ export class Warzone {
   }
 
   private drawPickups(t: number) {
-    for (const kind of ['ammo', 'armor'] as const) {
+    for (const kind of ['ammo', 'armor', 'tag'] as const) {
       const mesh = this.pickupMesh[kind];
       let n = 0;
       for (const k of this.pickups) {
         if (!k.up || k.kind !== kind || n >= 32) continue;
-        _mm.compose(_o.set(k.pos.x, k.pos.y + 0.35 + Math.sin(t * 2.4 + k.pos.x) * 0.06, k.pos.z), _q.setFromAxisAngle(_up, t * 1.2 + k.pos.z), _one);
+        _mm.compose(_o.set(k.pos.x, k.pos.y + (kind === 'tag' ? 0.6 : 0.35) + Math.sin(t * 2.4 + k.pos.x) * 0.06, k.pos.z), _q.setFromAxisAngle(_up, t * (kind === 'tag' ? 3 : 1.2) + k.pos.z), _one);
         mesh.setMatrixAt(n++, _mm);
       }
       mesh.count = n;
@@ -1516,10 +1583,365 @@ export class Warzone {
     }
   }
 
+  /* ─────────────────────────── the modes ─────────────────────────── */
+
+  /** Called when a match ends (progression listens). */
+  onMatchEnd?: (won: boolean, draw: boolean) => void;
+
+  /** What the score bar counts up to. */
+  private get limit() {
+    return this.modeId === 'ladder' ? LADDER.length : this.rules.limit;
+  }
+
+  /** The two numbers at the top: the sides, or (everyone for themselves) you and the leader. */
+  private shownScore(): [number, number] {
+    if (this.modeId === 'ffa' || this.modeId === 'ladder') {
+      const val = (u: Unit) => (this.modeId === 'ladder' ? this.rung.get(u) ?? 0 : u.kills);
+      let best = 0;
+      for (const u of this.units) if (u !== this.me) best = Math.max(best, val(u));
+      return [val(this.me), best];
+    }
+    return [Math.floor(this.score[0]), Math.floor(this.score[1])];
+  }
+
+  private reached() {
+    if (this.modeId === 'ffa') return this.units.some((u) => u.kills >= this.rules.limit);
+    if (this.modeId === 'ladder') return [...this.rung.values()].some((v) => v >= LADDER.length);
+    return this.score[0] >= this.rules.limit || this.score[1] >= this.rules.limit;
+  }
+
+  private addScore(team: 0 | 1, n: number) {
+    this.score[team] = Math.min(this.rules.limit || Infinity, this.score[team] + n);
+  }
+
+  /** What this mode plays for: the points, one moving zone, two flags, two bomb sites, or nothing. */
+  private setupObjectives() {
+    this.points.length = 0;
+    this.flags = [];
+    for (const f of this.flagMeshes) f.visible = false;
+    this.chargeMesh.visible = false;
+    const [A, B, C] = this.allPoints;
+    if (this.modeId === 'dom') this.points.push(A, B, C);
+    else if (this.modeId === 'hotspot') {
+      this.hotI = 0;
+      this.hotT = 60;
+      this.hotAcc = 0;
+      this.points.push(this.hotspot(0));
+    } else if (this.modeId === 'ctf') {
+      for (const team of [0, 1] as const) {
+        const c = this.spawnCentre(team);
+        const [x, z] = this.nav ? this.nav.nearest(c.x, c.z) : [c.x, c.z];
+        const home = new THREE.Vector3(x, 0, z);
+        this.flags.push({ team, home, pos: home.clone(), carrier: null, home_: true, t: 0 });
+        this.flagMeshes[team].visible = true;
+        // a marker for each flag (the HUD shows them like points)
+        this.points.push({ id: team ? 'C' : 'A', pos: home.clone(), owner: team, cap: 0, capTeam: -1, contested: false, radius: 1.6 });
+      }
+    } else if (this.modeId === 'charge') {
+      for (const p of [A, C]) this.points.push(p);
+    }
+    this.battle.points = this.points;
+  }
+
+  /** Hotspot's spots: the three points, and two more between them. */
+  private hotspot(i: number): CapturePoint {
+    const spots: [number, number][] = [[68.5, 9], [92, -20], [46, 44], [80, 28], [56, -8]];
+    const [x, z] = spots[i % spots.length];
+    return { id: 'B', pos: new THREE.Vector3(x, 0, z), owner: -1, cap: 0, capTeam: -1, contested: false, radius: 4.5 };
+  }
+
+  /** Where the mode wants a bot to be (null: the points, as in Domination). */
+  private goalFor(s: Soldier): THREE.Vector3 | null {
+    const id = this.modeId;
+    if (id === 'dom' || id === 'range') return null;
+    if (id === 'hotspot') return this.points[0].pos;
+    if (id === 'ctf') {
+      const mine = this.flags[s.team], theirs = this.flags[1 - s.team];
+      if (theirs.carrier === s) return mine.home;
+      if (mine.carrier) return mine.carrier.pos;
+      if (!mine.home_ && !mine.carrier) return mine.pos;
+      return (s.name.length + this.bots.indexOf(s)) % 3 ? theirs.pos : mine.home;
+    }
+    if (id === 'charge') {
+      const R = this.round, site = this.points[Math.max(0, R.site)];
+      if (R.planted) return site.pos;
+      if (s.team === R.attackers) {
+        if (!R.carrier && R.at) return R.at;
+        return this.points[R.site >= 0 ? R.site : this.bots.indexOf(s) % 2].pos;
+      }
+      return this.points[this.bots.indexOf(s) % 2].pos;
+    }
+    // the rest: go where the fight is (the nearest enemy, roughly)
+    let best: Unit | null = null, bd = Infinity;
+    for (const u of this.units) {
+      if (!u.alive || !foe(s, u)) continue;
+      const d = u.pos.distanceTo(s.pos);
+      if (d < bd) (bd = d), (best = u);
+    }
+    // tags on the ground nearby are worth a detour
+    if (id === 'tagged') for (const k of this.pickups) if (k.kind === 'tag' && k.pos.distanceTo(s.pos) < 18) return k.pos;
+    return best ? best.pos : null;
+  }
+
+  private onKill(u: Unit, from: Unit, gun: Gun) {
+    const id = this.modeId;
+    if (from === u) return;
+    if (id === 'tdm' && foe(from, u)) this.addScore(from.team, 1);
+    if (id === 'tagged') this.pickups.push({ kind: 'tag', team: u.team, pos: u.pos.clone(), t: 30, station: false, up: true });
+    if (id === 'ladder') {
+      // a knife kill sets the victim back a rung
+      if (gun.cls === 'melee' && from !== u) this.rung.set(u, Math.max(0, (this.rung.get(u) ?? 0) - 1));
+      const n = (this.rung.get(from) ?? 0) + 1;
+      this.rung.set(from, n);
+      if (n < LADDER.length) {
+        if (from === this.me) {
+          this.held = [GUNS[LADDER[n]], GUNS.knife];
+          this.slot = 0;
+          this.mag = [this.held[0].mag, 0];
+          this.reserve = [this.held[0].reserve, 0];
+          this.reloadT = this.cycleT = this.burstLeft = 0;
+          this.switchT = 0.45;
+          this.hud.announce(`${GUNS[LADDER[n]].name} · ${n + 1}/${LADDER.length}`, 'us');
+        } else if (from instanceof Soldier) from.setGun(LADDER[n]);
+      }
+    }
+    if (id === 'ctf') for (const f of this.flags) if (f.carrier === u) this.dropFlag(f);
+    if (id === 'charge' && this.round.carrier === u) {
+      this.round.carrier = null;
+      this.round.at.copy(u.pos);
+    }
+  }
+
+  /** A tag picked up: theirs confirms the kill, ours denies it. */
+  private tagTaken(k: Pickup, by: Unit) {
+    const confirm = k.team !== by.team;
+    if (confirm) {
+      this.addScore(by.team, 1);
+      by.caps++;
+    }
+    if (by === this.me) {
+      this.hud.announce(confirm ? 'Kill confirmed' : 'Kill denied', 'pickup');
+      this.host.audio.fight('grab', 0.6);
+    }
+  }
+
+  private dropFlag(f: (typeof this.flags)[number]) {
+    if (!f.carrier) return;
+    f.pos.copy(f.carrier.pos);
+    f.carrier = null;
+    f.t = 20;
+    this.hud.announce(`${f.team === this.me.team ? 'Our' : 'Their'} flag dropped`, f.team === this.me.team ? 'us' : 'them');
+  }
+
+  private objectivesUpdate(dt: number) {
+    const id = this.modeId;
+    if (id === 'hotspot') {
+      this.hotT -= dt;
+      if (this.hotT <= 0) {
+        this.hotT = 60;
+        this.hotI++;
+        this.points[0] = this.hotspot(this.hotI);
+        this.hud.announce('The hotspot has moved', 'pickup');
+        for (const b of this.bots) b.investigate(this.points[0].pos, 4);
+      }
+      // the zone scores whoever holds it alone, a point a second
+      const p = this.points[0];
+      const n: [number, number] = [0, 0];
+      for (const u of this.units) if (u.alive && Math.hypot(u.pos.x - p.pos.x, u.pos.z - p.pos.z) < p.radius) n[u.team]++;
+      p.contested = n[0] > 0 && n[1] > 0;
+      p.owner = p.contested ? -1 : n[0] ? 0 : n[1] ? 1 : -1;
+      if (p.owner >= 0 && this.phase === 'play') {
+        this.hotAcc += dt;
+        if (this.hotAcc >= 1) {
+          this.hotAcc -= 1;
+          this.addScore(p.owner as 0 | 1, 1);
+        }
+      }
+    }
+    if (id === 'ctf') this.flagsUpdate(dt);
+    if (id === 'charge') this.chargeUpdate(dt);
+    if (id === 'range') {
+      // the targets stand back up where they were
+      for (const t of this.targets) if (!t.s.alive && (t.s.respawnT -= dt) <= 0) this.placeTarget(t.s);
+    }
+  }
+
+  private flagsUpdate(dt: number) {
+    for (const f of this.flags) {
+      const other = this.flags[1 - f.team];
+      if (f.carrier) {
+        f.pos.copy(f.carrier.pos);
+        // home with it, while ours is home: a capture
+        if (other.home_ && Math.hypot(f.pos.x - other.home.x, f.pos.z - other.home.z) < 2) {
+          const by = f.carrier;
+          by.caps++;
+          this.addScore(by.team, 1);
+          this.hud.announce(by.team === this.me.team ? 'Flag captured' : 'They captured our flag', by.team === this.me.team ? 'us' : 'them');
+          this.host.audio.fight('bell', 0.7);
+          f.carrier = null;
+          f.pos.copy(f.home);
+          f.home_ = true;
+        }
+      } else {
+        if (!f.home_ && (f.t -= dt) <= 0) {
+          f.pos.copy(f.home);
+          f.home_ = true;
+        }
+        for (const u of this.units) {
+          if (!u.alive || Math.hypot(u.pos.x - f.pos.x, u.pos.z - f.pos.z) > 1.3) continue;
+          if (u.team === f.team) {
+            if (!f.home_) {
+              f.pos.copy(f.home);
+              f.home_ = true;
+              if (u === this.me) this.hud.announce('Flag returned', 'us');
+            }
+          } else {
+            f.carrier = u;
+            f.home_ = false;
+            this.hud.announce(u === this.me ? 'You have the flag' : u.team === this.me.team ? 'We have their flag' : 'They have our flag', u.team === this.me.team ? 'us' : 'them');
+            break;
+          }
+        }
+      }
+      const m = this.flagMeshes[f.team];
+      m.position.copy(f.pos);
+      if (f.carrier) m.position.y += 0.4;
+      m.rotation.y += dt * 0.6;
+      const pt = this.points[f.team];
+      if (pt) pt.pos.copy(f.pos);
+    }
+    if (this.me.alive && this.flags.some((f) => f.carrier === this.me)) this.host.player.speedMul *= 0.88;
+  }
+
+  /* Last Charge: rounds. */
+
+  private newRound(first = false) {
+    const R = this.round;
+    if (first) {
+      R.n = 0;
+      R.attackers = 1;
+    }
+    R.n++;
+    // sides swap after three rounds
+    if (R.n === 4) R.attackers = (1 - R.attackers) as 0 | 1;
+    R.planted = false;
+    R.site = Math.random() < 0.5 ? 0 : 1;
+    R.plantT = R.defuseT = R.fuse = 0;
+    R.over = 0;
+    R.by = null;
+    this.clock = this.rules.time;
+    this.shells.length = 0;
+    this.gear.clear();
+    for (const b of this.bots) this.spawnBot(b);
+    const atk = this.units.filter((u) => u.team === R.attackers && (u !== this.me || true));
+    R.carrier = atk.filter((u) => u !== this.me)[Math.floor(Math.random() * Math.max(1, atk.length - 1))] ?? null;
+    R.at.set(0, 0, 0);
+    if (!first) {
+      this.deploy();
+      this.lookRange();
+    }
+    this.hud.announce(`Round ${R.n} · ${R.attackers === this.me.team ? 'Attack' : 'Defend'}`, 'us');
+  }
+
+  private chargeUpdate(dt: number) {
+    const R = this.round, inp = this.host.input;
+    if (R.over > 0) {
+      if ((R.over -= dt) <= 0) {
+        if (this.score[0] >= this.rules.limit || this.score[1] >= this.rules.limit) this.over();
+        else this.newRound();
+      }
+      return;
+    }
+    // the charge: carried, or lying where its carrier fell (an attacker picks it up)
+    if (!R.carrier) {
+      for (const u of this.units) if (u.alive && u.team === R.attackers && !R.planted && Math.hypot(u.pos.x - R.at.x, u.pos.z - R.at.z) < 1.2) R.carrier = u;
+    } else R.at.copy(R.carrier.pos);
+    this.chargeMesh.visible = true;
+    this.chargeMesh.position.set(R.at.x, R.at.y + (R.carrier ? 1.1 : 0.1), R.at.z);
+    const siteOf = (u: Unit) => this.points.findIndex((p) => Math.hypot(u.pos.x - p.pos.x, u.pos.z - p.pos.z) < p.radius);
+    // planting
+    if (!R.planted && R.carrier && R.carrier.alive) {
+      const site = siteOf(R.carrier);
+      const wants = site >= 0 && (R.carrier === this.me ? inp.held('interact') : true);
+      R.plantT = wants ? R.plantT + dt : 0;
+      if (R.carrier === this.me) this.hud.progress(wants ? 'Planting' : site >= 0 ? 'Hold to plant' : null, R.plantT / 4);
+      if (R.plantT >= 4) {
+        R.planted = true;
+        R.site = site;
+        R.fuse = 40;
+        R.at.copy(R.carrier.pos);
+        R.carrier = null;
+        this.hud.announce(`Charge planted at ${this.points[site].id}`, R.attackers === this.me.team ? 'us' : 'them');
+        this.host.audio.mechanism('magIn', R.at);
+        for (const b of this.bots) b.investigate(R.at, 10);
+      }
+    }
+    // defusing, and the fuse
+    if (R.planted) {
+      R.fuse -= dt;
+      const def = this.units.find((u) => u.alive && u.team !== R.attackers && Math.hypot(u.pos.x - R.at.x, u.pos.z - R.at.z) < 1.6 && (u !== this.me || inp.held('interact')));
+      R.defuseT = def ? R.defuseT + dt : 0;
+      if (this.me.alive && this.me.team !== R.attackers && Math.hypot(this.me.pos.x - R.at.x, this.me.pos.z - R.at.z) < 1.6) this.hud.progress(def === this.me ? 'Defusing' : 'Hold to defuse', R.defuseT / 6);
+      else if (R.carrier !== this.me) this.hud.progress(null, 0);
+      if (R.fuse <= 0) {
+        this.blast(R.at.clone(), 10, 400, this.units.find((u) => u.team === R.attackers) ?? this.me, named('Charge'));
+        return this.endRound(R.attackers, 'The charge went off');
+      }
+      if (R.defuseT >= 6) return this.endRound((1 - R.attackers) as 0 | 1, 'Defused');
+    } else if (R.carrier !== this.me) this.hud.progress(null, 0);
+    // a side wiped out (the attackers can still win with a charge ticking)
+    const alive = (t: number) => this.units.some((u) => u.alive && u.team === t);
+    if (!alive(R.attackers) && !R.planted) return this.endRound((1 - R.attackers) as 0 | 1, 'Attackers down');
+    if (!alive(1 - R.attackers)) return this.endRound(R.attackers, 'Defenders down');
+    if (this.clock <= 0 && !R.planted) return this.endRound((1 - R.attackers) as 0 | 1, 'Time');
+  }
+
+  private endRound(winner: 0 | 1, why: string) {
+    const R = this.round;
+    R.over = 4;
+    this.addScore(winner, 1);
+    this.hud.progress(null, 0);
+    this.hud.announce(`${why} · ${winner === this.me.team ? 'round won' : 'round lost'}`, winner === this.me.team ? 'us' : 'them');
+    this.host.audio.fight('bell', 0.7);
+  }
+
+  /* The range. */
+
+  private setupRange() {
+    this.targets = [];
+    const lanes: [number, number][] = [[62, -20], [77, -18], [92, -22], [101, -19]];
+    // the targets are red bots (nobody changes sides)
+    const red = this.bots.filter((b) => b.team === 1);
+    this.bots.forEach((b) => {
+      const i = red.indexOf(b);
+      if (i >= 0 && i < lanes.length) {
+        b.dummy = true;
+        this.targets.push({ s: b, x: lanes[i][0], z: lanes[i][1] });
+        this.placeTarget(b);
+      } else {
+        b.alive = false;
+        b.respawnT = Infinity;
+        b.pos.set(0, -50, 0);
+      }
+    });
+  }
+
+  private placeTarget(b: Soldier) {
+    const t = this.targets.find((x) => x.s === b);
+    if (!t) return;
+    const [x, z] = this.nav ? this.nav.nearest(t.x, t.z) : [t.x, t.z];
+    b.spawn(x, z, this.host.collision.groundAt(x, z, 2, 3, 0.3), Math.atan2(52 - x, -20 - z), 'carbine');
+    b.armor = 0;
+    b.dummy = true;
+  }
+
   /** For the playtests. */
   get snapshot() {
     return {
       phase: this.phase,
+      mode: this.modeId,
+      round: this.modeId === 'charge' ? `${this.round.n} atk${this.round.attackers}${this.round.planted ? ' planted' : ''}` : undefined,
+      flags: this.flags.map((f) => `${f.team}:${f.carrier ? f.carrier.name : f.home_ ? 'home' : 'dropped'}`).join(' ') || undefined,
       score: [...this.score],
       clock: Math.ceil(this.clock),
       fp: this.fpActive,

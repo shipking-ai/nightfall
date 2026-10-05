@@ -3,7 +3,7 @@ import type { Collision } from '../../world/Collision';
 import type { AudioEngine } from '../../audio/AudioEngine';
 import type { Blasts } from './Blasts';
 import type { Lethal, Tactical } from './weapons';
-import { chestY, type Unit } from './Soldier';
+import { RULES, chestY, foe, type Unit } from './Soldier';
 
 /**
  * What you throw and plant. Everything thrown is a body: it arcs, bounces
@@ -144,9 +144,10 @@ export class Gear {
     return false;
   }
 
-  /** Is this unit revealed by an enemy sensor? */
-  revealed(u: Unit, by: 0 | 1) {
-    for (const z of this.zones) if (z.kind === 'sensor' && z.owner.team === by && u.team !== by && z.pos.distanceTo(u.pos) < z.r && Math.hypot(u.vel.x, u.vel.z) > 0.4) return true;
+  /** Does one of `viewer`'s sensors (or their side's) give `u` away? */
+  revealed(u: Unit, viewer: Unit) {
+    for (const z of this.zones)
+      if (z.kind === 'sensor' && (z.owner === viewer || (!RULES.ffa && z.owner.team === viewer.team)) && foe(viewer, u) && z.pos.distanceTo(u.pos) < z.r && Math.hypot(u.vel.x, u.vel.z) > 0.4) return true;
     return false;
   }
 
@@ -180,7 +181,7 @@ export class Gear {
         if (t.age > 1.5) t.armed = true;
         if (t.armed && t.fuse === Infinity)
           for (const u of h.units) {
-            if (!u.alive || u.team === t.owner.team) continue;
+            if (!u.alive || !foe(t.owner, u)) continue;
             const dx = u.pos.x - t.pos.x, dz = u.pos.z - t.pos.z, d = Math.hypot(dx, dz);
             if (d > 2.8) continue;
             const off = Math.abs(wrap(Math.atan2(dx, dz) - t.yaw));
@@ -245,7 +246,7 @@ export class Gear {
     // bodies first (a knife or a sticky charge finds people)
     if (t.kind === 'throwknife' || t.kind === 'semtex' || t.kind === 'molotov') {
       for (const u of h.units) {
-        if (!u.alive || u === t.owner || u.team === t.owner.team) continue;
+        if (!u.alive || !foe(t.owner, u)) continue;
         const near = _n.set(u.pos.x, Math.min(Math.max(t.pos.y, u.pos.y + 0.2), u.pos.y + 1.7), u.pos.z);
         if (near.distanceTo(t.pos) > 0.45 + len) continue;
         if (t.kind === 'throwknife') {
@@ -334,7 +335,7 @@ export class Gear {
         const eye = _n.copy(at).setY(at.y + 0.2);
         for (const u of h.units) {
           if (!u.alive) continue;
-          if (u.team === t.owner.team && u !== t.owner) continue;
+          if (u !== t.owner && !foe(t.owner, u)) continue;
           const c = _o.set(u.pos.x, chestY(u) + 0.3, u.pos.z);
           const d = c.distanceTo(at);
           if (d > range || !h.sees(eye, c)) continue;

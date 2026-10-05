@@ -62,6 +62,15 @@ export interface Battle {
   lob?(s: Soldier, kind: 'frag' | 'smoke' | 'flash' | 'stun', at: THREE.Vector3): void;
   /** tell the squad: an enemy is there */
   callout?(s: Soldier, at: THREE.Vector3): void;
+  /** the mode's own idea of where this one should be (a flag, a site, the zone); null: the points */
+  goal?(s: Soldier): THREE.Vector3 | null;
+}
+
+/** The match's rules every unit plays by: free-for-all makes everyone else a foe. */
+export const RULES = { ffa: false };
+/** Is `b` an enemy of `a`? */
+export function foe(a: Unit, b: Unit) {
+  return a !== b && (RULES.ffa || a.team !== b.team);
 }
 
 type Mode = 'move' | 'fight' | 'retreat' | 'cover';
@@ -178,6 +187,16 @@ export class Soldier implements Unit {
     this.lobT = 2 + Math.random() * 4;
   }
 
+  /** A target on the range: stands where it's put, doesn't fight back. */
+  dummy = false;
+
+  /** A different gun (Gun Ladder). */
+  setGun(id: GunId) {
+    this.gun = GUNS[id];
+    this.mag = this.gun.mag;
+    this.reloading = 0;
+  }
+
   /** A flash: can't see for a while. */
   blind(secs: number) {
     this.blindT = Math.max(this.blindT, secs);
@@ -253,6 +272,12 @@ export class Soldier implements Unit {
     // heal up out of the fight
     if (this.hurtT > 6 && this.hp < 100) this.hp = Math.min(100, this.hp + dt * 20);
 
+    if (this.dummy) {
+      this.friction(dt, 10);
+      this.turnAim(this.aimYaw, 0, dt, 2);
+      this.yaw += wrap(this.aimYaw - this.yaw) * Math.min(1, dt * 10);
+      return;
+    }
     this.thinkT -= dt;
     if (this.thinkT <= 0) {
       this.thinkT = 0.18 + Math.random() * 0.1;
@@ -260,7 +285,7 @@ export class Soldier implements Unit {
       if (this.blindT <= 0) this.perceive(b);
     }
     this.goalT -= dt;
-    if (this.goalT <= 0 || this.goalPoint < 0) this.chooseGoal(b);
+    if (this.goalT <= 0 || this.goalPoint === -1) this.chooseGoal(b);
 
     let want = new THREE.Vector2();
     let speed = 4.2 * this.gun.weight;
@@ -320,7 +345,7 @@ export class Soldier implements Unit {
       // face where we're going, gun at the ready
       const hs = Math.hypot(this.vel.x, this.vel.z);
       if (hs > 0.5) this.turnAim(Math.atan2(this.vel.x, this.vel.z), 0, dt, 5);
-      else if (this.goalPoint >= 0) {
+      else if (this.goalPoint >= 0 && b.points[this.goalPoint]) {
         const p = b.points[this.goalPoint].pos;
         this.turnAim(Math.atan2(p.x - this.pos.x, p.z - this.pos.z) + Math.sin(performance.now() * 0.0004 + this.pos.x) * 0.9, 0, dt, 1.5);
       }
@@ -385,7 +410,7 @@ export class Soldier implements Unit {
     const eye = _e.set(this.pos.x, this.pos.y + 1.55 - this.crouch * 0.45, this.pos.z);
     let best: Unit | null = null, bestD = Infinity;
     for (const u of b.units) {
-      if (u.team === this.team || !u.alive) continue;
+      if (!foe(this, u) || !u.alive) continue;
       const d = u.pos.distanceTo(this.pos);
       if (d > 70) continue;
       const rel = Math.abs(wrap(Math.atan2(u.pos.x - this.pos.x, u.pos.z - this.pos.z) - this.aimYaw));
@@ -434,6 +459,21 @@ export class Soldier implements Unit {
 
   /** Where to be: a point to take or hold. Most go for what they don't own; someone always holds home. */
   private chooseGoal(b: Battle) {
+    const g = b.goal?.(this);
+    if (g || !b.points.length) {
+      // the mode says where (or there's nothing to hold: go where the fighting is)
+      this.goalT = 1.5 + Math.random() * 1.5;
+      this.goalPoint = -2;
+      this.via = null;
+      const at = g ?? b.home((1 - this.team) as 0 | 1);
+      const [gx, gz] = b.nav.nearest(at.x + (Math.random() - 0.5) * 3, at.z + (Math.random() - 0.5) * 3);
+      if (Math.hypot(gx - this.goal.x, gz - this.goal.z) > 1.5) {
+        this.goal.set(gx, 0, gz);
+        this.path = [];
+        this.repathT = 0;
+      }
+      return;
+    }
     this.goalT = 6 + Math.random() * 8;
     let best = 0, bestS = -Infinity;
     b.points.forEach((p, i) => {

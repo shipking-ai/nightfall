@@ -3,7 +3,7 @@ import type { Collision } from '../../world/Collision';
 import type { AudioEngine } from '../../audio/AudioEngine';
 import type { Tracers } from '../../fx/Tracers';
 import type { Blasts } from './Blasts';
-import { chestY, headY, type Unit } from './Soldier';
+import { chestY, foe, headY, type Unit } from './Soldier';
 
 /**
  * Support streaks: earned by kills in one life, never bought. Each is a
@@ -189,7 +189,7 @@ export class Streaks {
       const eye = _a.set(s.pos.x, s.pos.y + 1, s.pos.z);
       let best: Unit | null = null, bd = 36;
       for (const u of h.units) {
-        if (!u.alive || u.team === s.owner.team) continue;
+        if (!u.alive || !foe(s.owner, u)) continue;
         const d = u.pos.distanceTo(s.pos);
         if (d >= bd || !h.sees(eye, _b.set(u.pos.x, chestY(u), u.pos.z))) continue;
         best = u;
@@ -225,7 +225,7 @@ export class Streaks {
       d.t -= dt;
       let tgt: Unit | null = null, bd = Infinity;
       for (const u of h.units) {
-        if (!u.alive || u.team === d.owner.team) continue;
+        if (!u.alive || !foe(d.owner, u)) continue;
         const dist = u.pos.distanceTo(d.pos);
         if (dist < bd) (bd = dist), (tgt = u);
       }

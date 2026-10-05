@@ -52,6 +52,7 @@ export class WarzoneHud {
   private stunEl: HTMLElement;
   private lastGear = '';
   private streakEl: HTMLElement;
+  private progEl: HTMLElement;
   private lastStreak = '';
   private scopeEl: HTMLElement;
   private reloadEl: HTMLElement;
@@ -108,6 +109,7 @@ export class WarzoneHud {
     this.modeEl = h('span', { class: 'wz-gun__mode meta' });
     this.gearEl = h('div', { class: 'wz-gear' });
     this.streakEl = h('div', { class: 'wz-streaks' });
+    this.progEl = h('div', { class: 'wz-prog' }, h('span', { class: 'meta' }), h('i', {}, h('b')));
     this.flashEl = h('div', { class: 'wz-flash' });
     this.stunEl = h('div', { class: 'wz-stun' });
     this.scopeEl = h('div', { class: 'wz-scope' }, h('i', { class: 'wz-scope__h' }), h('i', { class: 'wz-scope__v' }));
@@ -163,6 +165,7 @@ export class WarzoneHud {
       this.cross,
       this.scopeEl,
       this.streakEl,
+      this.progEl,
       this.stunEl,
       this.flashEl,
       this.dot,
@@ -209,9 +212,20 @@ export class WarzoneHud {
     this.clockEl.textContent = `${Math.floor(c / 60)}:${String(c % 60).padStart(2, '0')}`;
   }
 
-  points(ps: CapturePoint[], team: 0 | 1) {
+  /** A held action's progress in the middle of the screen (planting, defusing); null hides it. */
+  progress(label: string | null, k: number) {
+    setOn(this.progEl, !!label);
+    if (!label) return;
+    (this.progEl.firstChild as HTMLElement).textContent = label;
+    (this.progEl.lastChild!.firstChild as HTMLElement).style.transform = `scaleX(${Math.min(1, Math.max(0, k)).toFixed(3)})`;
+  }
+
+  points(ps: CapturePoint[], team: 0 | 1, labels?: string[]) {
+    this.pointEls.forEach((e, i) => (e.style.display = i < ps.length ? '' : 'none'));
     ps.forEach((p, i) => {
       const e = this.pointEls[i];
+      const label = labels?.[i] ?? p.id;
+      if (e.lastChild!.textContent !== label) e.lastChild!.textContent = label;
       e.dataset.owner = p.owner < 0 ? 'none' : p.owner === team ? 'us' : 'them';
       e.dataset.cap = p.capTeam < 0 ? 'none' : p.capTeam === team ? 'us' : 'them';
       e.classList.toggle('is-contested', p.contested);
@@ -220,10 +234,13 @@ export class WarzoneHud {
   }
 
   /** The points, where they are on screen (or at the edge, pointing the way). */
-  markers(ps: CapturePoint[], cam: THREE.PerspectiveCamera, me: Unit) {
+  markers(ps: CapturePoint[], cam: THREE.PerspectiveCamera, me: Unit, labels?: string[]) {
     const W = innerWidth, H = innerHeight;
+    this.markerEls.forEach((e, i) => (e.style.display = i < ps.length ? '' : 'none'));
     ps.forEach((p, i) => {
       const e = this.markerEls[i];
+      const label = labels?.[i] ?? p.id;
+      if (e.firstChild!.textContent !== label) e.firstChild!.textContent = label;
       const v = this.v.set(p.pos.x, p.pos.y + 3, p.pos.z).project(cam);
       let x = v.x, y = v.y;
       const behind = v.z > 1;
