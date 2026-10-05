@@ -60,6 +60,8 @@ import { Boats, WATER_Y, QUAY_Z, RIVER_Z0, type Boat } from '../entities/Boats';
 import { Police } from '../entities/Police';
 import { DISTRICTS } from '../world/layout';
 import { INTERIORS, HOMES, SEARCHES } from '../world/builders/interiors';
+import { Talk } from '../rpg/ui/Talk';
+import { cityTalk, nameFor } from '../systems/CityTalk';
 import { INTERACTIONS } from '../data/interactions';
 import type { Npc } from '../entities/Crowd';
 import { cleanLook, type Look } from '../entities/Look';
@@ -2526,7 +2528,7 @@ export class App {
   private whoIs(n: Npc) {
     if (n.mode === 'stare') return 'Night clerk';
     if (n.mode === 'watcher') return '—';
-    return n.talked ? 'Stranger' : 'Someone';
+    return n.talked ? nameFor(this.crowd.npcs.indexOf(n)) : 'Someone';
   }
 
   /** Someone in the crowd says something: their voice, from where they stand, and a subtitle if you're close. */
@@ -2689,6 +2691,62 @@ export class App {
       const id = unlock;
       setTimeout(() => this.discovery.unlock(id), 1400);
     }
+  }
+
+  /** a conversation with someone in the street (systems/CityTalk.ts) */
+  private cityTalkUi: Talk | null = null;
+  private talkingTo: Npc | null = null;
+
+  private converse(n: Npc) {
+    this.crowd.talk(n, this.player.pos);
+    if (n.mode === 'watcher') return;
+    if (!this.cityTalkUi) {
+      this.cityTalkUi = new Talk(this.ui);
+      this.cityTalkUi.onEnd = () => {
+        this.talkingTo = null;
+        this.player.busy = false;
+      };
+      this.nav.scope(this.cityTalkUi.el, { back: () => this.cityTalkUi!.show(null) });
+    }
+    this.talkingTo = n;
+    this.player.busy = true;
+    this.player.facing = Math.atan2(n.pos.x - this.player.pos.x, n.pos.z - this.player.pos.z);
+    const idx = this.crowd.npcs.indexOf(n);
+    this.cityTalkUi.show(
+      cityTalk(n, {
+        name: (m) => (m.mode === 'stare' ? 'Night clerk' : nameFor(this.crowd.npcs.indexOf(m))),
+        cash: () => this.save.data.cash ?? 0,
+        pay: (k) => {
+          this.save.data.cash = Math.max(0, (this.save.data.cash ?? 0) + k);
+          if (k !== 0) this.hud.toast(`${k > 0 ? '+' : '−'}${fmtMoney(Math.abs(k))} · you have ${fmtMoney(this.save.data.cash)}`);
+        },
+        crime: (k) => this.combat.crime(k),
+        voice: (m, text, mood) => this.audio.say(m.voice, text, mood, m.pos, 1),
+        somewhere: (m) => {
+          const near = INTERIORS.filter((d) => d.id !== 'jail').map((d) => ({ d, m: Math.hypot(d.door.x - m.pos.x, d.door.z - m.pos.z) })).sort((a, b) => a.m - b.m).slice(0, 5);
+          const pickd = near[(idx + m.talked) % near.length];
+          const ang = Math.atan2(pickd.d.door.x - m.pos.x, -(pickd.d.door.z - m.pos.z));
+          const dirs = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+          return { name: pickd.d.name, dir: `to the ${dirs[Math.round(((ang * 180) / Math.PI + 360) / 45) % 8]}`, m: pickd.m };
+        },
+        flee: (m) => {
+          m.panic = 6;
+          m.panicX = this.player.pos.x;
+          m.panicZ = this.player.pos.z;
+        },
+        shove: (m) => {
+          const dx = this.player.pos.x - m.pos.x, dz = this.player.pos.z - m.pos.z, d = Math.hypot(dx, dz) || 1;
+          this.player.vel.x += (dx / d) * 3.5;
+          this.player.vel.z += (dz / d) * 3.5;
+          m.anim.play('act.shove', { group: 'react', fadeIn: 0.05 });
+          this.audio.punch(true);
+          this.combat.health = Math.max(1, this.combat.health - 6);
+        },
+        heard: (id) => {
+          if (this.save.flag(id)) this.hud.toast('Noted in your head: worth a look.');
+        },
+      }),
+    );
   }
 
   /** drawers already gone through this session */
@@ -3005,7 +3063,7 @@ case 'burn':
 
     // menus: a controller (or the arrow keys) moves the focus in whatever's open
     const menuUp =
-      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen || this.warzone?.endOpen || this.warzone?.menuOpen;
+      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen || this.warzone?.endOpen || this.warzone?.menuOpen || !!this.cityTalkUi?.isOpen;
     this.nav.active = menuUp;
     if (menuUp) {
       if (this.overlay === 'settings') this.settingsView.update();
@@ -3318,14 +3376,22 @@ case 'burn':
         if (rp) {
           this.hud.setPrompt(rp.name, rp.verb);
           if (this.input.pressed('interact')) rp.go();
+        } else if (this.cityTalkUi?.isOpen) {
+          this.hud.setPrompt(null, verb);
         } else if (who && !this.player.sitting) {
           this.hud.setPrompt(this.whoIs(who), 'Talk');
-          if (this.input.pressed('interact')) this.crowd.talk(who, this.player.pos);
+          if (this.input.pressed('interact')) this.converse(who);
         } else {
           this.hud.setPrompt(cur && !busy ? cur.def.name : null, verb);
           // only claim the button when there's something to use (on a pad it's also reload)
           if (cur && !busy && this.input.pressed('interact')) this.interact();
         }
+      }
+      // someone you're talking to keeps their eyes on you
+      if (this.talkingTo) {
+        this.talkingTo.alarm = Math.max(this.talkingTo.alarm, 1);
+        this.talkingTo.alarmX = this.player.pos.x;
+        this.talkingTo.alarmZ = this.player.pos.z;
       }
       if (this.rules.quests) this.updateQuests(dt);
       if (this.rules.combat === 'street') this.updateCombat(dt);
