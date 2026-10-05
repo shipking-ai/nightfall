@@ -453,7 +453,19 @@ export class Traffic {
         for (const l of car.lamps) l.gain = 0;
         if (this.cars.indexOf(car) >= this.limit) car.wait = Math.max(car.wait, 1);
         if (car.wait <= 0) {
-          car.path = this.rng.pick(this.paths);
+          // the emptiest of a few roads, so the traffic spreads over the whole district
+          let path = this.rng.pick(this.paths), fewest = Infinity;
+          for (let k = 0; k < 3; k++) {
+            const p = this.rng.pick(this.paths);
+            const n = this.cars.filter((o) => o.path === p).length;
+            if (n < fewest) (fewest = n), (path = p);
+          }
+          // not straight into the back of a car that's just set off along the same road
+          if (this.cars.some((o) => o !== car && o.path === path && o.s < 28)) {
+            car.wait = 0.8;
+            continue;
+          }
+          car.path = path;
           car.s = 0;
           car.v = 8;
           car.vmax = this.rng.range(8.5, 12);
@@ -536,7 +548,7 @@ export class Traffic {
       if (car.s >= car.path.total && !tx?.rider) {
         car.path = null;
         car.group.visible = false;
-        car.wait = this.rng.range(3, 12);
+        car.wait = this.rng.range(1.5, 6);
         continue;
       }
       this.place(car, tmp, fwd, braking);

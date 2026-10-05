@@ -172,4 +172,12 @@ export const CAR_ROUTES: CarRoute[] = [
   { pts: [[180, -41.5], [-4.5, -41.5], [-4.5, 55.5], [180, 55.5]] },
   { pts: [[-180, 142.6], [180, 142.6]] },
   { pts: [[180, 52.5], [-180, 52.5]] },
+  // straight through along the harbour and the river, both ways
+  { pts: [[-180, 55.5], [180, 55.5]] },
+  { pts: [[180, 139.8], [-180, 139.8]] },
+  // the Avenue south of Linden Street, down to the edge of the district, and back up
+  { pts: [[-180, -38.5], [-4.5, -38.5], [-4.5, -130]] },
+  { pts: [[4.5, -130], [4.5, -38.5], [180, -38.5]] },
+  { pts: [[180, -41.5], [-4.5, -41.5], [-4.5, -130]] },
+  { pts: [[4.5, -130], [4.5, -41.5], [-180, -41.5]] },
 ];

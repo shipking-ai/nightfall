@@ -551,7 +551,8 @@ export class App {
 
     const b = budget(this.quality);
     this.lighting = new Lighting(this.scene, this.world.lamps, b.pointLights, 2);
-    this.traffic = new Traffic(this.world, 4);
+    // a pool of cars the Population setting scales (setDensity): every street has some
+    this.traffic = new Traffic(this.world, 14);
     this.vehicles = new Vehicles(this.world);
     this.remotes = new Remotes(this.world, this.ui);
     this.scene.add(this.remotes.group, this.fitLight);
