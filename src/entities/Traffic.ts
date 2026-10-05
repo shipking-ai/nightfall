@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { CAR_ROUTES } from '../world/layout';
 import { CAR_COLORS, SEATS } from '../world/builders/props';
-import { SPECS } from '../vehicles/specs';
+import { SPECS, type VehicleClass, type VehicleSpec } from '../vehicles/specs';
 import { buildVehicle, setLights, type VehicleModel } from '../vehicles/model';
 import { FigureBatch } from './FigureBatch';
-import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from './Humanoid';
+import { newMotion, newRig, seatedRoot, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from './Humanoid';
 import { makePerson, weighted } from '../data/people';
 import type { Lamp, WorldContext } from '../world/WorldContext';
 import { mulberry32 } from '../world/rng';
@@ -31,6 +31,9 @@ export interface Car {
   tailMat: THREE.MeshStandardMaterial;
   /** the car itself (vehicles/model.ts): wheels to turn, lamps to light */
   model: VehicleModel;
+  /** which class this is, and what it was painted: what you'd get if you took it */
+  spec: VehicleSpec;
+  color: number;
   /** last position, for the wheels' roll */
   lastS: number;
   /** seconds spent stopped behind you (or a car you left in the road) */
@@ -59,6 +62,21 @@ export type CarWire = [number, number, number, number];
 const T_HAILED = 1, T_RIDER = 2, T_STOPPING = 4, T_ARRIVED = 8;
 
 export const TAXI_COLOR = 0xa8842c;
+
+/**
+ * What District 03 actually drives. Weighted towards the two classes that make
+ * a street look like a street, with the rest in enough numbers that pulling
+ * someone out of a car is a small surprise rather than a fixed set.
+ */
+const TRAFFIC_CLASSES: [VehicleClass, number][] = [
+  ['sedan', 5],
+  ['hatch', 4],
+  ['sports', 1.2],
+  ['pickup', 1.5],
+  ['offroad', 1],
+  ['van', 1.5],
+  ['motorcycle', 1.5],
+];
 
 /**
  * A handful of cars that cross the district and leave. They slow for the
@@ -112,8 +130,12 @@ export class Traffic {
       const isTaxi = i === 0;
       const color = isTaxi ? TAXI_COLOR : this.rng.pick(CAR_COLORS);
       const g = new THREE.Group();
-      // the city's cars are the same machines you can drive: a taxi, and saloons and hatchbacks
-      const model = buildVehicle(SPECS[isTaxi ? 'taxi' : this.rng.chance(0.6) ? 'sedan' : 'hatch'], color);
+      // The city drives the same machines you can. A taxi, and a spread of
+      // ordinary traffic, so the car you pull someone out of is never one you
+      // couldn't otherwise have found parked.
+      const cls: VehicleClass = isTaxi ? 'taxi' : weighted(this.rng, TRAFFIC_CLASSES);
+      const spec = SPECS[cls];
+      const model = buildVehicle(spec, spec.livery ? spec.paints[0] : color);
       g.add(model.root);
       const tailMat = model.mats.tail;
       for (const sx of [-0.62, 0.62]) {
@@ -133,7 +155,7 @@ export class Traffic {
         ctx.lamp(new THREE.Vector3(), 'red', { pooled: false, cone: false, halo: 0.4, streak: 0.7, ground: 0 }),
       ];
       lamps.forEach((l) => (l.dynamic = true));
-      const car: Car = { group: g, path: null, s: 0, v: 0, vmax: 10, wait: i * 5 + 1, lamps, yaw: 0, tailMat, blocked: 0, honkIn: 0, model, lastS: 0 };
+      const car: Car = { group: g, path: null, s: 0, v: 0, vmax: 10, wait: i * 5 + 1, lamps, yaw: 0, tailMat, blocked: 0, honkIn: 0, model, spec, color, lastS: 0 };
       if (isTaxi) car.taxi = { hailed: false, wait: 0, cooldown: 0, rider: false, stopping: false, arrived: false, riderId: '' };
       this.cars.push(car);
     }
@@ -160,8 +182,9 @@ export class Traffic {
       const d = car.group.position.distanceTo(cam);
       if (d > 70) return this.drivers.hide(i);
       car.group.updateMatrixWorld();
-      const st = car.model.root.userData.seat ?? (car.model.root.userData.seat = SPECS.sedan.seat);
-      this.seatM.copy(car.group.matrixWorld).multiply(this.tmpM.makeTranslation(st.x, st.y, st.z));
+      // each car's own seat (a hatch's is not a saloon's), and hips on the cushion
+      // rather than feet on it, or the driver's head goes through the roof
+      const st = car.model.root.userData.seat ?? (car.model.root.userData.seat = car.model.spec.seat);
       const m = p.motion;
       const turn = wrapA(car.yaw - p.lastYaw) / Math.max(dt, 1e-3);
       p.lastYaw = car.yaw;
@@ -171,12 +194,57 @@ export class Traffic {
       m.lookYaw += ((watch ?? m.steer * 0.35 + Math.sin(t * 0.3 + i * 2) * 0.15) - m.lookYaw) * Math.min(1, dt * 2);
       m.speed = 0;
       stepPhase(m, dt);
-      this.tmpM.makeScale(p.body.height, p.body.height, p.body.height);
-      this.seatM.multiply(this.tmpM);
+      seatedRoot(this.seatM, car.model.body.matrixWorld, st, p.body);
       solve(p.rig, this.seatM, p.body, p.outfit, m, t);
       this.drivers.write(i, p.rig, visibleParts(p.outfit, d), false);
     });
     this.drivers.flush();
+  }
+
+  /**
+   * The nearest car out on a route that you could reach through the driver's
+   * door. Only moving cars: a car waiting at the kerb with nobody in it is
+   * scenery, and the taxi has its own interaction.
+   */
+  nearestDrivable(p: THREE.Vector3, reach = 2.6): { car: Car; d: number } | null {
+    let best: { car: Car; d: number } | null = null;
+    for (const car of this.cars) {
+      if (!car.path || car.taxi?.rider) continue;
+      const pos = car.group.position;
+      const d = Math.hypot(pos.x - p.x, pos.z - p.z);
+      if (d > reach) continue;
+      if (!best || d < best.d) best = { car, d };
+    }
+    return best;
+  }
+
+  /**
+   * Take a car off the road: it stops being traffic and becomes the player's.
+   * The slot is retired (its path dropped, its lamps freed, its driver hidden)
+   * so the pool can send it out again later as a different vehicle.
+   */
+  takeOver(car: Car): { pos: THREE.Vector3; yaw: number; spec: VehicleSpec; color: number } | null {
+    if (!car.path) return null;
+    const out = { pos: car.group.position.clone(), yaw: car.yaw, spec: car.spec, color: car.color };
+    this.retire(car);
+    return out;
+  }
+
+  /** Drop one car out of the traffic pool: no route, no lamps, no driver. */
+  retire(car: Car) {
+    car.path = null;
+    car.s = 0;
+    car.v = 0;
+    car.blocked = 0;
+    car.honkIn = 0;
+    // out of the pool for good, not just parked: only setDensity() brings it back
+    car.wait = Infinity;
+    car.group.visible = false;
+    car.taxi = undefined;
+    for (const l of car.lamps) l.gain = 0;
+    const i = this.cars.indexOf(car);
+    if (i >= 0) this.drivers.hide(i);
+    return i;
   }
 
   /** The taxi standing at the kerb within reach of p, if any. */

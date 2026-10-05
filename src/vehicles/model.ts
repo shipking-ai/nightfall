@@ -22,6 +22,8 @@ export interface VehicleModel {
   root: THREE.Group;
   /** the sprung body (pitches, rolls and heaves on the suspension) */
   body: THREE.Group;
+  /** the class this car was built from: its seat, shape and paint options */
+  spec: VehicleSpec;
   wheels: { lx: number; lz: number; r: number; steer: THREE.Object3D; spin: THREE.Object3D; front: boolean }[];
   steeringWheel: THREE.Object3D;
   doors: { pivot: THREE.Object3D; side: 1 | -1; open: number }[];
@@ -357,8 +359,9 @@ function classGeo(spec: VehicleSpec): ClassGeo {
     trim.push(box(0, 1.02, 0.5, 0.7, 0.03, 0.03)); // bars
     head.push(cyl(0, 0.95, 0.72, 0.09, 0.06, 'z'));
     tail.push(box(0, 0.8, -0.9, 0.14, 0.05, 0.03));
-    indL.push(box(-0.14, 0.92, 0.66, 0.05, 0.03, 0.03));
-    indR.push(box(0.14, 0.92, 0.66, 0.05, 0.03, 0.03));
+    for (const sx of [-1, 1]) {
+      (sx < 0 ? indR : indL).push(box(sx * 0.14, 0.92, 0.66, 0.05, 0.03, 0.03));
+    }
     rev.push(box(0, 0.74, -0.9, 0.04, 0.02, 0.02));
     lampAt.head.push(new THREE.Vector3(0, 0.95, 0.75));
     lampAt.tail.push(new THREE.Vector3(0, 0.8, -0.92));
@@ -433,15 +436,18 @@ function classGeo(spec: VehicleSpec): ClassGeo {
     chrome.push(box(0, s.clearance + 0.3, fz - 0.02 - 0.08 * s.noseRound, 0.52, 0.12, 0.02));
     chrome.push(box(0, Math.min(s.tailY - 0.2, s.belt - 0.15), -hL - 0.005 + 0.07 * s.tailRound, 0.52, 0.12, 0.02));
     // ── lights: head, tail, indicators, reverse
+    // Car faces +z with +y up, so local −x is its RIGHT and +x its LEFT. The
+    // indicator lamps are named by the side they are on, not by the sign used
+    // to place them.
     const hx = s.width / 2 - 0.22 - 0.05 * s.noseRound, hy = Math.max(s.clearance + 0.3, s.noseY - 0.12);
     const hz = fz - 0.03 - 0.16 * s.noseRound;
     for (const sx of [-1, 1]) {
       head.push(box(sx * hx, hy, hz, 0.32, 0.1, 0.06, -0.25 * s.noseRound, sx * 0.25 * s.noseRound));
-      (sx < 0 ? indL : indR).push(box(sx * (hx + 0.2), hy - 0.02, hz - 0.06 * s.noseRound, 0.08, 0.06, 0.05, 0, sx * 0.5 * s.noseRound));
+      (sx < 0 ? indR : indL).push(box(sx * (hx + 0.2), hy - 0.02, hz - 0.06 * s.noseRound, 0.08, 0.06, 0.05, 0, sx * 0.5 * s.noseRound));
       lampAt.head.push(new THREE.Vector3(sx * hx, hy, hz + 0.05));
       const ty = Math.min(s.tailY - 0.12, s.belt - 0.05), tz = -hL + 0.02 + 0.12 * s.tailRound;
       tail.push(box(sx * (s.width / 2 - 0.2), ty, tz, 0.3, 0.12, 0.05, 0.2 * s.tailRound, -sx * 0.25 * s.tailRound));
-      (sx < 0 ? indL : indR).push(box(sx * (s.width / 2 - 0.2), ty - 0.1, tz + 0.01, 0.2, 0.05, 0.05));
+      (sx < 0 ? indR : indL).push(box(sx * (s.width / 2 - 0.2), ty - 0.1, tz + 0.01, 0.2, 0.05, 0.05));
       rev.push(box(sx * (s.width / 2 - 0.44), ty - 0.02, tz, 0.1, 0.06, 0.05));
       lampAt.tail.push(new THREE.Vector3(sx * (s.width / 2 - 0.2), ty, tz - 0.05));
       if (s.box) {
@@ -476,9 +482,12 @@ function classGeo(spec: VehicleSpec): ClassGeo {
       interior.push(box(st.x, st.y + 0.72, st.z - 0.3, 0.26, 0.16, 0.1, -0.18));
     }
     if (spec.shape.doors === 2 || spec.cls === 'sports') interior.push(box(0, spec.seat.y + 0.1, spec.seat.z + 0.1, 0.2, 0.2, 0.6));
-    // ── doors: the side panel between the screen and the B pillar (driver's side first), hinged at the front
+    // ── doors: the side panel between the screen and the B pillar.
+    // The car faces +z, so −x is the driver's side; index 0 is that door, and
+    // index 1 the passenger's, so `vehicles.door(car, 0, …)` opens the door the
+    // player actually walks up to.
     const dFront = s.aTop + 0.02, dBack = s.doors === 2 ? (s.aTop + s.cTop) / 2 + 0.02 : Math.max(s.cTop, s.aTop - 1.15);
-    for (const side of [1, -1] as (1 | -1)[]) {
+    for (const side of [-1, 1] as (1 | -1)[]) {
       const rings = secs.filter((q) => q.z >= dBack && q.z <= dFront).map((q) => {
         // the outer skin of that side, sill to belt
         const out: number[][] = [];
@@ -661,7 +670,7 @@ export function buildVehicle(spec: VehicleSpec, color: number): VehicleModel {
   }
 
   const model: VehicleModel = {
-    root, body, wheels, steeringWheel: sw, doors, wipers, mats, wear,
+    root, body, spec, wheels, steeringWheel: sw, doors, wipers, mats, wear,
     lampAt: { head: cg.lampAt.head.map((v) => v.clone()), tail: cg.lampAt.tail.map((v) => v.clone()) },
     dispose() {
       // geometry is shared per class; materials are this car's own
@@ -692,6 +701,8 @@ export function setLights(v: VehicleModel, l: LightState, t: number, broken: { h
   v.mats.head.emissiveIntensity = broken.head ? 0 : l.head === 0 ? (l.running ? 0.4 : 0) : l.head === 1 ? 3 : 5;
   v.mats.tail.emissiveIntensity = broken.tail ? 0 : (l.brake ? 7 : 0) + (l.head > 0 || l.running ? 2 : 0);
   v.mats.reverse.emissiveIntensity = l.reverse ? 4 : 0;
+  // The car faces +z, so −x is its right. `indicator` is −1 for a left turn and
+  // +1 for a right turn; the lamps are named by the side they sit on.
   v.mats.indL.emissiveIntensity = (l.hazard || l.indicator < 0) && blink ? 5 : 0;
   v.mats.indR.emissiveIntensity = (l.hazard || l.indicator > 0) && blink ? 5 : 0;
   v.mats.beacon.forEach((m, i) => (m.emissiveIntensity = l.beacons ? ((Math.floor(t * 6) + i) % 2 ? 9 : 0.3) : 0));

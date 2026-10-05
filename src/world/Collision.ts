@@ -12,6 +12,17 @@ export interface Box {
   stamp: number;
 }
 
+/** What a collision pushed a circle out of, and which way was out. */
+export interface Contact {
+  /** outward normal, unit length, in XZ */
+  nx: number;
+  nz: number;
+  /** how far the circle had to move, in metres */
+  depth: number;
+  /** the circle's centre was inside the box, so this normal is a face choice */
+  inside: boolean;
+}
+
 const CELL = 16;
 
 /**
@@ -98,10 +109,37 @@ export class Collision {
     return g;
   }
 
-  /** Push a circle out of any box it overlaps at the given vertical span. */
+  /**
+   * Push a circle out of any box it overlaps at the given vertical span, and
+   * report how it should stop. Returns the accumulated push and, in `out` if
+   * given, the outward normal of the deepest contact and whether it was the
+   * centre-inside case (which has no usable normal).
+   *
+   * Two passes rather than one: a single pass resolves against the first box
+   * it meets and can be pushed straight into the next, leaving the circle
+   * inside a wall. Two passes settle almost everything; a corner still needs
+   * the minimum-translation tie-break below, which is why `out` is available.
+   */
   resolve(p: THREE.Vector3, radius: number, height: number, step: number): boolean {
+    return this.resolvePush(p, radius, height, step, null);
+  }
+
+  /**
+   * As resolve, but also writes the deepest contact's outward normal and
+   * whether the circle's centre began inside the box. A caller holding a
+   * velocity can then remove the component going into the surface, so sliding
+   * along a wall doesn't keep accelerating into it.
+   */
+  resolvePush(p: THREE.Vector3, radius: number, height: number, step: number, out: Contact | null): boolean {
     let hit = false;
-    for (let iter = 0; iter < 2; iter++) {
+    let deepest = 0;
+    if (out) {
+      out.nx = 0;
+      out.nz = 0;
+      out.inside = false;
+      out.depth = 0;
+    }
+    for (let iter = 0; iter < 3; iter++) {
       for (const b of this.query(p.x - radius, p.z - radius, p.x + radius, p.z + radius)) {
         if (b.maxY <= p.y + step || b.minY >= p.y + height) continue;
         const nx = clamp(p.x, b.minX, b.maxX);
@@ -113,17 +151,60 @@ export class Collision {
         hit = true;
         if (d2 > 1e-8) {
           const d = Math.sqrt(d2);
-          p.x = nx + (dx / d) * radius;
-          p.z = nz + (dz / d) * radius;
+          const ux = dx / d, uz = dz / d;
+          p.x = nx + ux * radius;
+          p.z = nz + uz * radius;
+          const depth = radius - d;
+          if (out && depth > deepest) {
+            deepest = depth;
+            out.nx = ux;
+            out.nz = uz;
+            out.depth = depth;
+            out.inside = false;
+          }
         } else {
-          // centre inside the box: exit via the nearest face
+          // centre inside the box: exit via the nearest face. The normal is
+          // the face we chose, which is what a caller needs to kill velocity —
+          // a bare nearest-face pick used to pop the circle out the wrong side
+          // on a near-tie and leave velocity pointing back into the box.
           const l = p.x - b.minX, rr = b.maxX - p.x, t = p.z - b.minZ, bt = b.maxZ - p.z;
           const m = Math.min(l, rr, t, bt);
-          if (m === l) p.x = b.minX - radius;
-          else if (m === rr) p.x = b.maxX + radius;
-          else if (m === t) p.z = b.minZ - radius;
-          else p.z = b.maxZ + radius;
+          let ux = 0, uz = 0;
+          if (m === l) {
+            p.x = b.minX - radius;
+            ux = -1;
+          } else if (m === rr) {
+            p.x = b.maxX + radius;
+            ux = 1;
+          } else if (m === t) {
+            p.z = b.minZ - radius;
+            uz = -1;
+          } else {
+            p.z = b.maxZ + radius;
+            uz = 1;
+          }
+          if (out && radius > deepest) {
+            deepest = radius;
+            out.nx = ux;
+            out.nz = uz;
+            out.depth = radius;
+            out.inside = true;
+          }
         }
+      }
+      // nothing more to push out of: stop early rather than re-querying
+      if (iter > 0) {
+        let clear = true;
+        for (const b of this.query(p.x - radius + 1e-4, p.z - radius + 1e-4, p.x + radius - 1e-4, p.z + radius - 1e-4)) {
+          if (b.maxY <= p.y + step || b.minY >= p.y + height) continue;
+          const qx = clamp(p.x, b.minX, b.maxX), qz = clamp(p.z, b.minZ, b.maxZ);
+          const ex = p.x - qx, ez = p.z - qz;
+          if (ex * ex + ez * ez < radius * radius * 0.999) {
+            clear = false;
+            break;
+          }
+        }
+        if (clear) break;
       }
     }
     return hit;

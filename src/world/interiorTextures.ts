@@ -190,6 +190,64 @@ export const itex = {
         }
     }),
 
+  /** a brass teller's name plate */
+  bankPlate: (label: string) =>
+    canvas(256, 88, (c, w, h) => {
+      c.fillStyle = '#7a6a3a';
+      c.fillRect(0, 0, w, h);
+      c.strokeStyle = '#c9b06a';
+      c.lineWidth = 3;
+      c.strokeRect(6, 6, w - 12, h - 12);
+      c.fillStyle = '#241d12';
+      c.font = `28px ${SERIF}`;
+      c.textAlign = 'center';
+      c.fillText(label, w / 2, h / 2 + 10);
+    }),
+
+  /** the ATM's screen */
+  /** the bank's shop window, seen from the pavement */
+  bankWindow: () =>
+    canvas(512, 256, (c, w, h) => {
+      c.fillStyle = '#141a1e';
+      c.fillRect(0, 0, w, h);
+      // a vault door, seen through the glass
+      c.fillStyle = '#3a3c3e';
+      c.fillRect(150, 30, 210, 200);
+      c.fillStyle = '#2a2c2e';
+      c.fillRect(168, 48, 174, 164);
+      c.strokeStyle = '#6a6a68';
+      c.lineWidth = 8;
+      c.beginPath();
+      c.arc(255, 130, 42, 0, Math.PI * 2);
+      c.stroke();
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2;
+        c.beginPath();
+        c.moveTo(255 + Math.cos(a) * 42, 130 + Math.sin(a) * 42);
+        c.lineTo(255 - Math.cos(a) * 42, 130 - Math.sin(a) * 42);
+        c.stroke();
+      }
+      // the queue, as bars at the bottom
+      c.fillStyle = '#2c3138';
+      for (let i = 0; i < 7; i++) c.fillRect(20 + i * 68, 210, 40, 46);
+    }),
+
+  bankSign: () =>
+    canvas(256, 256, (c, w, h) => {
+      c.fillStyle = '#0e1418';
+      c.fillRect(0, 0, w, h);
+      c.fillStyle = '#3f7f9f';
+      c.fillRect(16, 16, w - 32, h - 60);
+      c.fillStyle = '#c8d8e4';
+      c.font = `22px ${MONO}`;
+      c.fillText('MERROW', 34, 62);
+      c.fillText('SAVINGS', 34, 92);
+      c.fillStyle = '#e6b25c';
+      c.fillRect(34, 130, 150, 6);
+      c.fillStyle = '#7f9f6f';
+      c.fillRect(34, 160, 110, 6);
+    }),
+
   floorNumber: (n: string) =>
     canvas(256, 256, (c, w, h) => {
       c.fillStyle = '#d6cfbf';

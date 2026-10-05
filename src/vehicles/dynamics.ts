@@ -28,6 +28,8 @@ export interface Controls {
   brake: number; // 0..1
   steer: number; // -1 (left) .. 1 (right)
   handbrake: boolean;
+  /** the driver is asking for the boost */
+  boost: boolean;
 }
 
 export interface Wheel {
@@ -105,8 +107,26 @@ export class Dynamics {
   engineDamage = 0;
   /** traction control (off for sports cars and bikes: you get the wheelspin you ask for) */
   tc = true;
+  /**
+   * Boost: a turbo'd engine asked for more than it normally makes, and there's a
+   * reservoir to pay for it. Only cars that have a turbo have any — see
+   * `boostable`, set from the spec. It refills when you're not using it, so you
+   * can't hold it down forever, and it's gone fastest at full throttle, which is
+   * what makes it something you spend rather than something you hold.
+   */
+  boostable = false;
+  /** staff: the reservoir never runs down */
+  boostInfinite = false;
+  /** 0..1: what's left in the boost */
+  boost = 1;
+  /** 0..1: how hard the boost is currently pushing (for the sound and effects) */
+  boostNow = 0;
+  /** the car just ran out, so the UI can say so once */
+  boostEmpty = false;
   /** steering as applied (−1..1) */
   steerIn = 0;
+  /** the road-wheel angle including the assistance, for the front wheels */
+  steerOut = 0;
   private acc = 0;
   /** longitudinal and lateral acceleration (m/s², car frame), smoothed: for the camera, the driver, the sound */
   ax = 0;
@@ -150,6 +170,10 @@ export class Dynamics {
   }
 
   step(dt: number, c: Controls, world: World) {
+    // The boost reservoir lives outside the substeps: it's a resource over
+    // seconds, not a per-tick force, and doing it here keeps the 240 Hz solve
+    // from deciding whether you're allowed to boost this frame.
+    this.stepBoost(dt, c);
     this.acc += Math.min(dt, 0.1);
     let n = 0;
     while (this.acc >= STEP && n < 40) {
@@ -159,6 +183,49 @@ export class Dynamics {
     }
     for (const w of this.wheels) w.spin += w.omega * dt;
     this.thump = Math.max(0, this.thump - dt * 2);
+  }
+
+  /**
+   * Spend or recover the boost. It only runs when the car has a turbo, is on
+   * the throttle, and is actually moving — a boost that works from a standstill
+   * in first gear would just be traction control with a louder noise.
+   */
+  private stepBoost(dt: number, c: Controls) {
+    if (!this.boostable) {
+      this.boostNow = 0;
+      this.boost = Math.min(1, this.boost + dt * 0.2);
+      return;
+    }
+    const u = this.forward;
+    // staff: never runs out, and always available even on a car with no turbo
+    if (this.boostInfinite) {
+      const wanting = c.boost && c.throttle > 0.15 && u > 1.5;
+      this.boost = 1;
+      this.boostEmpty = false;
+      this.boostNow += ((wanting ? 1 : 0) - this.boostNow) * Math.min(1, dt * (wanting ? 6 : 9));
+      return;
+    }
+    // it needs something to push against: throttle on, and the wheels turning
+    const wanting = c.boost && c.throttle > 0.15 && u > 1.5;
+    this.boostEmpty = false;
+    if (wanting && this.boost > 0.001) {
+      // costs faster the harder you're asking, so you can't hold it flat out
+      const burn = (0.16 + 0.2 * c.throttle) * dt;
+      this.boost = Math.max(0, this.boost - burn);
+      // spool up and down rather than switching on
+      const rate = this.boost > 0 ? 6 : 9;
+      this.boostNow += (1 - this.boostNow) * Math.min(1, dt * rate);
+      if (this.boost <= 0.001) this.boostEmpty = true;
+    } else {
+      // recovers, faster the less of it there is to fill
+      this.boost = Math.min(1, this.boost + dt * (0.07 + 0.1 * (1 - this.boost)));
+      this.boostNow += (0 - this.boostNow) * Math.min(1, dt * 5);
+    }
+  }
+
+  /** How much extra drive the boost is contributing right now, 0..1. */
+  get boostDrive() {
+    return this.boostNow;
   }
 
   private sub(dt: number, c: Controls, world: World) {
@@ -174,7 +241,13 @@ export class Dynamics {
     // steering: less lock at speed (people don't saw at the wheel at 100), and it winds on at a hand's pace
     const lockNow = m.lock / (1 + Math.max(0, Math.abs(u) - 4) * 0.045);
     this.steerIn += (c.steer - this.steerIn) * Math.min(1, dt * (Math.abs(c.steer) > Math.abs(this.steerIn) ? 6 : 9));
-    const steerA = this.steerIn * lockNow;
+    // Assisted steering: the yaw damping that settles a slide also pulls the car
+    // out of the corner, so at speed it went stiff and wouldn't turn. Handing
+    // back a little lock as you slow lets the car follow the wheel again without
+    // letting the slide build back up.
+    const assist = 1 - 0.4 * Math.min(1, Math.abs(u) / 18);
+    const steerA = this.steerIn * lockNow * assist;
+    this.steerOut = steerA;
     // Ackermann: the inside wheel turns more
     for (const wh of this.wheels) {
       if (!wh.front) continue;
@@ -219,9 +292,13 @@ export class Dynamics {
     const x = this.rpm / m.torqueRpm;
     const curve = x < 1 ? 0.55 + 0.45 * Math.sin((Math.min(1, x) * Math.PI) / 2) : Math.max(0, 1 - 0.55 * Math.pow((this.rpm - m.torqueRpm) / Math.max(1, m.redline - m.torqueRpm), 1.6));
     const limiter = this.rpm > m.redline ? 0 : 1;
-    const engineT = m.torque * curve * this.throttle * limiter * (1 - 0.6 * this.engineDamage) * (this.shiftT > 0 ? 0.1 : 1);
+    // The boost multiplies the torque it already has — a bigger turbo, not a
+    // different engine — and is scaled by how much is left in it, so it fades
+    // as the reservoir empties rather than cutting out at nothing.
+    const boost = this.boostNow * Math.min(1, this.boost * 4);
+    const engineT = m.torque * curve * this.throttle * limiter * (1 - 0.6 * this.engineDamage) * (this.shiftT > 0 ? 0.1 : 1) * (1 + boost);
     const driveF = (engineT * ratio * m.final * 0.88) / drivenR; // at the contact patches, total
-    this.load = this.throttle * curve;
+    this.load = this.throttle * curve * (1 + boost * 0.6);
     const nDriven = this.wheels.filter((q) => q.driven).length || 1;
 
     /* ── suspension ── */
@@ -275,7 +352,12 @@ export class Dynamics {
       }
       const px = this.x + wh.lx * cy + wh.lz * sy, pz = this.z - wh.lx * sy + wh.lz * cy;
       const surf = world.surface(px, pz);
-      const mu = m.grip * surf.grip * (1 - (1 - m.offroad) * surf.rough * 0.6) * wetK * (1 - 0.7 * plane);
+      // Rear tyres carry a little more grip than the fronts. With equal grip the
+      // car is exactly neutral: it neither understeers nor oversteers, so any
+      // disturbance keeps growing instead of settling, and every corner ends in
+      // a spin. This is the same reason real cars run a rearward grip bias.
+      const axle = wh.front ? 0.95 : 1.08;
+      const mu = m.grip * axle * surf.grip * (1 - (1 - m.offroad) * surf.rough * 0.6) * wetK * (1 - 0.7 * plane);
       // this wheel's velocity (car frame), then in the wheel's own frame
       const ui = u - this.r * wh.lx, wi = w + this.r * wh.lz;
       const cs = Math.cos(wh.steer), sn = Math.sin(wh.steer);
@@ -319,8 +401,10 @@ export class Dynamics {
       tYaw += wh.lz * flx - wh.lx * flz;
     }
 
-    // air and rolling resistance
-    const drag = 0.5 * 1.2 * m.cda * speed;
+    // air and rolling resistance. Boosting leans on the aero as well as the
+    // engine: less drag means a genuinely higher top speed, which is what makes
+    // it worth saving the boost for a straight.
+    const drag = 0.5 * 1.2 * m.cda * speed * (1 - 0.22 * this.boostNow);
     fzL -= drag * u + 0.012 * mass * G * Math.sign(u) * Math.min(1, Math.abs(u));
     fxL -= drag * w;
 
@@ -331,6 +415,11 @@ export class Dynamics {
     this.vz += (aLong * cy - aLat * sy) * dt;
     const Iz = (mass * (m.wheelbase * m.wheelbase + m.track * m.track)) / 10;
     this.r += (tYaw / Iz) * dt;
+    // Yaw damping. The tyre model alone is too willing to keep rotating: the
+    // lateral force that stops the spin arrives a frame late and by then the
+    // car is past the point of no return. Bleeding the yaw rate off with speed
+    // is what makes a slide recover into a corner instead of becoming a spin.
+    if (contacts > 0) this.r *= 1 - Math.min(0.5, dt * (0.5 + Math.min(5, Math.abs(u) * 0.14)));
     if (contacts === 0) this.r *= 1 - dt * 0.2;
     // yaw from the car's own rotation (at low speed with no tyre grip it doesn't spin forever)
     this.yaw += this.r * dt;

@@ -13,6 +13,8 @@ export class FollowCamera {
   sensitivity = 1;
   invertY = false;
   reducedMotion = false;
+  /** a one-off kick from something hitting you; decays on its own */
+  private kick = 0;
   private dist = 4.2;
   /** aiming a gun: in close over the shoulder */
   aim = false;
@@ -78,6 +80,7 @@ export class FollowCamera {
     const pos = this.pivot.clone().addScaledVector(dir, this.boom);
     // never below the ground plane
     pos.y = Math.max(pos.y, player.pos.y + 0.35);
+    this.applyKick(pos, dt);
     this.camera.position.copy(pos);
 
     // a breath of idle sway; off with reduced motion
@@ -122,8 +125,25 @@ export class FollowCamera {
     const cam = this.pivot.clone().addScaledVector(dir, this.boom);
     cam.y = Math.max(cam.y, pos.y + 0.6);
     if (shake > 0 && !this.reducedMotion) cam.add(new THREE.Vector3((Math.random() - 0.5) * shake * 0.5, (Math.random() - 0.5) * shake * 0.3, (Math.random() - 0.5) * shake * 0.5));
+    this.applyKick(cam, dt);
     this.camera.position.copy(cam);
     this.camera.lookAt(this.pivot.clone().addScaledVector(dir, -8));
+  }
+
+  /** A hard knock: shake the view once, then let it settle. */
+  shake(amount: number) {
+    this.kick = Math.min(1.4, this.kick + amount);
+  }
+
+  /** The same kick in whatever view is current. */
+  private applyKick(p: THREE.Vector3, dt: number) {
+    if (this.kick <= 0) return;
+    this.kick = Math.max(0, this.kick - dt * 2.2);
+    if (this.reducedMotion) return;
+    const k = this.kick * this.kick;
+    p.x += (Math.random() - 0.5) * k * 0.5;
+    p.y += (Math.random() - 0.5) * k * 0.4;
+    p.z += (Math.random() - 0.5) * k * 0.5;
   }
 
   /** which driving view: chase, far chase, hood, cockpit, bumper, cinematic */
@@ -220,6 +240,7 @@ export class FollowCamera {
     // shake from impacts and rough ground only (no constant wobble), gentle, and none with reduced motion
     if (shake > 0 && !this.reducedMotion) p.add(tmp.set((Math.random() - 0.5) * shake * 0.35, (Math.random() - 0.5) * shake * 0.2, (Math.random() - 0.5) * shake * 0.35));
     this.carLag.lerp(tmp.set(c.ay * 0.02, 0, 0), Math.min(1, dt * 3));
+    this.applyKick(p, dt);
     cam.position.copy(p);
     cam.lookAt(this.pivot.clone().addScaledVector(dir, -8).add(new THREE.Vector3(0, -0.4, 0)));
     // lean with the car in a hard corner (a degree or two)

@@ -4,11 +4,11 @@
  */
 export interface InteractionDef {
   name: string;
-  verb: 'Inspect' | 'Read' | 'Use' | 'Listen' | 'Sit' | 'Answer' | 'Enter' | 'Leave' | 'Ring' | 'Talk';
+  verb: 'Inspect' | 'Read' | 'Use' | 'Listen' | 'Sit' | 'Answer' | 'Enter' | 'Leave' | 'Ring' | 'Talk' | 'Open';
   lines: string[];
   again?: string[];
   unlock?: string;
-  action?: 'sit' | 'phone' | 'vend' | 'mark' | 'enter' | 'exit' | 'bell';
+  action?: 'sit' | 'phone' | 'vend' | 'mark' | 'enter' | 'exit' | 'bell' | 'rob';
 }
 
 export const INTERACTIONS: Record<string, InteractionDef> = {
@@ -99,6 +99,24 @@ export const INTERACTIONS: Record<string, InteractionDef> = {
     name: 'Post boxes',
     verb: 'Read',
     lines: ['Eighteen boxes. Seventeen are empty.', 'Flat 2D has a name label. It is yours.'],
+  },
+  'bank-vault': {
+    name: 'Vault door',
+    verb: 'Open',
+    lines: ['Six hundred kilos of steel, and a wheel nobody has needed to turn in a long time.', 'It gives. It was never the lock that mattered.'],
+    action: 'rob',
+  },
+  'bank-ledger': {
+    name: 'Manager\u2019s ledger',
+    verb: 'Read',
+    lines: ['Every account closed out at 03:17, on the same night.', 'The last withdrawal is signed for in your name.'],
+    again: ['The signature is yours. It has always been yours.'],
+  },
+  'bank-atm': {
+    name: 'Cash machine',
+    verb: 'Inspect',
+    lines: ['It welcomes you by name. It has done this before.', 'Balance: enough.'],
+    again: ['It welcomes you by name again.'],
   },
   newspaper: {
     name: 'Newspaper box',

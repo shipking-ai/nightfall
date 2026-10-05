@@ -1,5 +1,5 @@
 import { h, setOn } from './dom';
-import type { Settings, SettingsData } from '../core/Settings';
+import { QUALITIES, type Settings, type SettingsData } from '../core/Settings';
 import { searchStations, type Radio, type RadioResult } from '../audio/Radio';
 import type { Input } from '../core/Input';
 import { ACTIONS, GROUP_LABELS, type Action, type ActionGroup } from '../input/actions';
@@ -62,7 +62,7 @@ export class SettingsView {
   private remapNote = '';
   input!: Input;
 
-  constructor(root: HTMLElement, private settings: Settings, private onClose: () => void, private onErase: () => void, private cloud: CloudControls, private radio: Radio, private together: TogetherControls, private account: AccountControls) {
+  constructor(root: HTMLElement, private settings: Settings, private onClose: () => void, private onErase: () => void, private cloud: CloudControls, private radio: Radio, private together: TogetherControls, private account: AccountControls, private perf?: () => { tier: string; fps: number; gpu: string } | null) {
     this.body = h('div', { class: 'panel__body settings__body' });
     this.tabsEl = h('nav', { class: 'settings__tabs', 'aria-label': 'Settings sections' });
     this.el = h(
@@ -150,6 +150,24 @@ export class SettingsView {
     setOn(this.el, false);
   }
 
+  /**
+   * What the settings screen says about quality. Under 'auto' this is the only
+   * place the player can see what the machine was judged to be, so it has to be
+   * honest about both the guess and the live frame rate.
+   */
+  private qualityNote(q: SettingsData['quality']): string {
+    const g = this.gpu();
+    if (q !== 'auto') return 'Fixed. Resolution, rain density, lights, and the expensive passes.';
+    const at = g ? g.tier : '…';
+    const fps = g ? ` · ${Math.round(g.fps)} fps` : '';
+    return `Auto — running ${at}${fps}. Set on ${g?.gpu ?? 'this machine'}.`;
+  }
+
+  /** Live detection + frame rate, or null if the host doesn't expose it. */
+  private gpu(): { tier: string; fps: number; gpu: string } | null {
+    return this.perf?.() ?? null;
+  }
+
   private render() {
     const d = this.settings.data;
     const set = <K extends keyof SettingsData>(k: K, v: SettingsData[K]) => this.settings.set(k, v);
@@ -192,7 +210,7 @@ export class SettingsView {
         page = [
           section(
             'Graphics',
-            row('Quality', 'Resolution, rain density and nearby lights.', seg('quality', [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']])),
+            row('Quality', this.qualityNote(d.quality), seg('quality', QUALITIES.map((q) => [q.id, q.label]))),
             row('Shadows', 'Moonlight and the nearest street lamps.', onOff('shadows')),
             row('Post-processing', 'Bloom, grade and film grain.', onOff('postfx')),
             row('Atmosphere', 'Wet reflections, light shafts, steam and splashes.', onOff('atmosphere')),

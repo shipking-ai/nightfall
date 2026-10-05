@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { newMotion, newRig, solve, stepPhase, type Outfit, type Rig, type Motion } from '../../entities/Humanoid';
+import { J, buildRig, newMotion, newRig, solve, stepPhase, type Outfit, type Rig, type Motion } from '../../entities/Humanoid';
+import { C, newPose } from '../../anim/pose';
+import { newRagPose, Ragdoll, type RagPose } from '../../anim/Ragdoll';
 import { Animator } from '../../anim/Animator';
 import { IdleDirector } from '../../anim/IdleDirector';
 import { styleFor, approach, turnToward } from '../../anim/gait';
@@ -88,6 +90,10 @@ export interface Walker {
   v: number;
   persona: Persona;
   idler: IdleDirector;
+  /** their body once something has hit them hard enough (a car, a fall) */
+  rag: Ragdoll | null;
+  /** the reaction clip is playing this long; the ragdoll takes over after */
+  react: number;
 }
 
 export class Populace {
@@ -223,7 +229,11 @@ export class Populace {
       this.scan(player, minutes);
     }
     const tmp = new THREE.Vector3();
+    // who is out on the roads this frame, for the traffic to brake for
+    const foot = this.onFoot;
+    foot.length = 0;
     for (const w of this.walkers.values()) {
+      if (w.dead < 0 && w.human.group.visible) foot.push(w.pos);
       const plan = this.towns.plan(w.r.town);
       const outside = this.where(w.r, plan, minutes, tmp);
       if (!outside) {
@@ -246,6 +256,13 @@ export class Populace {
       if (w.dead >= 0) {
         w.dead += dt;
         w.v = 0;
+        // a hard enough hit leaves a ragdoll lying where it flung them
+        if (w.rag) {
+          w.rag.step(dt, (x, z) => this.col.groundAt(x, z, w.pos.y + 1.2, 1.6, 0.3));
+          w.rag.hipsPos(tmp);
+          w.pos.set(tmp.x, tmp.y - 0.45 * w.human.body.height, tmp.z);
+          w.yaw = Math.atan2(w.rag.p[2] - w.rag.p[0], -(w.rag.p[8] - w.rag.p[0]) || w.yaw);
+        }
       } else if (w.flee > 0 || w.chase) {
         speed = w.chase ? (d > 1.2 ? 4.6 : 0) : 4.2;
         w.yaw += turnToward(w.yaw, Math.atan2(dx, dz), w.v, dt);
@@ -287,8 +304,37 @@ export class Populace {
       const h = w.human;
       if (!h.ready) continue;
       h.group.visible = true;
-      this.root.compose(w.pos, this.q.setFromAxisAngle(UP, w.yaw), _s.setScalar(h.body.height));
-      solve(w.rig, this.root, h.body, w.outfit, w.m, t, w.anim);
+      const k = h.body.height;
+      if (w.rag && w.rag.alive) {
+        // the body is posed from the ragdoll's bones, so the figure lies where
+        // the physics says it is rather than standing on top of it
+        w.rag.root(this.root, w.rag.yaw, k);
+        w.rag.poseChannels(_rag, h.body.legLen ?? 1, h.body.armLen ?? 1);
+        const P = _pose;
+        P[C.spRx] = _rag.spine[0];
+        P[C.spRy] = _rag.spine[1];
+        P[C.spRz] = _rag.spine[2];
+        const side = (j: number[], b: number[], L: boolean) => {
+          P[L ? C.hipLf : C.hipRf] = j[0];
+          P[L ? C.hipLab : C.hipRab] = j[1];
+          P[L ? C.hipLtw : C.hipRtw] = j[2];
+          P[L ? C.knL : C.knR] = b[0];
+        };
+        side(_rag.legL, _rag.kneeL, true);
+        side(_rag.legR, _rag.kneeR, false);
+        const arm = (j: number[], b: number[], L: boolean) => {
+          P[L ? C.shLf : C.shRf] = j[0];
+          P[L ? C.shLab : C.shRab] = j[1];
+          P[L ? C.shLtw : C.shRtw] = j[2];
+          P[L ? C.elL : C.elR] = b[0];
+        };
+        arm(_rag.armL, _rag.elbowL, true);
+        arm(_rag.armR, _rag.elbowR, false);
+        buildRig(w.rig, this.root, h.body, w.outfit, P);
+      } else {
+        this.root.compose(w.pos, this.q.setFromAxisAngle(UP, w.yaw), _s.setScalar(k));
+        solve(w.rig, this.root, h.body, w.outfit, w.m, t, w.anim);
+      }
       h.pose(camera.position.distanceTo(w.pos));
     }
   }
@@ -357,8 +403,10 @@ export class Populace {
     moodFor(m.face, persona, arche);
     m.slouch = 0.02 + 0.05 * persona.tired;
     m.weight = rng() * 2 - 1;
-    m.ground = (x, z) => this.col.groundAt(x, z, m.g.py + 0.45, 0.9, 0.05);
-    this.walkers.set(r.id, { r, human, rig: newRig(), m, anim: new Animator(), pos: at.clone(), yaw: Math.random() * 6.28, outfit: { bulk: 1 } as Outfit, talk: 0, idle: 0, hp: r.job === 'police' ? 140 : 100, flee: 0, from: new THREE.Vector3(), dead: -1, chase: false, v: 0, persona, idler: new IdleDirector(persona, rng) });
+    // a patch wide enough to cover the stance footprint, so a slope reads as one
+    // surface rather than two different heights under each foot
+    m.ground = (x, z) => this.col.groundAt(x, z, m.g.py + 0.9, 1.4, 0.34);
+    this.walkers.set(r.id, { r, human, rig: newRig(), m, anim: new Animator(), pos: at.clone(), yaw: Math.random() * 6.28, outfit: { bulk: 1 } as Outfit, talk: 0, idle: 0, hp: r.job === 'police' ? 140 : 100, flee: 0, from: new THREE.Vector3(), dead: -1, chase: false, v: 0, persona, idler: new IdleDirector(persona, rng), rag: null, react: 0 });
   }
 
   private release(id: string, w: Walker) {
@@ -449,7 +497,43 @@ export class Populace {
     for (const w of this.walkers.values()) if (w.dead >= 0) fn(w);
   }
 
-  damage(w: Walker, dmg: number, from: THREE.Vector3, at?: THREE.Vector3): boolean {
+  /** Everyone currently out on the streets, so traffic can see them. */
+  readonly onFoot: { x: number; z: number }[] = [];
+
+  /**
+   * Where a walker's bones are right now, in world space, so a ragdoll can
+   * inherit the body exactly where the figure was standing before it was hit.
+   * The order is Ragdoll's BONES.
+   */
+  bones(out: Float32Array, w: Walker) {
+    _jRoot.compose(w.pos, _jq.setFromAxisAngle(UP, w.yaw), _js.setScalar(w.human.body.height));
+    solve(w.rig, _jRoot, w.human.body, w.outfit, w.m, performance.now() / 1000, null);
+    const put = (n: number, m: THREE.Matrix4) => {
+      const e = m.elements;
+      out[n * 3] = e[12];
+      out[n * 3 + 1] = e[13];
+      out[n * 3 + 2] = e[14];
+    };
+    put(0, J.pelvis);
+    put(1, J.chest);
+    put(2, J.neck);
+    put(3, J.neck); // the head sits a little above the neck joint
+    out[10] += 0.16;
+    put(4, J.shL);
+    put(5, J.elL);
+    put(6, J.wrL);
+    put(7, J.shR);
+    put(8, J.elR);
+    put(9, J.wrR);
+    put(10, J.hipL);
+    put(11, J.knL);
+    put(12, J.anL);
+    put(13, J.hipR);
+    put(14, J.knR);
+    put(15, J.anR);
+  }
+
+  damage(w: Walker, dmg: number, from: THREE.Vector3, at?: THREE.Vector3, force = false): boolean {
     if (w.dead >= 0) return false;
     w.hp -= dmg;
     // the blood shows where it hit
@@ -462,6 +546,16 @@ export class Populace {
       w.flee = 0;
       const facing = Math.cos(Math.atan2(from.x - w.pos.x, from.z - w.pos.z) - w.yaw) > 0;
       w.anim.play(facing ? 'react.deathBack' : 'react.deathForward', { stay: true, fadeIn: 0.08 });
+      // Something that hit them hard enough to kill them takes the body with
+      // it: the reaction plays, then the figure is thrown and lies where it lands.
+      if (force) {
+        // solve the figure where they stand, then throw the body from that pose
+        this.root.compose(w.pos, this.q.setFromAxisAngle(UP, w.yaw), _s.setScalar(w.human.body.height));
+        solve(w.rig, this.root, w.human.body, w.outfit, w.m, performance.now() / 1000, null);
+        const rag = w.rag ?? (w.rag = new Ragdoll(w.human.body.height));
+        rag.setCollision(this.col);
+        rag.launch(this.root, w.human.body, from, 5 + Math.min(6, dmg * 0.12));
+      }
       this.gone.add(w.r.id);
       return true;
     }
@@ -524,3 +618,8 @@ function wrap(a: number) {
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _s = new THREE.Vector3();
+const _rag: RagPose = newRagPose();
+const _pose = newPose();
+const _jRoot = new THREE.Matrix4();
+const _jq = new THREE.Quaternion();
+const _js = new THREE.Vector3();

@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { styleFor } from '../anim/gait';
-import { newMotion, newRig, solve, stepPhase, visibleParts, type ArmMode, type Body, type Outfit } from './Humanoid';
+import { newMotion, newRig, seatedRoot, solve, stepPhase, visibleParts, type ArmMode, type Body, type Outfit } from './Humanoid';
 import { FigureBatch } from './FigureBatch';
-import type { Collision } from '../world/Collision';
+import type { Collision, Contact } from '../world/Collision';
 import type { Input } from '../core/Input';
 import { bodyFromLook, outfitFromLook, type Look } from './Look';
 import { WATER_Y, RIVER_Z0, RIVER_Z1, QUAY_Z, inRiver } from './Boats';
@@ -79,7 +79,19 @@ export class Player {
    * In a vehicle: sat in a seat (world matrix of the seat), hands on the wheel
    * if driving. The figure is drawn there; `pos` still follows the car.
    */
-  seat: { m: THREE.Matrix4; drive: boolean; steer: number } | null = null;
+  seat: {
+    /** the pre-built root, used when there is nothing better */
+    m: THREE.Matrix4;
+    drive: boolean;
+    steer: number;
+    /** the vehicle's sprung body and seat datum: the root is built from these
+     *  so the hips land on the cushion (the seat is a hip point, the rig's
+     *  origin is the feet) */
+    car?: THREE.Matrix4;
+    at?: { x: number; y: number; z: number };
+    /** how far the squab's top sits above the seat datum, in metres */
+    cushion?: number;
+  } | null = null;
   /** a pistol in the right hand, shown while armed */
   gun = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.2, 0.11).translate(0, -0.13, 0.03), new THREE.MeshStandardMaterial({ color: 0x151618, roughness: 0.4, metalness: 0.6 }));
   onStep: ((intensity: number) => void) | null = null;
@@ -168,8 +180,18 @@ export class Player {
   update(dt: number, input: Input | null, camYaw: number, col: Collision, obstacles: { x: number; z: number; r: number }[]) {
     this.anim.update(dt);
     const m = this.motion;
-    // the feet find kerbs, steps and slopes for themselves
-    if (!m.ground) m.ground = (x, z) => col.groundAt(x, z, this.pos.y + 0.4, 0.8, 0.05);
+    // The feet find kerbs, steps and slopes for themselves. The probe samples a
+    // patch wide enough to cover the stance footprint — a 5 cm radius returns a
+    // single point, so on a slope each foot read a different height and the
+    // pelvis bobbed sideways as they alternated. The window is anchored to the
+    // root, not to the head, and asks a little above it, so a foot planted
+    // uphill is still measured at its own height.
+    if (!m.ground) {
+      m.ground = (x, z) => {
+        const h = col.groundAt(x, z, this.pos.y + 0.9, 1.4, 0.34);
+        return h;
+      };
+    }
     if (this.seat) return this.updateSeated(dt);
 
     // analog on a stick (a gentle push walks slowly), full speed from the keys
@@ -272,13 +294,36 @@ export class Player {
       this.pos.x += this.vel.x * dt;
       this.pos.z += this.vel.z * dt;
       this.pos.y += this.vel.y * dt;
-      col.resolve(this.pos, RADIUS, HEIGHT, STEP);
+      // Resolve, then take the velocity component that was going into whatever
+      // we hit. Without this you keep accelerating into a wall every frame and
+      // only slide by luck of the push-out; along a wall, running into it at a
+      // shallow angle would stop you dead instead of sliding along it.
+      col.resolvePush(this.pos, RADIUS, HEIGHT, STEP, _contact);
+      if (_contact.depth > 0) {
+        const into = this.vel.x * _contact.nx + this.vel.z * _contact.nz;
+        if (into < 0) {
+          this.vel.x -= _contact.nx * into;
+          this.vel.z -= _contact.nz * into;
+        }
+        // a real knock, not a graze: it costs you some of your speed
+        if (-into > 6 && this.grounded) {
+          this.vel.x *= 0.6;
+          this.vel.z *= 0.6;
+        }
+      }
       for (const o of obstacles) {
         const dx = this.pos.x - o.x, dz = this.pos.z - o.z;
         const d = Math.hypot(dx, dz), min = RADIUS + o.r;
         if (d < min && d > 1e-4) {
           this.pos.x = o.x + (dx / d) * min;
           this.pos.z = o.z + (dz / d) * min;
+          // and slide off a person rather than sticking to them
+          const nx = dx / d, nz = dz / d;
+          const into2 = this.vel.x * nx + this.vel.z * nz;
+          if (into2 < 0) {
+            this.vel.x -= nx * into2;
+            this.vel.z -= nz * into2;
+          }
         }
       }
       const g = col.groundAt(this.pos.x, this.pos.z, this.pos.y, this.grounded ? STEP : 0.05, RADIUS);
@@ -357,11 +402,15 @@ export class Player {
     m.steer += (s.steer - m.steer) * Math.min(1, dt * 8);
     m.lookYaw = m.steer * 0.25;
     m.breath += dt * 1.2;
-    // a realistic body (RPG) is taller in the trunk than the city figure: sunk into the seat, it clears the roof
-    const k = this.real ? 1 : this.body.height;
-    this.root.copy(s.m);
-    if (this.real) this.root.multiply(_s.makeTranslation(0, -0.12 - (this.body.torsoLen ?? 1) * 0.1, -0.02));
-    this.root.multiply(_s.makeScale(k, k, k));
+    // the seat datum is a hip point and the rig's origin is the feet, so the hips
+    // have to be put on the cushion or the head goes through the roof
+    if (s.car && s.at) seatedRoot(this.root, s.car, s.at, this.body, s.cushion ?? 0.08);
+    else {
+      const k = this.real ? 1 : this.body.height;
+      this.root.copy(s.m);
+      if (this.real) this.root.multiply(_s.makeTranslation(0, -0.12 - (this.body.torsoLen ?? 1) * 0.1, -0.02));
+      this.root.multiply(_s.makeScale(k, k, k));
+    }
     this.draw();
   }
 
@@ -412,6 +461,8 @@ export class Player {
 }
 
 const _q = new THREE.Quaternion();
+/** the deepest contact from the last resolve, so velocity can be redirected */
+const _contact: Contact = { nx: 0, nz: 0, depth: 0, inside: false };
 const _up = new THREE.Vector3(0, 1, 0);
 const _one = new THREE.Vector3(1, 1, 1);
 const _s = new THREE.Matrix4();

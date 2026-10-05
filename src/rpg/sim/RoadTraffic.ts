@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { SPECS, classFor } from '../../vehicles/specs';
 import { buildVehicle, type VehicleModel } from '../../vehicles/model';
 import { FigureBatch } from '../../entities/FigureBatch';
-import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from '../../entities/Humanoid';
+import { newMotion, newRig, seatedRoot, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from '../../entities/Humanoid';
 import { makePerson, type ArchetypeId } from '../../data/people';
 import { mulberry32 } from '../../world/rng';
 
@@ -49,7 +49,25 @@ interface Vehicle {
 }
 
 const MAX = 16;
-const SPAWN_MIN = 160, SPAWN_MAX = 520, DROP = 700;
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+// Road geometry is only built within NEAR_R chunks of the player (Streamer.ts),
+// so a car must never be spawned or kept further out than that — past it they
+// drive along roads that aren't drawn, on nothing but the far-tile smear.
+const BUILT_R = 384;
+const SPAWN_MIN = 160, SPAWN_MAX = 380, DROP = 400;
+
+/**
+ * How far right of the centreline a car sits, in metres. Derived from the same
+ * lane centres the road shader paints (Roads.ts: edge lines at 0.35 and w-0.35,
+ * double-yellow median at w/2, dashes at w/4 and 3w/4 for a highway, w/2 for a
+ * road) so the wheels sit in the painted lane instead of on a line.
+ */
+function laneOffset(road: Road): number {
+  const w = road.width;
+  if (w >= 13) return w / 4; // highway: outer lane of the near carriageway
+  if (w >= 7) return w / 4; // road: one lane each way, dash on the centreline
+  return w / 2 - 0.6; // track: single carriageway, no markings
+}
 
 export class RoadTraffic {
   group = new THREE.Group();
@@ -63,6 +81,12 @@ export class RoadTraffic {
   private free: number[] = Array.from({ length: MAX }, (_, i) => MAX - 1 - i);
   private seatM = new THREE.Matrix4();
   private tmpM = new THREE.Matrix4();
+  /** where each car was last frame, so a strike can be swept against it */
+  private prev = new Map<Vehicle, THREE.Vector3>();
+  /** when each car last hit someone */
+  private hitAt = new Map<Vehicle, number>();
+  /** everyone on foot near the roads, so traffic brakes for them; set each frame */
+  strikable: { x: number; z: number }[] = [];
 
   constructor(private gen: WorldGen, private mats: Materials) {
     this.group.add(this.drivers.group);
@@ -107,13 +131,34 @@ export class RoadTraffic {
       else hi = mid;
     }
     const t = (s - c[lo]) / Math.max(1e-6, c[hi] - c[lo]);
+    // The ribbon is mitred: its cross-section is the perpendicular averaged with
+    // the neighbouring segments, not this segment's own chord. Offsetting the car
+    // by the chord put it off the drawn carriageway on every bend, so use the
+    // same average the mesh uses.
+    const perp = (k: number) => {
+      const px0 = P[Math.max(0, k - 1) * 2], pz0 = P[Math.max(0, k - 1) * 2 + 1];
+      const px1 = P[Math.min(n - 1, k + 1) * 2], pz1 = P[Math.min(n - 1, k + 1) * 2 + 1];
+      const dx = px1 - px0, dz = pz1 - pz0, l = Math.hypot(dx, dz) || 1;
+      return [-dz / l, dx / l];
+    };
+    const [pax, paz] = perp(lo);
+    const [pbx, pbz] = perp(hi);
+    const nx = pax + (pbx - pax) * t;
+    const nz = paz + (pbz - paz) * t;
+    const nl = Math.hypot(nx, nz) || 1;
     const ax = P[lo * 2], az = P[lo * 2 + 1], bx = P[hi * 2], bz = P[hi * 2 + 1];
-    const dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz) || 1;
-    // right-hand traffic: the lane is to the right of the direction of travel
-    const lane = road.kind === 'highway' ? 3.6 : road.kind === 'road' ? 2.2 : 1.2;
-    const rx = (-dz / l) * -dir, rz = (dx / l) * -dir;
-    out.set(ax + dx * t + rx * lane, road.h[lo] + (road.h[hi] - road.h[lo]) * t + 0.02, az + dz * t + rz * lane);
+    const dx = bx - ax, dz = bz - az;
+    // Right-hand traffic: keep to the right of the direction of travel. In a
+    // +y-up frame the right of travel f=(dx,dz) is (-dz, dx), and travelling
+    // backwards (dir -1) reverses it — so the offset is signed by dir.
+    const lane = laneOffset(road);
+    const rx = (nx / nl) * dir, rz = (nz / nl) * dir;
+    // the ribbon is drawn 4 cm above the road profile, so stand the car on it
+    const y = road.h[lo] + (road.h[hi] - road.h[lo]) * t + 0.04;
+    out.set(ax + dx * t + rx * lane, y, az + dz * t + rz * lane);
     const yaw = Math.atan2(dx * dir, dz * dir);
+    // the grade over the stretch, so the nose follows the road rather than
+    // stepping down every segment
     const pitch = -Math.atan2((road.h[hi] - road.h[lo]) * dir, c[hi] - c[lo]);
     return { yaw, pitch };
   }
@@ -145,16 +190,39 @@ export class RoadTraffic {
       }
     }
     for (const v of this.cars) {
+      // remember where it was, for the swept strike test below
+      const pv = this.prev.get(v);
+      if (pv) pv.copy(v.pos);
+      else this.prev.set(v, v.pos.clone());
       // the car ahead in the same lane
       let gap = 1e9;
       for (const o of this.cars) if (o !== v && o.road === v.road && o.dir === v.dir) {
         const ahead = (o.s - v.s) * v.dir;
         if (ahead > 0 && ahead < gap) gap = ahead;
       }
-      // and you, standing in the road
+      // you, standing in the road. Traffic slows for people it can see in time —
+      // so it brakes for you, but only from far enough out to matter. Someone
+      // who steps out in front of a car at close quarters still gets hit, which
+      // is the whole point of the strike test.
       const dp = Math.hypot(player.x - v.pos.x, player.z - v.pos.z);
       const toYou = (player.x - v.pos.x) * Math.sin(v.yaw) + (player.z - v.pos.z) * Math.cos(v.yaw);
-      if (toYou > 0 && dp < 30 && Math.abs(dp * dp - toYou * toYou) < 9) gap = Math.min(gap, toYou);
+      const lateral = Math.abs(dp * dp - toYou * toYou) > 0 ? Math.sqrt(Math.max(0, dp * dp - toYou * toYou)) : 0;
+      if (toYou > 0 && dp < 34 && lateral < 2.4) {
+        // the distance it needs to stop, plus a reaction margin
+        const stop = (v.v * v.v) / (2 * 7) + v.v * 0.55;
+        if (toYou > stop * 0.55) gap = Math.min(gap, toYou);
+      }
+      for (const w of this.strikable) {
+        const wx = w.x - v.pos.x, wz = w.z - v.pos.z;
+        const dw = Math.hypot(wx, wz);
+        if (dw > 30) continue;
+        const tow = wx * Math.sin(v.yaw) + wz * Math.cos(v.yaw);
+        if (tow <= 0) continue;
+        const lat = Math.sqrt(Math.max(0, dw * dw - tow * tow));
+        if (lat >= 2.4) continue;
+        const stop = (v.v * v.v) / (2 * 7) + v.v * 0.7;
+        if (tow > stop * 0.4) gap = Math.min(gap, tow);
+      }
       const want = gap < 12 ? 0 : gap < 40 ? v.vmax * (gap - 12) / 28 : v.vmax;
       const braking = want < v.v - 0.5;
       v.v += Math.max(-9 * dt, Math.min(3 * dt, want - v.v));
@@ -170,11 +238,37 @@ export class RoadTraffic {
       const md = v.mesh.userData.model as VehicleModel | undefined;
       if (md) for (const w of md.wheels) w.spin.rotation.x += (v.v * dt) / w.r;
       v.tails.emissiveIntensity = (braking ? 8 : 0.4) + this.night * 3;
-      if (v.pos.distanceTo(player) > DROP) v.alive = false;
+      if (v.pos.distanceTo(player) > Math.min(DROP, BUILT_R)) v.alive = false;
     }
     for (const v of this.cars) if (!v.alive) this.drop(v);
     this.cars = this.cars.filter((v) => v.alive);
     this.drawDrivers(dt, player);
+  }
+
+  /**
+   * Anyone a car on the road has just hit. `fn` is called once per hit, with
+   * the car's position and its velocity, so the caller can decide what being
+   * hit by a car means. Traffic brakes for people in the road, so this mostly
+   * catches a car that arrived too fast to stop, or one whose driver didn't.
+   */
+  strikes(p: THREE.Vector3, fn: (pos: THREE.Vector3, vx: number, vz: number, speed: number) => void) {
+    for (const v of this.cars) {
+      const speed = Math.abs(v.v);
+      if (speed < 3) continue;
+      // yaw already carries the direction of travel, so this is its velocity
+      const vx = Math.sin(v.yaw) * v.v, vz = Math.cos(v.yaw) * v.v;
+      // swept against where the car was last frame, so nothing slips through
+      // the gap between frames at 20 m/s
+      const back = this.prev.get(v);
+      const t = back ? clamp01(((p.x - back.x) * vx + (p.z - back.z) * vz) / (speed * speed)) : 0;
+      const ax = (back ? back.x : v.pos.x) + vx * t, az = (back ? back.z : v.pos.z) + vz * t;
+      if (Math.hypot(p.x - ax, p.z - az) > 2.2) continue;
+      // once per car per moment, so a slow overlap doesn't fire every frame
+      const now = performance.now();
+      if ((this.hitAt.get(v) ?? -1e9) > now - 700) continue;
+      this.hitAt.set(v, now);
+      fn(v.pos, vx, vz, speed);
+    }
   }
 
   /** The drivers, near enough to see: in their seats, steering with the road, glancing about. */
@@ -197,8 +291,9 @@ export class RoadTraffic {
       stepPhase(m, dt);
       v.mesh.updateMatrixWorld();
       const md = v.mesh.userData.model as VehicleModel | undefined;
-      this.seatM.copy(md ? md.body.matrixWorld : v.mesh.matrixWorld).multiply(this.tmpM.makeTranslation(v.seat.x, v.seat.y, v.seat.z));
-      this.seatM.multiply(this.tmpM.makeScale(p.body.height, p.body.height, p.body.height));
+      // hips on the cushion, not feet on it: the seat datum is a hip point, and
+      // the rig's origin is the feet, so without this the head goes through the roof
+      seatedRoot(this.seatM, md ? md.body.matrixWorld : v.mesh.matrixWorld, v.seat, p.body);
       solve(p.rig, this.seatM, p.body, p.outfit, m, t);
       this.drivers.write(v.slot, p.rig, visibleParts(p.outfit, d), false);
     }
@@ -207,6 +302,8 @@ export class RoadTraffic {
 
   private drop(v: Vehicle) {
     this.forget(v.mesh);
+    this.prev.delete(v);
+    this.hitAt.delete(v);
     if (v.slot >= 0) {
       this.drivers.hide(v.slot);
       this.free.push(v.slot);

@@ -69,7 +69,7 @@ export class WorldContext {
   sounds: SoundSpot[] = [];
   interact: InteractSpot[] = [];
   /** parked cars the player can get into (simulated by entities/Vehicles, not merged) */
-  cars: { pos: THREE.Vector3; yaw: number; color: number; van: boolean; screen: boolean }[] = [];
+  cars: { pos: THREE.Vector3; yaw: number; color: number; van: boolean; screen: boolean; kind?: string }[] = [];
   npcSpots: NpcSpot[] = [];
   updaters: ((t: number, dt: number) => void)[] = [];
   /** manholes / vents that breathe steam */

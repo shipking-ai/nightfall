@@ -371,12 +371,19 @@ export class WorldGen {
       const ux = dx / dl, uz = dz / dl;
       const stepLen = dl / left;
       let bestC = 1e9, bx = x + ux * stepLen, bz = z + uz * stepLen, bh = prevH;
+      // never step further sideways than forward: the candidate offsets run to
+      // ±92 m on a track against a 60 m step, which let the polyline fold back
+      // on itself and knot the ribbon over itself
+      const spread = Math.min(22 * amp, stepLen * 0.7);
       for (let k = -3; k <= 3; k++) {
-        const off = k * 22 * amp;
+        const off = k * spread;
         const cx = x + ux * stepLen - uz * off, cz = z + uz * stepLen + ux * off;
         const h = this.preRoad(cx, cz);
         const wetC = h < SEA_Y + 0.5 ? 600 : 0;
-        const cost = Math.abs(h - prevH) * 3 + Math.abs(off) * 0.05 + wetC + (i < 3 || left < 3 ? Math.abs(off) : 0);
+        // turning back on the last stretch is expensive: the road has to arrive
+        // where it was asked to arrive
+        const toGoal = Math.hypot(b.x - cx, b.z - cz);
+        const cost = Math.abs(h - prevH) * 3 + Math.abs(off) * 0.35 + wetC + toGoal * 0.05 + (i < 3 || left < 3 ? Math.abs(off) : 0);
         if (cost < bestC) {
           bestC = cost;
           bx = cx;
@@ -388,6 +395,15 @@ export class WorldGen {
       const wob = Math.sin(i * 0.35 + r.range(0, 6.28)) * 6 * amp;
       bx += -uz * wob;
       bz += ux * wob;
+      // and it must not fold the path either
+      {
+        const nx = bx - x, nz = bz - z;
+        const nl = Math.hypot(nx, nz) || 1;
+        if (nl > stepLen * 1.6) {
+          bx = x + (nx / nl) * stepLen * 1.6;
+          bz = z + (nz / nl) * stepLen * 1.6;
+        }
+      }
       px.push(bx);
       pz.push(bz);
       x = bx;
@@ -454,7 +470,12 @@ export class WorldGen {
     const overWater = new Uint8Array(m);
     for (let i = 0; i < m; i++) {
       const xx = pts[i * 2], zz = pts[i * 2 + 1];
-      const river = this.riverAt(xx, zz);
+      const r = this.riverAt(xx, zz);
+      // riverAt answers "is there a river near here" out to half + 40 m, for
+      // carving banks and riverbanks. Only the channel itself (d < half) means
+      // this point is over water — testing `r` alone turned every road running
+      // alongside a river into a kilometre of viaduct over dry fields.
+      const river = r && r.d < r.half ? r : null;
       const lk = this.lakeAt(xx, zz);
       if (river || lk || raw[i] < SEA_Y + 0.6) {
         const surf = river ? river.surface : lk ? lk.level : SEA_Y;
@@ -479,7 +500,10 @@ export class WorldGen {
     for (let pass = 0; pass < 3; pass++) for (let i = 1; i < m - 1; i++) if (bridge[i]) {
       for (const j of [i - 1, i + 1]) if (!bridge[j] && h[j] < h[i] - 1.5) h[j] = Math.max(h[j], h[i] - 1.5);
     }
-    const pad = width + 60;
+    // The bbox has to cover the widest thing this road does to the ground: the
+    // embankment blend reaches half + 4 + 26 + 90 ≈ half + 120, so padding by
+    // 60 truncated it and left a hard crease in the terrain beside every road.
+    const pad = width + 150;
     return { id, kind, width, pts, h, bridge, a: a.id, b: b.id, x0: x0 - pad, z0: z0 - pad, x1: x1 + pad, z1: z1 + pad };
   }
 
@@ -643,40 +667,50 @@ export class WorldGen {
       if (d < s.radius) urban = Math.max(urban, 1 - smooth(s.radius * 0.75, s.radius, d));
     }
     // roads: the nearest one flattens the ground under and beside it
-    let road = 0, roadKind: Ground['roadKind'] = 0, bestW = 0;
+    let road = 0, roadKind: Ground['roadKind'] = 0;
     for (const rd of n.r) {
       if (x < rd.x0 || x > rd.x1 || z < rd.z0 || z > rd.z1) continue;
       const P = rd.pts, m = P.length / 2;
       const half = rd.width / 2;
       // (an embankment is as wide as it needs to be: a high one spreads further)
-      const reach = half + 26 + 40;
+      // How far the ground has to travel to meet this road. A tall embankment or
+      // deep cutting spreads further, so the blend has to run out where the
+      // terrain actually reaches the road height — otherwise the last sample
+      // snaps back to natural height and leaves a cliff beside the road.
+      const spread = (hr: number) => 26 + Math.min(90, Math.abs(hr - h) * 1.6);
       for (let i = 0; i < m - 1; i++) {
         const ax = P[i * 2], az = P[i * 2 + 1], bx = P[i * 2 + 2], bz = P[i * 2 + 3];
-        // cheap reject
-        if ((x < ax - reach && x < bx - reach) || (x > ax + reach && x > bx + reach) || (z < az - reach && z < bz - reach) || (z > az + reach && z > bz + reach)) continue;
         const dx = bx - ax, dz = bz - az;
         const l2 = dx * dx + dz * dz;
         let t = l2 > 0 ? ((x - ax) * dx + (z - az) * dz) / l2 : 0;
         t = t < 0 ? 0 : t > 1 ? 1 : t;
         const cx = ax + dx * t - x, cz = az + dz * t - z;
         const d = Math.sqrt(cx * cx + cz * cz);
-        if (d > reach) continue;
         const onBridge = rd.bridge[i] && rd.bridge[i + 1];
         const hr = rd.h[i] + (rd.h[i + 1] - rd.h[i]) * t;
-        const bank = half + 26 + Math.min(40, Math.abs(hr - h) * 1.3);
+        // cheap reject, now that the reach depends on the height difference
+        if (d > half + 4 + spread(hr)) continue;
+        const bank = half + 4 + spread(hr);
         if (d > bank) continue;
         const w = 1 - smooth(half + 1.2, bank, d);
-        if (w > bestW) {
-          bestW = w;
-          if (!onBridge || d > half + 3) {
-            // embankment: the ground meets the road's edge just below its surface, and is sunk well
-            // under the carriageway itself (so it can't show through between its samples)
-            h = lerp(h, hr - (d < half + 0.4 ? 0.55 : 0.12), onBridge ? 0 : w);
-          }
-          if (d < half + 0.3 && !onBridge) {
+        // Every road that reaches this point contributes its own carve. Gating on
+        // a running best weight let whichever road was enumerated first win
+        // outright, so at a crossing the second road got no embankment and no
+        // road flag at all — and trees grew in the carriageway.
+        if (!onBridge || d > half + 3) {
+          // embankment: the ground meets the road's edge just below its surface, and is sunk well
+          // under the carriageway itself (so it can't show through between its samples)
+          h = lerp(h, hr - (d < half + 0.4 ? 0.55 : 0.12), onBridge ? 0 : w);
+        }
+        if (!onBridge) {
+          // The painted skirt on the terrain has to stop at the ribbon's own
+          // edge. It used to reach 1.5 m past it, on a 4 m sample grid, which
+          // left a stair-stepped band of asphalt hugging a road that was
+          // narrower than the band — the "road" read as much wider than it is.
+          if (d < half - 0.1) {
             road = 1;
             roadKind = rd.kind === 'highway' ? 3 : rd.kind === 'road' ? 2 : 1;
-          } else if (d < half + 1.5 && !onBridge) road = Math.max(road, 0.5);
+          } else if (d < half + 0.5) road = Math.max(road, 0.5);
         }
       }
     }

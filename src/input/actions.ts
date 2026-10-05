@@ -47,12 +47,17 @@ const DEFS = {
   steerLeft: { label: 'Steer left', group: 'vehicle' },
   steerRight: { label: 'Steer right', group: 'vehicle' },
   handbrake: { label: 'Handbrake', group: 'vehicle' },
+  boost: { label: 'Boost', group: 'vehicle' },
   horn: { label: 'Horn', group: 'vehicle' },
   exitVehicle: { label: 'Get out', group: 'vehicle' },
   radioNext: { label: 'Radio: next station', group: 'vehicle' },
   radioPrev: { label: 'Radio: previous station', group: 'vehicle' },
   screen: { label: 'Dash screen', group: 'vehicle' },
   carCamera: { label: 'Driving camera', group: 'vehicle' },
+  // powers (systems/Powers.ts): you find these, you don't choose them
+  powerUse: { label: 'Use power', group: 'explore' },
+  powerPrev: { label: 'Previous power', group: 'explore' },
+  powerNext: { label: 'Next power', group: 'explore' },
   // WARZONE extras
   melee: { label: 'Melee', group: 'warzone' },
   scoreboard: { label: 'Scoreboard', group: 'warzone' },

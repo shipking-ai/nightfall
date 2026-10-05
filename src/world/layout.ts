@@ -58,7 +58,7 @@ export const BLOCKS: Block[] = [
   { id: 'AW1', rect: r(-34, -120, -13, -50), district: 'avenue', h: [26, 48], styles: ['stone', 'stone', 'concrete'], lot: [14, 24] },
   { id: 'AW2', rect: r(-34, -30, -13, 44), district: 'avenue', h: [22, 40], styles: ['stone', 'brick', 'glass'], lot: [12, 22], gaps: [[6, 11]] },
   { id: 'AW3', rect: r(-34, 64, -13, 132), district: 'avenue', h: [20, 36], styles: ['stone', 'brick', 'concrete'], lot: [12, 20] },
-  { id: 'AE1', rect: r(13, -120, 34, -50), district: 'avenue', h: [30, 58], styles: ['glass', 'stone', 'concrete'], lot: [16, 26] },
+  { id: 'AE1', rect: r(13, -120, 34, -50), district: 'avenue', h: [30, 58], styles: ['glass', 'stone', 'concrete'], lot: [16, 26], gaps: [[46, 59]] },
   { id: 'AE2', rect: r(13, -30, 34, 44), district: 'avenue', h: [24, 44], styles: ['stone', 'stone', 'brick'], lot: [12, 22] },
   { id: 'AE3', rect: r(13, 64, 34, 132), district: 'avenue', h: [18, 34], styles: ['brick', 'concrete', 'stone'], lot: [12, 20], gaps: [[30, 36]] },
 

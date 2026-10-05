@@ -299,8 +299,13 @@ export class Streamer {
     for (const p of rg.piers) {
       const ground = this.gen.height(p.x, p.z);
       const bottom = Math.min(ground, p.top) - 2;
-      if (p.top - bottom > 2) ctx.batch.add(this.mats.concrete, G.box, M(p.x, bottom, p.z, p.w * 0.8, p.top - 0.6 - bottom, 1.6, p.yaw));
-      ctx.batch.add(this.mats.concrete, G.box, M(p.x, p.top - 0.9, p.z, p.w + 1.4, 0.85, 3.4, p.yaw));
+      // Only a pier that actually spans something gets built. The cap used to be
+      // added unconditionally, so a crossing too short to need a column still
+      // got a block hanging in mid-air on nothing.
+      if (p.top - bottom > 2) {
+        ctx.batch.add(this.mats.concrete, G.box, M(p.x, bottom, p.z, p.w * 0.8, p.top - 0.6 - bottom, 1.6, p.yaw));
+        ctx.batch.add(this.mats.concrete, G.box, M(p.x, p.top - 0.9, p.z, p.w + 1.4, 0.85, 3.4, p.yaw));
+      }
     }
     for (const r of rg.rails) {
       const len = Math.hypot(r.bx - r.ax, r.bz - r.az);

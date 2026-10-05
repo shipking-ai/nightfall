@@ -105,8 +105,11 @@ export function roadGeometry(roads: Road[], x0: number, z0: number, size: number
     for (let i = 0; i < m - 1; i++) {
       const ax = P[i * 2], az = P[i * 2 + 1], bx = P[i * 2 + 2], bz = P[i * 2 + 3];
       const seg = Math.hypot(bx - ax, bz - az);
-      const inside = ax >= x0 && ax < x0 + size && az >= z0 && az < z0 + size;
-      if (inside) {
+      // A segment belongs to the chunk holding its midpoint, not to whichever
+      // chunk its first endpoint fell in. Testing the start point alone left a
+      // ~15 m hole in the carriageway at every chunk border the road crossed.
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      if (mx >= x0 && mx < x0 + size && mz >= z0 && mz < z0 + size) {
         // perpendiculars at both ends (averaged with the neighbouring segments, so the ribbon doesn't crack at bends)
         const perp = (k: number) => {
           const px0 = P[Math.max(0, k - 1) * 2], pz0 = P[Math.max(0, k - 1) * 2 + 1];
@@ -118,16 +121,35 @@ export function roadGeometry(roads: Road[], x0: number, z0: number, size: number
         const ha = rd.h[i] + 0.04, hb = rd.h[i + 1] + 0.04;
         const base = pos.length / 3;
         pos.push(ax - nax * half - ox, ha, az - naz * half - oz, ax + nax * half - ox, ha, az + naz * half - oz, bx - nbx * half - ox, hb, bz - nbz * half - oz, bx + nbx * half - ox, hb, bz + nbz * half - oz);
-        nrm.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
+        // The surface normal from the quad's own corners, so grades and bridge
+        // ramps shade like the ground they sit on. A hard (0,1,0) lit every
+        // slope and every ramp as if it were flat.
+        // e1 and e2 span the quad from the first corner; e1 is the across-carriageway
+        // edge, which the builder keeps level, so its y is 0.
+        const e1x = pos[(base + 1) * 3] - pos[base * 3];
+        const e1z = pos[(base + 1) * 3 + 2] - pos[base * 3 + 2];
+        const e2x = pos[(base + 2) * 3] - pos[base * 3];
+        const e2y = pos[(base + 2) * 3 + 1] - pos[base * 3 + 1];
+        const e2z = pos[(base + 2) * 3 + 2] - pos[base * 3 + 2];
+        let nx = -e1z * e2y;
+        let ny = e1z * e2x - e1x * e2z;
+        let nz = e1x * e2y;
+        const nl = Math.hypot(nx, ny, nz) || 1;
+        nx /= nl;
+        ny /= nl;
+        nz /= nl;
+        for (let k = 0; k < 4; k++) nrm.push(nx, ny, nz);
         attr.push(0, along, kind, 1, along, kind, 0, along + seg, kind, 1, along + seg, kind);
         // wind so the face points up
         const cross = (pos[base * 3 + 3] - pos[base * 3]) * (pos[base * 3 + 8] - pos[base * 3 + 2]) - (pos[base * 3 + 5] - pos[base * 3 + 2]) * (pos[base * 3 + 6] - pos[base * 3]);
         if (cross < 0) idx.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
         else idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
         // the road surface is what you stand and drive on (the ground under it is sunk out of sight)
-        if (!rd.bridge[i] && !rd.bridge[i + 1]) decks.push({ ax, az, bx, bz, ha: rd.h[i] + 0.04, hb: rd.h[i + 1] + 0.04, half: half + 0.3 });
+        if (!rd.bridge[i] && !rd.bridge[i + 1]) decks.push({ ax, az, bx, bz, ha: rd.h[i] + 0.04, hb: rd.h[i + 1] + 0.04, half });
         if (rd.bridge[i] || rd.bridge[i + 1]) {
-          decks.push({ ax, az, bx, bz, ha: rd.h[i], hb: rd.h[i + 1], half: half + 0.6 });
+          // the deck is stood on at exactly the height the ribbon is drawn at,
+          // or the walkable surface sits 4 cm below the road you can see
+          decks.push({ ax, az, bx, bz, ha: rd.h[i] + 0.04, hb: rd.h[i + 1] + 0.04, half });
           rails.push({ ax: ax - nax * (half + 0.4), az: az - naz * (half + 0.4), bx: bx - nbx * (half + 0.4), bz: bz - nbz * (half + 0.4), ha: rd.h[i], hb: rd.h[i + 1] });
           rails.push({ ax: ax + nax * (half + 0.4), az: az + naz * (half + 0.4), bx: bx + nbx * (half + 0.4), bz: bz + nbz * (half + 0.4), ha: rd.h[i], hb: rd.h[i + 1] });
           if (i % 2 === 0) piers.push({ x: ax, z: az, top: rd.h[i], yaw: Math.atan2(bx - ax, bz - az), w: rd.width });

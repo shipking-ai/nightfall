@@ -52,8 +52,17 @@ export class VehicleFx {
       fragmentShader: `varying vec2 vD;
         void main() { vec2 c = gl_PointCoord - 0.5; float r = length(c); if (r > 0.5) discard;
           float soft = smoothstep(0.5, 0.0, r);
-          vec3 col = mix(vec3(0.72, 0.76, 0.8), vec3(0.62, 0.6, 0.58), vD.y);
-          gl_FragColor = vec4(col, soft * vD.x); }`,
+          // vD.y carries the kind: 0 water spray, 1 smoke, 2 flame
+          vec3 col;
+          float a = soft * vD.x;
+          if (vD.y > 1.5) {
+            // the exhaust flare: white-hot at the core, orange as it dies
+            col = mix(vec3(1.0, 0.42, 0.12), vec3(1.0, 0.93, 0.72), smoothstep(0.5, 0.05, r));
+            a *= 1.35;
+          } else {
+            col = mix(vec3(0.72, 0.76, 0.8), vec3(0.62, 0.6, 0.58), vD.y);
+          }
+          gl_FragColor = vec4(col, a); }`,
     });
     const pts = new THREE.Points(this.geo, mat);
     pts.frustumCulled = false;
@@ -116,6 +125,64 @@ export class VehicleFx {
     this.emit(x, y, z, (Math.random() - 0.5) * 0.3, 0.8 + Math.random() * 0.6, (Math.random() - 0.5) * 0.3, 2.2 + Math.random(), 0.35, 1.8, 1);
   }
 
+  /**
+   * A wreck burning in the road: a column of flame off the engine bay and grey
+   * smoke leaning off it, both buoyant, and both big enough to read from the
+   * far side of a junction. This is the visual half of the hazard — the damage
+   * is applied elsewhere, but if a burning car looks like nothing, players won't
+   * treat it as cover with a cost.
+   */
+  wreckFire(x: number, y: number, z: number, left: number, near: boolean, dt: number) {
+    // rate-limited by the caller: without dt this would emit every frame
+    if (Math.random() > dt * 26) return;
+    const j = 0.5;
+    // flame licks, hotter and shorter-lived, out of the engine bay
+    this.emit(
+      x + (Math.random() - 0.5) * j, y + 0.35, z + (Math.random() - 0.5) * j,
+      (Math.random() - 0.5) * 0.8, 1.6 + Math.random() * 1.6, (Math.random() - 0.5) * 0.8,
+      0.22 + Math.random() * 0.26, 0.34 + Math.random() * 0.28, 1.9, 2,
+    );
+    // smoke is slower, longer-lived, and only worth drawing when it's near
+    if (near && Math.random() < 0.5) {
+      this.emit(
+        x + (Math.random() - 0.5) * 0.7, y + 0.6, z + (Math.random() - 0.5) * 0.7,
+        (Math.random() - 0.5) * 0.5, 1.5 + Math.random() * 1.1, (Math.random() - 0.5) * 0.5,
+        0.9 + Math.random() * 0.8, 0.5 + Math.random() * 0.4, 2.6, 1,
+      );
+    }
+  }
+
+  /**
+   * The boost: a flame and hot gas out of the exhaust, and grit off the back
+   * tyres while it's pushing. This is the visible half of the boost — without
+   * it the key reads as the car just being slightly quicker.
+   */
+  boost(x: number, y: number, z: number, yaw: number, speed: number, amount: number, dt: number, near: boolean) {
+    if (!near || amount < 0.15) return;
+    // back along the car's own axis, so the flame comes out of the pipe
+    const bx = -Math.sin(yaw), bz = -Math.cos(yaw);
+    const n = Math.min(4, Math.floor(amount * 26 * dt + Math.random() * 1.4));
+    for (let i = 0; i < n; i++) {
+      const j = 0.6 + Math.random() * 1.4;
+      this.emit(
+        x + bx * j,
+        y + (Math.random() - 0.5) * 0.1,
+        z + bz * j,
+        bx * (5 + Math.random() * 9) * amount,
+        0.3 + Math.random() * 1.1,
+        bz * (5 + Math.random() * 9) * amount,
+        0.18 + Math.random() * 0.22,
+        0.3 + Math.random() * 0.3,
+        1.4,
+        2,
+      );
+    }
+    // and the driven wheels light up and shed smoke
+    if (speed > 4 && Math.random() < dt * 20 * amount) {
+      this.emit(x - Math.cos(yaw) * 0.8, y + 0.1, z + Math.sin(yaw) * 0.8, (Math.random() - 0.5) * 2, 0.6 + Math.random(), (Math.random() - 0.5) * 2, 0.7 + Math.random() * 0.5, 0.4, 2.2, 1);
+    }
+  }
+
   update(dt: number, cam: THREE.PerspectiveCamera, height: number) {
     (this.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
     const mat = (this.group.children[0] as THREE.Points).material as THREE.ShaderMaterial;
@@ -142,7 +209,8 @@ export class VehicleFx {
       this.pos[i * 3 + 1] = p.y;
       this.pos[i * 3 + 2] = p.z;
       this.data[i * 3] = p.size;
-      this.data[i * 3 + 1] = (p.kind ? 0.3 : 0.12) * Math.min(1, k * 2) * Math.min(1, (1 - k) * 6);
+      // a flame is brighter than smoke and dies faster
+      this.data[i * 3 + 1] = (p.kind === 2 ? 0.95 : p.kind ? 0.3 : 0.12) * Math.min(1, k * 2) * Math.min(1, (1 - k) * 6);
       this.data[i * 3 + 2] = p.kind;
     }
     (this.geo.attributes.pdata as THREE.BufferAttribute).needsUpdate = true;

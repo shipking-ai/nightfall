@@ -226,8 +226,31 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .hud__health.is-on { opacity: 1; }
 .hud__health i { display: block; height: 100%; background: #d9cdb2; transition: width 250ms; }
 .hud__health.is-low i { background: #c2412f; }
+
+/* the boost reservoir: under the health bar, only in a car that has one */
+.hud__boost { position: absolute; left: var(--gutter); bottom: 22px; width: min(220px, 40vw); height: 4px;
+  background: rgba(0,0,0,.45); border: 1px solid rgba(240,232,214,.2); opacity: 0; transition: opacity 240ms; }
+.hud__boost.is-on { opacity: 1; }
+.hud__boost i { display: block; height: 100%; transform-origin: left center; background: #7fb2d8; transition: transform 90ms linear; }
+.hud__boost.is-burning i { background: #e6b25c; box-shadow: 0 0 8px rgba(230,178,92,.8); }
+
+/* the bank robbery: the wheel, then the run */
+.hud__rob { position: absolute; left: 50%; top: 74px; transform: translateX(-50%); width: min(360px, 62vw);
+  display: flex; flex-direction: column; align-items: center; gap: 6px; opacity: 0; transition: opacity 300ms; }
+.hud__rob.is-on { opacity: 1; }
+.hud__rob-label { font-family: var(--f-meta); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--paper); text-shadow: 0 1px 8px rgba(0,0,0,.9); }
+.hud__rob-track { width: 100%; height: 4px; background: rgba(0,0,0,.5); border: 1px solid rgba(240,232,214,.22); }
+.hud__rob-track i { display: block; height: 100%; transform-origin: left center; background: #c9a25c; transition: transform 90ms linear; }
+.hud__rob.is-running .hud__rob-track i { background: #c2412f; }
+.hud__rob.is-running .hud__rob-label { color: #e6a08c; }
 .hud__stars { position: absolute; left: 50%; top: 26px; transform: translateX(-50%); display: flex; gap: 6px; font-size: 20px; opacity: 0; transition: opacity 400ms; }
 .hud__stars.is-on { opacity: 1; }
+/* six and up: the police have stopped being the answer */
+.hud__stars.is-military { gap: 4px; }
+.hud__stars.is-military span { color: #c2412f; text-shadow: 0 0 10px rgba(194,65,47,.9); }
+.hud__stars.is-military span.on { animation: starpulse 1.6s ease-in-out infinite; }
+@keyframes starpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 .hud__stars span { color: rgba(240,232,214,.22); text-shadow: 0 1px 6px rgba(0,0,0,.8); }
 .hud__stars span.on { color: #f0c46a; }
 .hud__stars.is-hot span.on { animation: starflash .6s steps(2) infinite; }

@@ -258,6 +258,9 @@ const _s = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _e = new THREE.Euler();
 const _v = new THREE.Vector3();
+/** scratch position for composed transforms (seatedRoot), kept apart from _v
+ *  so it can be called from inside a solve without clobbering it */
+const _sv = new THREE.Vector3();
 const _one = new THREE.Vector3(1, 1, 1);
 const _sc = new THREE.Vector3();
 const _qTilt = new THREE.Quaternion();
@@ -330,13 +333,12 @@ export function basePose(p: Pose, b: Body, o: Outfit, m: Motion, t: number, root
       Rf += 0.1 * air - 0.25 * Math.sin(m.phase) * (1 - sit);
       Rk += 0.35 * air;
     }
-    const sitF = 1.5, sitK = 1.45;
     const ks = sit / Math.max(1e-3, off);
-    Lf = Lf * (1 - ks) + sitF * ks;
-    Lk = Lk * (1 - ks) + sitK * ks;
-    Rf = Rf * (1 - ks) + sitF * ks;
-    Rk = Rk * (1 - ks) + sitK * ks;
-    const special = [Lf, 0.02, toe, Lk, 0, Rf, 0.02, toe, Rk, 0, -0.08 * sit, 0, 0, 0, 0];
+    Lf = Lf * (1 - ks) + SIT_F * ks;
+    Lk = Lk * (1 - ks) + SIT_K * ks;
+    Rf = Rf * (1 - ks) + SIT_F * ks;
+    Rk = Rk * (1 - ks) + SIT_K * ks;
+    const special = [Lf, SIT_AB, toe, Lk, 0, Rf, SIT_AB, toe, Rk, 0, SIT_PEL_Y * sit, 0, 0, 0, 0];
     for (let i = 0; i < legs.length; i++) p[legs[i]] = _save[legs[i]] * (1 - off) + special[i] * off;
   }
 
@@ -539,6 +541,44 @@ export function stepBlink(m: Motion, dt: number) {
 /* ─────────────────────────── 3. pose → matrices ─────────────────────────── */
 
 const legH = (f: number, k: number, ab: number, th: number, sh: number) => 0.02 + (th * Math.cos(f) + sh * Math.cos(f - k)) * Math.cos(ab) + ANKLE;
+
+/**
+ * Sitting: the thigh and knee angles and the pelvis drop the sit pose uses
+ * (basePose, below). Kept here so the seat height and the root that places
+ * someone in a seat are derived from the same numbers rather than guessed.
+ */
+const SIT_F = 1.5, SIT_K = 1.45, SIT_AB = 0.02, SIT_PEL_Y = -0.08;
+
+/**
+ * How far the hips sit above the rig origin (the origin is the FEET) in the
+ * full sit pose, in rig units before body scale. A vehicle spec stores the
+ * driver's seat as the HIP point, so a root placed straight on the seat puts
+ * the figure's feet on the cushion and their head through the roof.
+ */
+export function sitPelvisY(b: Body): number {
+  const legLen = b.legLen ?? 1;
+  const h = legH(SIT_F, SIT_K, SIT_AB, THIGH * legLen, SHIN * legLen);
+  return h + SIT_PEL_Y;
+}
+
+/**
+ * The root matrix for someone sat in a vehicle: hips on the seat cushion, not
+ * feet on it. `car` is the car's body (sprung) transform; `cushion` is how far
+ * the squab's top surface sits above the seat datum, in metres.
+ */
+export function seatedRoot(
+  out: THREE.Matrix4,
+  car: THREE.Matrix4,
+  seat: { x: number; y: number; z: number },
+  b: Body,
+  cushion = 0.08,
+): THREE.Matrix4 {
+  const k = b.height;
+  _sv.set(seat.x, seat.y + cushion - sitPelvisY(b) * k, seat.z);
+  _q.identity();
+  _m.compose(_sv, _q, _one.setScalar(k));
+  return out.multiplyMatrices(car, _m);
+}
 
 export function buildRig(out: Rig, root: THREE.Matrix4, b: Body, o: Outfit, p: Pose) {
   const legLen = b.legLen ?? 1, armLen = b.armLen ?? 1, torsoLen = b.torsoLen ?? 1;

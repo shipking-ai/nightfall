@@ -64,7 +64,7 @@ export interface RpgHost {
   /** fade to black and back (sleeping, searching, travelling, loading) */
   curtain: (on: boolean) => Promise<void>;
   inVehicle: () => boolean;
-  /** something hurt you (an animal, the cold) */
+  /** something hurt you (an animal, the cold, a car) */
   hurt: (dmg: number, by: string) => void;
   rumble?: (k: number) => void;
   /** put you in the driver's seat of this car */
@@ -111,6 +111,7 @@ export class Rpg {
   private lastPlaceKey = '';
   private cityLamps: Lamp[] = [];
   private tmp = new THREE.Vector3();
+  private tmp2 = new THREE.Vector3();
   /** you, as the RPG draws you */
   private hero: RealHuman | null = null;
   /** a new look being built (it replaces the old one once it's ready) */
@@ -278,6 +279,12 @@ export class Rpg {
     h.vehicles.dark = this.atmos.daylight < 0.45 || now.fog > 0.4;
     this.traffic.night = 1 - this.atmos.daylight;
     this.traffic.update(dt, p);
+    // A car on the roads can hit you, and it takes people with it. Traffic
+    // still slows for anyone in the road, so this catches the ones that didn't
+    // stop in time — and the ones whose driver didn't bother.
+    // who is on the roads right now, so traffic brakes for people in them
+    this.traffic.strikable = this.populace.onFoot;
+    if (!h.player.seat && !h.player.swimming) this.traffic.strikes(h.player.pos, (sp, vx, vz, speed) => this.struck(sp, vx, vz, speed));
     if (!inD03(p.x, p.z)) {
       this.wildlife.update(dt, this.place.biome, h.camera);
       this.cover.update(p, terrainUniforms.uSnowCover.value);
@@ -454,6 +461,16 @@ export class Rpg {
     return car;
   }
 
+  /** staff: every car out here gets an endless boost too */
+  setInfiniteBoost(on: boolean) {
+    this.boostInf = on;
+    for (const car of this.parked.values()) {
+      car.dyn.boostInfinite = on;
+      car.dyn.boostable = on || (car.spec.voice.turbo >= 0.2 && car.spec.mech.mass <= 3600 && !car.spec.mech.bike);
+    }
+  }
+  private boostInf = false;
+
   /** Pull the driver out of a stopped car and take it. */
   carjack(p: THREE.Vector3): DrivableCar | null {
     const got = this.traffic.take(p);
@@ -510,6 +527,30 @@ export class Rpg {
   extraLamps: Lamp[] = [];
   refreshLamps() {
     this.host.lighting.setExtraLamps(this.cityLamps.concat(this.extraLamps));
+  }
+
+  /**
+ * A car on the roads has hit you. The same machine that kills a pedestrian in
+ * one frame could not touch you before: traffic simply braked for anyone in the
+ * road. This is what being hit by a car does.
+ */
+  struck(carPos: THREE.Vector3, vx: number, vz: number, speed: number) {
+    const h = this.host;
+    if (h.player.seat) return;
+    const p = h.player.pos;
+    const dmg = speed * 5.5 + 12;
+    const speed2 = Math.max(1e-3, Math.hypot(vx, vz));
+    const shove = 3 + speed * 0.35;
+    h.player.vel.x += (-vx / speed2) * shove;
+    h.player.vel.z += (-vz / speed2) * shove;
+    h.player.vel.y = Math.min(h.player.vel.y + 2.4, 5);
+    h.player.grounded = false;
+    h.follow.shake(0.8);
+    // blood where it caught you, and anyone watching gets a fright
+    // hurt() already sprays blood, draws the HUD flash and can kill you
+    h.hurt(dmg, 'a car');
+    this.hud.toast('Run down by a car.', 'bad');
+    this.populace.scatter(carPos, 26);
   }
 
   /** A shot or a punch through the wider world: the nearest animal it would hit, and what hitting it does. */

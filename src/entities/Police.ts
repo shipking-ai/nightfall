@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { SPECS } from '../vehicles/specs';
 import { buildVehicle, setLights, type VehicleModel } from '../vehicles/model';
+import type { VehicleSpec } from '../vehicles/specs';
+import { Dynamics } from '../vehicles/dynamics';
+import type { Collision } from '../world/Collision';
 import type { Materials } from '../world/materials';
 
 /**
@@ -11,8 +14,10 @@ import type { Materials } from '../world/materials';
  * Three stars: a helicopter comes over the rooftops, circles, and holds you in
  * its searchlight. Four and up: someone in it has a rifle.
  *
- * The searchlight is a real SpotLight that is always in the scene (dark when
- * unused), so the shader light count never changes.
+ * The searchlights are real SpotLights that are always in the scene (dark when
+ * unused), so the shader light count never changes. There are two of them from
+ * the start, for the same reason: a second helicopter must not change the count
+ * either.
  */
 export interface PoliceHooks {
   /** officers out of a car at `at` */
@@ -21,6 +26,12 @@ export interface PoliceHooks {
   shoot(from: THREE.Vector3, hit: boolean): void;
   /** it came down */
   downed(at: THREE.Vector3): void;
+  /** whether the player is currently driving (so cruisers should pursue, not park) */
+  playerDriving: boolean;
+  /** a line the player should hear (the military announcing themselves) */
+  say(line: string): void;
+  /** a cruiser was destroyed and is burning where it stopped */
+  wrecked(at: THREE.Vector3, mil: boolean): void;
 }
 
 /* ─────────────────────────── helicopter ─────────────────────────── */
@@ -38,13 +49,18 @@ class Heli {
   heading = 0;
   orbit = Math.random() * Math.PI * 2;
   present = false;
+  /** military variant: darker, shorter-ranged orbit, and it does not hold you */
+  mil: boolean;
   hp = 260;
   falling = -1;
   fireT = 3;
+  /** seconds this one must sit out before it can be sent again */
+  cool = 0;
   private aim = new THREE.Vector3();
 
-  constructor(mats: Materials) {
-    const navy = new THREE.MeshStandardMaterial({ color: 0x1b2334, roughness: 0.45, metalness: 0.4 });
+  constructor(mats: Materials, mil = false) {
+    this.mil = mil;
+    const navy = new THREE.MeshStandardMaterial({ color: mil ? 0x2b3324 : 0x1b2334, roughness: 0.45, metalness: 0.4 });
     const white = new THREE.MeshStandardMaterial({ color: 0xb9bcc0, roughness: 0.5, metalness: 0.3 });
     const body = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12).scale(1.15, 1.05, 2.3), navy);
     const stripe = new THREE.Mesh(new THREE.SphereGeometry(1.01, 16, 4, 0, Math.PI * 2, Math.PI * 0.46, Math.PI * 0.08).scale(1.15, 1.05, 2.3), white);
@@ -89,8 +105,14 @@ class Heli {
         this.hp = 260;
         this.group.visible = true;
       }
-      this.orbit += dt * 0.22;
-      home.set(target.x + Math.sin(this.orbit) * 24, target.y + 36, target.z + Math.cos(this.orbit) * 24);
+      this.orbit += dt * (this.mil ? -0.24 : 0.16);
+      // further out and higher: it was close enough and low enough to be a
+      // gun you couldn't look away from. The military one orbits tighter and
+      // opposite, so two of them cross the street instead of stacking.
+      const r = this.mil ? 30 : 42;
+      const h = this.mil ? 34 : 52;
+      const spd = this.mil ? -0.24 : 0.16;
+      home.set(target.x + Math.sin(this.orbit) * r, target.y + h, target.z + Math.cos(this.orbit) * r);
     } else if (this.present) {
       home.set(this.pos.x + Math.sin(this.heading) * 400, 90, this.pos.z + Math.cos(this.heading) * 400);
       if (!target || this.pos.distanceTo(target) > 320) {
@@ -112,11 +134,11 @@ class Heli {
     const on = Math.floor(t * 3) % 2;
     this.strobes[0].color.setHex(on ? 0xff2a1a : 0x220000);
     this.strobes[1].color.setHex(on ? 0x001022 : 0x2a5cff);
-    // the searchlight lags behind you a little
+    // the searchlight lags behind you, and sweeps rather than sticking
     if (target && want) {
-      this.aim.lerp(target, Math.min(1, dt * 1.6));
-      this.light.intensity = 140;
-      this.beamMat.opacity = 0.07;
+      this.aim.lerp(target, Math.min(1, dt * 1.1));
+      this.light.intensity = 90;
+      this.beamMat.opacity = 0.05;
     } else {
       this.light.intensity = 0;
       this.beamMat.opacity = 0;
@@ -161,9 +183,20 @@ interface Cruiser {
   pos: THREE.Vector3;
   yaw: number;
   v: number;
-  state: 'off' | 'coming' | 'parked' | 'leaving';
+  state: 'off' | 'coming' | 'parked' | 'leaving' | 'chasing' | 'wreck';
   stopAt: THREE.Vector3;
   t: number;
+  /** the dynamics, when this cruiser is actually driving (a chase) */
+  dyn: Dynamics | null;
+  /** military, not police: heavier, faster, armed, and does not give up */
+  mil: boolean;
+  /** health, and how long it burns for after that runs out */
+  hp: number;
+  burn: number;
+  /** seconds until this one fires its weapon */
+  turretCd: number;
+  /** seconds left of the approach warning */
+  beacon: number;
 }
 
 /** The streets a cruiser can come down (avenue, and the three cross streets that run on forever). */
@@ -174,27 +207,68 @@ function roadFor(p: THREE.Vector3): { axis: 'x' | 'z'; at: number } {
   return { axis: 'x', at: z + (p.z > z ? 3.2 : -3.2) };
 }
 
+/** the military's paint, and their hardware. Light enough to tell from the
+ * police at a glance, which matters more than looking military: olive-dark on a
+ * black car in the rain is just another patrol car. */
+const MIL_PAINT = 0x6d7355;
+const MIL_MAT = new THREE.MeshStandardMaterial({ color: 0x2b3122, roughness: 0.6, metalness: 0.55 });
+/** armour is armour: it takes roughly what the helicopter takes, and a patrol car
+ * takes a little less */
+const CRUISER_HP = 240;
+const CRUISER_HP_MIL = 300;
+
 export class Police {
   group = new THREE.Group();
+  /** the police helicopter, and (past seven stars) a military one alongside it */
   heli: Heli;
+  milHeli: Heli;
   cars: Cruiser[] = [];
-  private heliCool = 0;
 
   constructor(mats: Materials, private hooks: PoliceHooks) {
-    this.heli = new Heli(mats);
+    this.heli = new Heli(mats, false);
+    this.milHeli = new Heli(mats, true);
     this.group.add(this.heli.group, this.heli.light, this.heli.light.target, this.heli.beam);
+    this.group.add(this.milHeli.group, this.milHeli.light, this.milHeli.light.target, this.milHeli.beam);
     const paint = new THREE.MeshStandardMaterial({ color: 0x151a24, roughness: 0.35, metalness: 0.5 });
     const door = new THREE.MeshStandardMaterial({ color: 0xd7d9dc, roughness: 0.4, metalness: 0.3 });
-    for (let i = 0; i < 2; i++) {
-      const g = new THREE.Group();
-      // the same patrol car you could drive (vehicles/model.ts), beacons on the roof
-      const model = buildVehicle(SPECS.police, SPECS.police.paints[0]);
-      g.add(model.root);
-      const bar: THREE.MeshBasicMaterial[] = [];
-      g.visible = false;
-      this.group.add(g);
-      this.cars.push({ group: g, bar, model, pos: new THREE.Vector3(), yaw: 0, v: 0, state: 'off', stopAt: new THREE.Vector3(), t: 0 });
+    for (let i = 0; i < 2; i++) this.addCruiser(SPECS.police, SPECS.police.paints[0], false);
+    // The military do not turn up in a recoloured patrol car: they bring their
+    // own hull, their own drivetrain and their own hitbox, because the whole
+    // point of them arriving is that the thing in the mirror is not a cruiser.
+    for (let i = 0; i < 2; i++) this.addCruiser(SPECS.armoured, MIL_PAINT, true);
+  }
+
+  private addCruiser(spec: VehicleSpec, paint: number, mil: boolean) {
+    const g = new THREE.Group();
+    const model = buildVehicle(spec, paint);
+    g.add(model.root);
+    if (mil) {
+      // The tells, front to back: a gun mount on the roof, a pale band round
+      // the body, and a marker light. Without all three you cannot tell one
+      // from a cruiser at night, and a pursuit you can't read isn't a pursuit.
+      const turret = new THREE.Group();
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.56, 0.18, 12), MIL_MAT);
+      ring.position.y = 1.62;
+      turret.add(ring);
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.5, 7), MIL_MAT);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(0, 1.76, 0.62);
+      turret.add(barrel);
+      g.add(turret);
+      const band = new THREE.Mesh(new THREE.BoxGeometry(1.98, 0.16, 0.06), MIL_MAT);
+      band.position.set(0, 0.62, 2.46);
+      g.add(band);
+      const band2 = band.clone();
+      band2.position.z = -2.46;
+      g.add(band2);
+      const mark = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffb020 }));
+      mark.position.set(0, 1.78, -0.3);
+      g.add(mark);
     }
+    const bar: THREE.MeshBasicMaterial[] = [];
+    g.visible = false;
+    this.group.add(g);
+    this.cars.push({ group: g, bar, model, pos: new THREE.Vector3(), yaw: 0, v: 0, state: 'off', stopAt: new THREE.Vector3(), t: 0, dyn: null, mil, hp: mil ? CRUISER_HP_MIL : CRUISER_HP, burn: 0, turretCd: 0, beacon: 0 });
   }
 
   /** Solid circles for the player (cars that are out). */
@@ -205,19 +279,118 @@ export class Police {
     }
   }
 
-  /** Did a shot along this ray hit the helicopter first? */
-  heliHit(o: THREE.Vector3, dir: THREE.Vector3, max: number): number | null {
-    const h = this.heli;
-    if (!h.present || h.falling >= 0) return null;
-    const c = h.pos.clone().sub(o);
-    const tc = c.dot(dir);
-    if (tc < 0 || tc > max + 3) return null;
-    const d2 = c.lengthSq() - tc * tc;
-    return d2 < 2.4 * 2.4 ? tc - Math.sqrt(2.4 * 2.4 - d2) : null;
+  /**
+   * Wrecks burn down and then are cold metal, and then they're gone. Until the
+   * fire is out they're a hazard: standing next to one hurts.
+   */
+  private tickWrecks(dt: number) {
+    for (const c of this.cars) {
+      if (c.state !== 'wreck') continue;
+      c.burn -= dt;
+      c.model.body.position.y = -0.06;
+      c.model.body.rotation.z = 0.05;
+      if (c.burn <= 0) {
+        c.state = 'off';
+        c.group.visible = false;
+        c.hp = c.mil ? CRUISER_HP_MIL : CRUISER_HP;
+        c.burn = 0;
+        c.model.body.position.y = 0;
+        c.model.body.rotation.z = 0;
+      }
+    }
   }
 
-  damageHeli(dmg: number) {
-    const h = this.heli;
+  /** How close is the player to a burning wreck? (0 = none) */
+  wreckHeat(at: THREE.Vector3, r = 6): number {
+    let hottest = 0;
+    for (const c of this.cars) {
+      if (c.state !== 'wreck' || c.burn <= 0) continue;
+      const d = Math.hypot(c.pos.x - at.x, c.pos.z - at.z);
+      hottest = Math.max(hottest, Math.max(0, 1 - d / r));
+    }
+    return hottest;
+  }
+
+  /** Every wreck still burning, for effects. */
+  burningWrecks() {
+    const out: { x: number; y: number; z: number; left: number }[] = [];
+    for (const c of this.cars) if (c.state === 'wreck' && c.burn > 0) out.push({ x: c.pos.x, y: c.pos.y, z: c.pos.z, left: c.burn });
+    return out;
+  }
+
+  /** Did a shot along this ray hit a helicopter first? Returns which one. */
+  heliHit(o: THREE.Vector3, dir: THREE.Vector3, max: number): { t: number; heli: Heli } | null {
+    let best: { t: number; heli: Heli } | null = null;
+    for (const h of [this.heli, this.milHeli]) {
+      if (!h.present || h.falling >= 0) continue;
+      const c = h.pos.clone().sub(o);
+      const tc = c.dot(dir);
+      if (tc < 0 || tc > max + 3) continue;
+      const d2 = c.lengthSq() - tc * tc;
+      if (d2 < 2.4 * 2.4) {
+        const t = tc - Math.sqrt(2.4 * 2.4 - d2);
+        if (!best || t < best.t) best = { t, heli: h };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * The nearest live cruiser along this ray. Boxes rather than spheres, because
+   * a patrol car is 4.9 m long and treating it as a ball means you have to hit
+   * it dead-centre to hurt it, which feels like the game is cheating.
+   */
+  cruiserHit(o: THREE.Vector3, dir: THREE.Vector3, max: number): { t: number; car: Cruiser } | null {
+    let best: { t: number; car: Cruiser } | null = null;
+    for (const c of this.cars) {
+      if (c.state === 'off' || c.burn > 0) continue;
+      // into the car's own frame, where it is a box
+      const rx = o.x - c.pos.x, rz = o.z - c.pos.z;
+      const s = Math.sin(-c.yaw), co = Math.cos(-c.yaw);
+      const lx = rx * co - rz * s;
+      const lz = rx * s + rz * co;
+      const dy = o.y - (c.pos.y + 0.85);
+      const dx = dir.x * co - dir.z * s;
+      const dz = dir.x * s + dir.z * co;
+      // slab test, half-extents taken from the class itself so an armoured car
+      // is the bigger box it actually is
+      const sh = c.mil ? SPECS.armoured.shape : SPECS.police.shape;
+      const hx = sh.width / 2 + 0.11, hy = sh.height / 2 + 0.15, hz = sh.length / 2 + 0.15;
+      let t0 = 0, t1 = max;
+      let ok = true;
+      for (const [p, d, h2] of [[lx, dx, hx], [dy, dir.y, hy], [lz, dz, hz]] as const) {
+        if (Math.abs(d) < 1e-6) {
+          if (p < -h2 || p > h2) { ok = false; break; }
+          continue;
+        }
+        const inv = 1 / d;
+        let a = (-h2 - p) * inv, b = (h2 - p) * inv;
+        if (a > b) { const t = a; a = b; b = t; }
+        if (a > t0) t0 = a;
+        if (b < t1) t1 = b;
+        if (t0 > t1) { ok = false; break; }
+      }
+      if (ok && t0 >= 0 && (!best || t0 < best.t)) best = { t: t0, car: c };
+    }
+    return best;
+  }
+
+  /** Damage a cruiser. Killing it stops it driving and leaves a burning wreck. */
+  damageCruiser(c: Cruiser, dmg: number) {
+    if (c.state === 'off' || c.burn > 0) return;
+    c.hp -= dmg;
+    if (c.hp > 0) return;
+    // out of the fight: it stops where it is, and stays there as cover or hazard
+    c.burn = 9;
+    c.state = 'wreck';
+    c.dyn = null;
+    c.v = 0;
+    this.hooks.wrecked(c.pos.clone(), c.mil);
+  }
+
+  /** Damage a specific helicopter. Killing it sends it down and starts its cooldown. */
+  damageHeli(h: Heli, dmg: number) {
+    if (!h.present || h.falling >= 0) return;
     h.hp -= dmg;
     if (h.hp <= 0 && h.falling < 0) {
       h.falling = 0;
@@ -226,41 +399,83 @@ export class Police {
   }
 
   get active() {
-    return this.heli.present || this.cars.some((c) => c.state !== 'off');
+    return this.heli.present || this.milHeli.present || this.cars.some((c) => c.state !== 'off');
   }
 
-  update(dt: number, t: number, player: THREE.Vector3 | null, stars: number, indoors: boolean, camFwd: THREE.Vector3) {
-    // the helicopter
-    const wasFalling = this.heli.falling >= 0;
-    this.heliCool -= dt;
-    const heliWanted = !!player && stars >= 3 && !indoors && this.heliCool <= 0;
-    this.heli.update(dt, t, player, heliWanted);
-    if (wasFalling && this.heli.falling === -2) {
-      this.hooks.downed(this.heli.pos.clone().setY(0.2));
-      this.heli.falling = -1;
-      this.heliCool = 60;
-    }
-    if (this.heli.present && this.heli.falling < 0 && player && stars >= 4) {
-      this.heli.fireT -= dt;
-      if (this.heli.fireT <= 0) {
-        this.heli.fireT = 1.8 + Math.random() * 1.4;
-        this.hooks.shoot(this.heli.pos.clone().setY(this.heli.pos.y - 2.6), Math.random() < 0.28);
+  update(dt: number, t: number, player: THREE.Vector3 | null, stars: number, indoors: boolean, camFwd: THREE.Vector3, playerSpeed = 0, col: Collision | null = null) {
+    // The helicopters. The police one comes at four stars and opens fire at five;
+    // past seven the military sends its own alongside it.
+    const heliWanted = !!player && !indoors && stars >= 4;
+    const milHeliWanted = !!player && !indoors && stars >= 7;
+    for (const h of [this.heli, this.milHeli]) {
+      h.cool -= dt;
+      const wasFalling = h.falling >= 0;
+      h.update(dt, t, player, heliWanted && h.cool <= 0);
+      if (wasFalling && h.falling === -2) {
+        this.hooks.downed(h.pos.clone().setY(0.2));
+        h.falling = -1;
+        // down high up, they send another one sooner
+        h.cool = stars >= 7 ? 28 : 60;
       }
     }
-    // patrol cars
-    const want = player && !indoors ? (stars >= 4 ? 2 : stars >= 2 ? 1 : 0) : 0;
-    let out = this.cars.filter((c) => c.state === 'coming' || c.state === 'parked').length;
+    // Only at the top of the scale, and much less often, and much less often to
+    // actually land: at three stars it followed you, lit you up and opened fire
+    // every two seconds, which was unsurvivable and left no room to escape it.
+    const wantHeliFire = !!player && stars >= 5;
+    for (const h of [this.heli, this.milHeli]) {
+      if (!h.present || h.falling >= 0 || !wantHeliFire) continue;
+      h.fireT -= dt;
+      if (h.fireT > 0) continue;
+      // The rotor is police at five stars and military at seven: quicker, and
+      // far more willing to actually connect.
+      const mil = h.mil || stars >= 7;
+      h.fireT = mil ? 2.6 + Math.random() * 1.8 : 4.5 + Math.random() * 3.5;
+      this.hooks.shoot(h.pos.clone().setY(h.pos.y - 2.6), Math.random() < (mil ? 0.3 : 0.16));
+    }
+    // Patrol cars. On foot they come down the street and stop, which is right.
+    // Get in a car and they follow you: on foot they arrest you, in a car you can
+    // outrun them, so they get real dynamics and a real pursuit.
+    const chasing = !!player && !indoors && playerSpeed > 6;
+    // Past five stars the police are no longer the whole answer: the military
+    // come as their own vehicles, and they do not sit on the pavement.
+    const mil = stars >= 6;
+    const want = player && !indoors ? (chasing ? (stars >= 3 ? 2 : 1) : stars >= 4 ? 2 : stars >= 2 ? 1 : 0) : 0;
+    // the military only ever move when you're in the world and being looked for
+    const wantMil = player && !indoors && mil ? (chasing ? 2 : 1) : 0;
+    if (this.hooks.playerDriving !== chasing) {
+      this.hooks.playerDriving = chasing;
+      // stand down out of a chase, or back off the road for it
+      if (chasing) for (const c of this.cars) if (c.state === 'parked' || c.state === 'coming') this.beginChase(c);
+    }
+    const busy = (c: Cruiser) => c.state === 'coming' || c.state === 'parked' || c.state === 'chasing';
+    this.tickWrecks(dt);
+    let out = this.cars.filter((c) => !c.mil && busy(c)).length;
+    let outMil = this.cars.filter((c) => c.mil && busy(c)).length;
     for (const c of this.cars) {
+      if (c.state === 'wreck') continue;
       setLights(c.model, { head: 1, brake: c.v < 1 && c.state !== 'off', reverse: false, indicator: 0, hazard: false, beacons: true, running: true }, t + (c === this.cars[0] ? 0 : 0.13), { head: false, tail: false });
       for (const w of c.model.wheels) w.spin.rotation.x += (c.v * dt) / w.r;
       if (c.state === 'off') {
-        if (player && out < want) {
+        // each tier has its own allowance, so the police don't take the slots
+        // the military are meant to be filling
+        const cap = c.mil ? wantMil : want;
+        const used = c.mil ? outMil : out;
+        if (player && used < cap) {
           this.dispatch(c, player, camFwd);
-          out++;
+          if (chasing || c.mil) this.beginChase(c);
+          if (c.mil) outMil++;
+          else out++;
         }
         continue;
       }
-      if (want === 0 && (c.state === 'coming' || c.state === 'parked')) {
+      if (c.state === 'chasing') {
+        if (player) this.chaseStep(c, dt, player, col);
+        else {
+          c.state = 'leaving';
+          c.t = 0;
+        }
+      }
+      if ((c.mil ? wantMil : want) === 0 && (c.state === 'coming' || c.state === 'parked')) {
         c.state = 'leaving';
         c.t = 0;
       }
@@ -281,12 +496,92 @@ export class Police {
         if (player && c.pos.distanceTo(player) > 90) {
           c.state = 'off';
           c.group.visible = false;
+          c.dyn = null;
         }
       }
-      c.pos.x += Math.sin(c.yaw) * c.v * dt;
-      c.pos.z += Math.cos(c.yaw) * c.v * dt;
-      c.group.position.copy(c.pos);
-      c.group.rotation.y = c.yaw;
+      // A chasing car has already been moved by its own dynamics.
+      if (c.state !== 'chasing') {
+        c.pos.x += Math.sin(c.yaw) * c.v * dt;
+        c.pos.z += Math.cos(c.yaw) * c.v * dt;
+        c.group.position.copy(c.pos);
+        c.group.rotation.y = c.yaw;
+      } else {
+        c.group.position.set(c.dyn!.x, c.dyn!.y, c.dyn!.z);
+        c.group.rotation.set(c.dyn!.pitch, c.dyn!.yaw, c.dyn!.roll, 'YXZ');
+        // the body rides the springs, so lean it with them
+        c.model.body.position.y = c.dyn!.heave;
+        c.model.body.rotation.x = c.dyn!.pitch;
+        c.model.body.rotation.z = c.dyn!.roll;
+        for (const w of c.model.wheels) w.steer.rotation.y = w.front ? c.dyn!.steerOut : 0;
+      }
+    }
+  }
+
+  /**
+   * Put a cruiser into pursuit: give it real dynamics so it drives the way the
+   * car you stole does, rather than sliding down a straight line.
+   */
+  private beginChase(c: Cruiser) {
+    const spec = c.mil ? SPECS.armoured : SPECS.police;
+    // the military run their own spec: 4.2 tonnes, a low-range diesel and far
+    // more grip than a patrol car, so they close a gap a cruiser cannot
+    if (!c.dyn) c.dyn = new Dynamics(spec.mech);
+    // wherever it is now, and whatever way it was going
+    c.dyn.place(c.pos.x, c.pos.y, c.pos.z, c.yaw);
+    c.state = 'chasing';
+  }
+
+  /**
+   * One frame of pursuit: steer toward you, throttle for the gap, and ease off
+   * as it closes so it doesn't drive through the back of your car.
+   */
+  private chaseStep(c: Cruiser, dt: number, player: THREE.Vector3, col: Collision | null) {
+    const d = c.dyn!;
+    const dx = player.x - c.pos.x, dz = player.z - c.pos.z;
+    const dist = Math.hypot(dx, dz) || 1;
+    // Military vehicles are faster and heavier than patrol cars, and they do not
+    // ease off the way a cruiser does.
+    if (c.mil) {
+      c.turretCd -= dt;
+      c.beacon -= dt;
+      if (dist < 46 && c.turretCd <= 0) {
+        c.turretCd = 1.1 + Math.random() * 0.9;
+        this.hooks.shoot(c.pos.clone().setY(c.pos.y + 1.5), Math.random() < 0.34);
+      }
+      if (dist > 90 && c.beacon <= 0) {
+        this.hooks.say('Military, closing from the ring road.');
+        c.beacon = 0.35;
+      }
+    }
+    // aim: straight at you, but damped so it doesn't flick about at speed
+    const want = Math.atan2(dx, dz);
+    let err = want - c.yaw;
+    while (err > Math.PI) err -= Math.PI * 2;
+    while (err < -Math.PI) err += Math.PI * 2;
+    const steer = Math.max(-1, Math.min(1, -err * 1.5));
+    // keep a following distance: it wants to be on your bumper, not in you
+    // The military hold further back, because they shoot from there instead.
+    const gap = c.mil ? 24 : 7;
+    const near = dist < gap;
+    const throttle = near ? 0 : Math.min(1, 0.45 + dist / (c.mil ? 40 : 26));
+    const world = {
+      ground: (x: number, z: number) => (col ? col.groundAt(x, z, c.pos.y + 0.8, 1, 0.9) : 0),
+      surface: () => ({ grip: 1.15, rough: 0 }),
+      wet: 0,
+    };
+    d.step(dt, { throttle, brake: near && dist < gap * 0.62 ? 0.4 : 0, steer, handbrake: false, boost: dist > (c.mil ? 46 : 30) }, world);
+    c.pos.set(d.x, d.y, d.z);
+    c.yaw = d.yaw;
+    c.v = d.forward;
+    // it shouldn't drive through walls
+    if (col) col.resolve(c.pos, 1.1, 1.5, 0.4);
+    d.x = c.pos.x;
+    d.z = c.pos.z;
+    // lost you: give up after a while so they don't follow forever
+    if (dist > 150) {
+      c.state = 'leaving';
+      c.t = 0;
+      c.dyn = null;
     }
   }
 
@@ -310,6 +605,11 @@ export class Police {
     c.v = 17;
     c.state = 'coming';
     c.group.visible = true;
+    // a car that came back from a wreck is a whole car again
+    c.hp = c.mil ? CRUISER_HP_MIL : CRUISER_HP;
+    c.burn = 0;
+    c.model.body.position.y = 0;
+    c.model.body.rotation.z = 0;
   }
 }
 

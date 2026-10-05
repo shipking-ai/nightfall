@@ -22,6 +22,8 @@ export interface EngineIn {
   diesel: boolean;
   inside: boolean;
   damage: number;
+  /** 0..1: the boost, when the car has one */
+  boost?: number;
 }
 
 /** What a shot sounds like: calibre weight 0..1, the character of the report, and whether it's suppressed. */
@@ -41,6 +43,8 @@ export class AudioEngine {
   private reverb!: ConvolverNode;
   private reverbIn!: GainNode;
   private noise!: AudioBuffer;
+  /** the bank alarm, while it is going */
+  private alarmNodes: { o: OscillatorNode; lfo: OscillatorNode; g: GainNode } | null = null;
   private brown!: AudioBuffer;
   private rain!: RainSound;
   private trafficGain!: GainNode;
@@ -515,8 +519,11 @@ export class AudioEngine {
         gritG.gain.setTargetAtTime((0.02 + 0.06 * e.rough + (e.diesel ? 0.05 : 0) + 0.12 * e.damage) * (0.4 + e.load), t, tc);
         whine.frequency.setTargetAtTime(300 + e.speed * 38, t, tc);
         whineG.gain.setTargetAtTime(e.whine * 0.02 * Math.min(1, e.speed / 20), t, tc);
-        turbo.frequency.setTargetAtTime(1800 + r * 4200, t, tc);
-        turboG.gain.setTargetAtTime(e.turbo * 0.012 * e.load * r, t, 0.15);
+        // On boost the turbine spools: the whistle climbs much higher and gets louder,
+        // which is the sound that tells you the boost is doing something.
+        const b = e.boost ?? 0;
+        turbo.frequency.setTargetAtTime(1800 + r * 4200 + b * 2600, t, b > 0.2 ? 0.05 : 0.15);
+        turboG.gain.setTargetAtTime(e.turbo * 0.012 * e.load * r + e.turbo * b * 0.075 * (0.3 + 0.7 * r), t, b > 0.2 ? 0.06 : 0.15);
         tyreF.frequency.setTargetAtTime(900 + e.slip * 700, t, tc);
         tyreG.gain.setTargetAtTime(Math.min(0.5, e.slip * e.slip * 0.5 * Math.min(1, e.speed / 4)), t, 0.05);
         windG.gain.setTargetAtTime(Math.min(0.35, e.speed * e.speed * 0.0003), t, 0.2);
@@ -1043,6 +1050,91 @@ export class AudioEngine {
       o.start(t);
       o.stop(t + 5.2);
     });
+  }
+
+  /** The bank's alarm: a hard two-tone that keeps going, started once. */
+  bankAlarm(on: boolean) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx;
+    if (on && !this.alarmNodes) {
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.2);
+      const o = ctx.createOscillator();
+      o.type = 'square';
+      o.frequency.value = 660;
+      const lfo = ctx.createOscillator();
+      lfo.type = 'square';
+      lfo.frequency.value = 1.6;
+      const lfoG = ctx.createGain();
+      lfoG.gain.value = 190;
+      lfo.connect(lfoG).connect(o.frequency);
+      const f = ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = 1400;
+      o.connect(f).connect(g);
+      g.connect(this.sfx);
+      g.connect(this.reverbIn);
+      o.start();
+      lfo.start();
+      this.alarmNodes = { o, lfo, g };
+    } else if (!on && this.alarmNodes) {
+      const { o, lfo, g } = this.alarmNodes;
+      const t = ctx.currentTime;
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      o.stop(t + 0.35);
+      lfo.stop(t + 0.35);
+      this.alarmNodes = null;
+    }
+  }
+
+  /** The vault wheel: metal turning, called repeatedly while you hold it. */
+  vaultWheel(strength: number) {
+    if (!this.ctx || !this.enabled || Math.random() > 0.12 + strength * 0.2) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.playbackRate.value = 0.5 + Math.random() * 0.3;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = 220 + Math.random() * 260;
+    f.Q.value = 7;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.05 + strength * 0.07, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    src.connect(f).connect(g);
+    g.connect(this.sfx);
+    g.connect(this.reverbIn);
+    src.start(t);
+    src.stop(t + 0.32);
+  }
+
+  /** The vault coming off its hinges, and the money going in a bag. */
+  vaultOpen() {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    // the wheel spinning free, then the door
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.playbackRate.value = 0.35;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(200, t);
+    f.frequency.exponentialRampToValueAtTime(900, t + 1.4);
+    f.Q.value = 3;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.16, t + 0.15);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
+    src.connect(f).connect(g);
+    g.connect(this.sfx);
+    g.connect(this.reverbIn);
+    src.start(t);
+    src.stop(t + 1.9);
+    this.footstep(0.5, true);
   }
 
   /** The loop reset: the whole district's power sags. */

@@ -85,8 +85,30 @@ export class Vehicles {
   /** 0..1, how hard the last impact was (the camera shakes, audio thumps) */
   impact = 0;
   onImpact: ((strength: number) => void) | null = null;
+  /**
+   * A car hit something at a speed, and it was a person. `at` is the contact
+   * point in world space, `square` 0..1 how squarely it caught them.
+   */
+  onStrike: ((car: DrivableCar, x: number, z: number, speed: number, square: number) => void) | null = null;
+  /**
+   * Everyone in the street who can be knocked down: the NPC crowd and anyone
+   * else in the world. Set once at startup.
+   */
+  people: {
+    pos: THREE.Vector3;
+    dead: number;
+    visible: boolean;
+    hurt: (dmg: number, from: THREE.Vector3, force: boolean) => boolean;
+    knockDown: (fromX: number, fromZ: number) => void;
+    /** knocked back by a car, and staggered for a moment */
+    toss: (vx: number, vz: number) => void;
+  }[] = [];
+  /** the frame we last threw anybody, so one impact throws one person */
+  private struckAt = -9;
   /** the road's grip (RPG weather: rain, snow, ice); 1 = dry tarmac */
   grip = 1;
+  /** staff: every car gets an endless boost, turbo or not */
+  infiniteBoost = false;
   private tmp = new THREE.Vector3();
 
   /** the world's shared materials (never freed with a car) */
@@ -130,6 +152,12 @@ export class Vehicles {
     if (streamed) ctx.lamps.splice(ctx.lamps.length - lamps.length, lamps.length);
     const dyn = new Dynamics(vs.mech);
     dyn.place(spec.pos.x, spec.pos.y, spec.pos.z, spec.yaw);
+    // Only a car with a turbo has a boost to spend. The heavy, slow classes
+    // (bus, truck, ambulance) and the naturally aspirated ones never get one,
+    // which is what stops Shift from being a button that does the same thing in
+    // everything.
+    dyn.boostable = this.infiniteBoost || (vs.voice.turbo >= 0.2 && vs.mech.mass <= 3600 && !vs.mech.bike);
+    dyn.boostInfinite = this.infiniteBoost;
     const reach = spec.reach ?? Math.max(0.6, vs.shape.length / 2 - 0.95);
     const car: DrivableCar = {
       group: g, pos: spec.pos.clone(), yaw: spec.yaw, v: 0, steer: 0, van: spec.van, reach, lamps, occupied: false, leaving: false, braking: false, tailMat, screen: spec.screen, color: spec.color, taken: false, streamed, kind: spec.kind, tune: spec.tune,
@@ -185,17 +213,19 @@ export class Vehicles {
   private t = 0;
 
   drive(car: DrivableCar, dt: number, input: Input | null, col: Collision, obstacles: Circle[]) {
-    let throttle = 0, brake = 0, steer = 0, handbrake = false;
+    let throttle = 0, brake = 0, steer = 0, handbrake = false, boost = false;
     if (input && !car.leaving) {
       // analog triggers and stick on a pad; W/S and A/D on a keyboard
       throttle = input.value('throttle');
       brake = input.value('brake');
       steer = -input.steer();
       handbrake = input.held('handbrake');
+      boost = input.held('boost');
     }
     if (car.leaving) {
       throttle = 0;
       brake = 1;
+      boost = false;
       handbrake = Math.abs(car.v) < 3;
     }
     const d = car.dyn;
@@ -211,7 +241,7 @@ export class Vehicles {
       },
       wet: this.wet,
     };
-    d.step(dt, { throttle, brake, steer, handbrake }, world);
+    d.step(dt, { throttle, brake, steer, handbrake, boost }, world);
     car.pos.set(d.x, d.y, d.z);
     car.yaw = d.yaw;
     this.collide(car, col, obstacles);
@@ -238,6 +268,11 @@ export class Vehicles {
     }
     const nose = car.spec.shape.length / 2 - 0.6;
     this.fx.engine(d.x + nose * sy, d.y + car.spec.shape.belt, d.z + nose * cy, car.damage.engine, dt);
+    // the boost's flare, out of the back of the car
+    if (d.boostNow > 0.15 && car.occupied) {
+      const tail = car.spec.shape.length / 2;
+      this.fx.boost(d.x - tail * sy, d.y + car.spec.shape.clearance + 0.12, d.z - tail * cy, d.yaw, Math.abs(car.v), d.boostNow, dt, true);
+    }
     car.signal.beacons = car.spec.livery === 'police' || car.spec.livery === 'ambulance' ? car.signal.beacons : false;
     this.place(car, dt);
   }
@@ -319,6 +354,9 @@ export class Vehicles {
     }
     const push = Math.hypot(pushX, pushZ);
     if (push < 1e-4) return;
+    // and a car runs someone down here, whether they are a pedestrian, another
+    // car, or you on foot: the same test, the same response, the same ragdoll
+    this.strike(car, hx, hz, pushX / push, pushZ / push);
     car.pos.x += pushX;
     car.pos.z += pushZ;
     // the physics takes the speed into the obstacle, and spins the car by where it hit
@@ -330,6 +368,30 @@ export class Vehicles {
       this.onImpact?.(this.impact);
       this.damage(car, hx, hz, into);
     }
+    // a crash into people is a crash: whoever was in the way goes over, whether
+    // the car stopped short or not
+    if (Math.abs(car.v) > 3) this.strike(car, hx, hz, pushX / push, pushZ / push);
+  }
+
+  /** Somebody in the way of this car: thrown clear, hurt, and left lying. */
+  private strike(car: DrivableCar, hx: number, hz: number, nx: number, nz: number) {
+    if (this.struckAt === this.t) return; // one impact, one set of victims
+    this.struckAt = this.t;
+    const speed = Math.abs(car.v);
+    if (speed < 3 || !this.people.length) return;
+    const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+    const square = Math.min(1, (speed - 3) / 14);
+    const shove = 2.5 + speed * 0.4;
+    for (const o of this.people) {
+      if (o.dead >= 0 || !o.visible) continue;
+      const dx = o.pos.x - hx, dz = o.pos.z - hz;
+      if (dx * dx + dz * dz > 2.6 * 2.6) continue;
+      const died = o.hurt(speed * (3 + 4 * square), car.pos, true);
+      // flung clear, then down: a body that only stops isn't a body that was hit
+      o.toss(-nx * shove + fx * speed * 0.25, -nz * shove + fz * speed * 0.25);
+      if (!died) o.knockDown(car.pos.x, car.pos.z);
+    }
+    this.onStrike?.(car, hx, hz, speed, square);
   }
 
   /** What a hit does to the car: a dent where it landed, lamps, the engine, the glass. */

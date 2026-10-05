@@ -9,7 +9,7 @@
  */
 
 export type VehicleClass =
-  | 'sports' | 'sedan' | 'hatch' | 'taxi' | 'police' | 'pickup' | 'van' | 'ambulance' | 'truck' | 'bus' | 'offroad' | 'motorcycle';
+  | 'sports' | 'sedan' | 'hatch' | 'taxi' | 'police' | 'armoured' | 'pickup' | 'van' | 'ambulance' | 'truck' | 'bus' | 'offroad' | 'motorcycle';
 
 export type Drive = 'fwd' | 'rwd' | 'awd';
 
@@ -160,6 +160,19 @@ export const SPECS: Record<VehicleClass, VehicleSpec> = {
     paints: [0x16181c], livery: 'police',
     seat: { x: -0.38, y: 0.4, z: -0.3 }, seats: [{ x: 0.38, y: 0.4, z: -0.3 }, { x: 0.4, y: 0.42, z: -1.25 }, { x: -0.4, y: 0.42, z: -1.25 }],
     wheel: { x: -0.38, y: 0.86, z: 0.18, tilt: 1.1 },
+  },
+  armoured: {
+    cls: 'armoured', name: 'Armoured car',
+    // Nothing here is shaped like a saloon, on purpose: a short, tall, wedged
+    // hull with the beltline pushed up to chin height (so the glass is a slit),
+    // one door per side, and enough ground clearance and tyre to be a bad idea
+    // on a wet road. It should read as "not a patrol car" from a moving car.
+    shape: { length: 5.4, width: 2.16, height: 2.06, clearance: 0.36, belt: 1.56, aBase: 1.52, aTop: 0.86, cTop: -1.94, cBase: -2.24, tumble: 0.02, noseRound: 0.08, tailRound: 0.03, noseY: 0.98, tailY: 1.92, doors: 1 },
+    mech: { mass: 4250, cogH: 0.96, wheelbase: 3.1, track: 1.86, wheelR: 0.46, wheelW: 0.3, axleF: 1.62, axleR: -1.52, drive: 'awd', torque: 790, torqueRpm: 2600, idle: 600, redline: 4200, gears: [4.2, 2.6, 1.7, 1.2, 0.9, 0.7], final: 3.8, reverse: 3.8, grip: 1.12, offroad: 0.9, brake: 0.68, sag: 0.14, travel: 0.27, damping: 0.34, antiRoll: 0.45, lock: 0.5, cda: 1.45 },
+    voice: { cyl: 6, rough: 0.85, whine: 0.05, turbo: 0.6, diesel: true, horn: 300 },
+    paints: [0x6d7355],
+    seat: { x: -0.5, y: 0.88, z: 0.72 }, seats: [{ x: 0.5, y: 0.88, z: 0.72 }, { x: 0.5, y: 0.9, z: -0.5 }, { x: -0.5, y: 0.9, z: -0.5 }],
+    wheel: { x: -0.5, y: 1.36, z: 1.04, tilt: 1.0 },
   },
   pickup: {
     cls: 'pickup', name: 'Pickup',

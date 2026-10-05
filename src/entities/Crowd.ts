@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { styleFor, approach, turnToward } from '../anim/gait';
+import { Ragdoll } from '../anim/Ragdoll';
 import { feel, gaze, moodFor } from '../anim/face';
-import { LOD, newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
+import { LOD, buildRig, newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
+import { newPose } from '../anim/pose';
+import type { Collision } from '../world/Collision';
 import { FigureBatch } from './FigureBatch';
 import { Animator } from '../anim/Animator';
 import '../anim/clips';
@@ -112,6 +115,15 @@ export class Crowd {
   group = new THREE.Group();
   npcs: Npc[] = [];
   private batch: FigureBatch;
+  /**
+   * One ragdoll per figure, allocated lazily. A body only exists once something
+   * has hit them hard enough to want one; until then it costs nothing.
+   */
+  rag: (Ragdoll | null)[] = [];
+  /** the city's boxes, so a flung body has something to hit */
+  private ragCol: Collision | null = null;
+  /** scratch pose the ragdoll writes into */
+  private pose = newPose();
   private rng = mulberry32(77);
   /** everyone but the police and the criminals */
   citizens = 0;
@@ -289,6 +301,34 @@ export class Crowd {
       const fresh = n.alarm < 2.6;
       if (fresh) n.alarm = 4 + Math.random() * 1.5;
       if (fresh && byPlayer && d < 8 && speed > 5) this.say(n, 'nearMiss');
+
+      // Something is coming at them and fast enough to matter: get out of the
+      // road rather than flinch. Walkers run for the kerb and keep going; people
+      // standing about back off and turn away. A driver who doesn't slow for
+      // people finds they've emptied the pavement in front of them.
+      if (speed > 5 && along > -1.5 && along < speed * 2.2 + 5 && Math.abs(side) < 5 && n.recoil <= 0 && n.panic <= 0) {
+        const urgency = speed > 9 ? 1 : speed > 7 ? 0.6 : 0.3;
+        // away from the car's line, on the side they're already leaning
+        const away = side >= 0 ? 1 : -1;
+        const ax = uz * away, az = -ux * away;
+        // and a little backwards, away from it
+        const bx = -ux, bz = -uz;
+        if (n.mode === 'walk') {
+          n.panic = Math.max(n.panic, 3.5 + urgency * 3);
+          // panic flees *from* the source, so it has to be where the car is
+          n.panicX = x;
+          n.panicZ = z;
+          n.recoil = Math.max(n.recoil, 0.8 * urgency + 0.3);
+          n.recoilX = ax * 0.8 + bx * 0.5 * urgency;
+          n.recoilZ = az * 0.8 + bz * 0.5 * urgency;
+        } else {
+          n.recoil = Math.max(n.recoil, 0.5 * urgency + 0.25);
+          n.recoilX = ax;
+          n.recoilZ = az;
+          n.lookTarget = wrap(Math.atan2(-ux, -uz) - n.yaw);
+          if (speed > 7) n.anim.play('react.nearMiss', { group: 'react', fadeIn: 0.05 });
+        }
+      }
       // close and fast: a jump back; otherwise a flinch and a look
       if (fresh && n.mode !== 'sit') {
         n.idle.interrupt(n.anim);
@@ -432,6 +472,13 @@ export class Crowd {
     this.lastPlayer.copy(player);
     const fwd = camera.getWorldDirection(this.tmpFwd);
     this.chatterT -= dt;
+    // Pale: the district stops noticing you. Nobody looks, nobody reacts, and
+    // you are not a thing that happened to them.
+    if (this.pale > 0) {
+      this.pale -= dt;
+      for (const n of this.npcs) if (n.visible) n.stareT = 0;
+      return;
+    }
     for (const n of this.npcs) {
       if (n.sayCd > 0) n.sayCd -= dt;
       if (!n.visible) continue;
@@ -541,7 +588,7 @@ export class Crowd {
   }
 
   /** Hurt someone. Returns true if that put them down. */
-  damage(i: number, dmg: number, from: THREE.Vector3, hitY?: number): boolean {
+  damage(i: number, dmg: number, from: THREE.Vector3, hitY?: number, force = false): boolean {
     const n = this.npcs[i];
     if (!n || n.dead >= 0) return false;
     n.hp -= dmg;
@@ -570,7 +617,62 @@ export class Crowd {
     n.motion.speed = 0;
     n.anim.stop();
     n.anim.play(along >= 0 ? 'react.deathBack' : 'react.deathForward', { group: 'death', fadeIn: 0.06, stay: true });
+    // Something that hit them hard enough to kill them throws the body: the
+    // clip plays, then they lie where it left them.
+    if (force) {
+      // stand the figure up first, so the body starts from the pose it was in
+      this.q.setFromAxisAngle(this.up, n.yaw);
+      this.scl.setScalar(n.body.height);
+      this.root.compose(n.pos, this.q, this.scl);
+      solve(n.rig, this.root, n.body, n.outfit, n.motion, performance.now() / 1000, n.anim);
+      this.catchRag(i, n).launch(this.root, n.body, from, 4.5 + Math.min(6, dmg * 0.14));
+    }
     return true;
+  }
+
+  /** The ragdoll for figure i, made if it isn't there yet. */
+  private catchRag(i: number, n: Npc): Ragdoll {
+    let r = this.rag[i];
+    if (!r) this.rag[i] = r = new Ragdoll(n.body.height);
+    if (this.ragCol) r.setCollision(this.ragCol);
+    return r;
+  }
+
+  /**
+   * Knock someone away from a car, hard enough to move them and stagger them.
+   * Walkers carry it as a lateral shove off their route; everyone else slides.
+   */
+  toss(n: Npc, vx: number, vz: number) {
+    if (n.dead >= 0) return;
+    const s = Math.hypot(vx, vz);
+    if (s < 0.5) return;
+    n.recoil = Math.max(n.recoil, Math.min(1.4, 0.35 + s * 0.06));
+    n.recoilX = vx / s;
+    n.recoilZ = vz / s;
+    // and they lose their footing for a moment
+    n.paused = Math.max(n.paused, Math.min(2.5, 0.4 + s * 0.08));
+    n.frozen = 0;
+    n.alarm = Math.max(n.alarm, 4);
+  }
+
+  /**
+   * Everyone on foot, so a car can find them and knock them down. Rebuilt each
+   * frame rather than cached: the objects close over their index.
+   */
+  bodies(out: { pos: THREE.Vector3; dead: number; visible: boolean; hurt: (dmg: number, from: THREE.Vector3, force: boolean) => boolean; knockDown: (x: number, z: number) => void; toss: (vx: number, vz: number) => void }[]): void {
+    out.length = 0;
+    for (let i = 0; i < this.npcs.length; i++) {
+      const n = this.npcs[i];
+      if (n.dead >= 0 || !n.visible) continue;
+      out.push({
+        pos: n.pos,
+        dead: n.dead,
+        visible: n.visible,
+        hurt: (dmg, from, force) => this.damage(i, dmg, from, undefined, force),
+        knockDown: (x, z) => this.knockDown(i, x, z),
+        toss: (vx, vz) => this.toss(n, vx, vz),
+      });
+    }
   }
 
   /**
@@ -580,6 +682,7 @@ export class Crowd {
   knockDown(i: number, fromX: number, fromZ: number) {
     const n = this.npcs[i];
     if (!n || n.dead >= 0) return;
+    this.toss(n, 0, 0);
     n.idle.interrupt(n.anim);
     n.anim.stop(undefined, 0.05);
     n.yaw = Math.atan2(fromX - n.pos.x, fromZ - n.pos.z); // thrown back, away from it
@@ -969,10 +1072,52 @@ export class Crowd {
     this.enabled = on;
   }
   enabled = true;
+  /** seconds of Pale left: while it runs, nobody notices you */
+  pale = 0;
+  /** seconds of Still left: while it runs, the district does not move */
+  still = 0;
 
   /** which way the camera looks (for the ones that only move when you aren't looking) */
   private lastCamYaw = 0;
   private camDir = new THREE.Vector3();
+
+  /**
+   * Put an ordinary person on the street at `at`, facing `yaw`. Used when
+   * somebody who was driving is put out on the road: they should be standing
+   * next to the car, not teleported out of a driver seat with no explanation.
+   * Returns the NPC if one was free.
+   */
+  dropBystander(at: THREE.Vector3, yaw: number) {
+    for (let i = 0; i < this.citizens; i++) {
+      const n = this.npcs[i];
+      if (n === this.watcher || n.dead >= 0) continue;
+      // a slot currently in use by somebody else on screen: leave them be
+      if (n.visible && n.mode !== 'walk') continue;
+      if (n.visible && n.pos.distanceTo(at) < 12) continue;
+      n.visible = true;
+      n.pos.set(at.x, at.y, at.z);
+      n.yaw = yaw;
+      n.v = 0;
+      n.mode = 'talk';
+      n.route = undefined;
+      n.lod = -1;
+      // startled: they look at what just happened to them and back away
+      n.alarm = 4;
+      n.alarmX = at.x;
+      n.alarmZ = at.z;
+      n.recoil = 0.4;
+      n.recoilX = Math.sin(yaw);
+      n.recoilZ = Math.cos(yaw);
+      n.idle.interrupt(n.anim);
+      return n;
+    }
+    return null;
+  }
+
+  /** The world's boxes, so a thrown body has something to land against. */
+  setCollision(col: Collision) {
+    this.ragCol = col;
+  }
 
   update(dt: number, t: number, player: THREE.Vector3 | null, camera: THREE.Camera) {
     camera.getWorldDirection(this.camDir);
@@ -986,7 +1131,32 @@ export class Crowd {
     this.policeUpdate(dt, player, this.wanted, this.spawnAt);
     this.crooksUpdate(dt, player);
 
+    // Still: the district stops. Not slows — stops, mid-stride, mid-sentence,
+    // and holds there for the length of it. Nothing moves but you.
+    const frozen = this.still > 0;
+    if (frozen) this.still -= dt;
+
     this.npcs.forEach((n, i) => {
+      if (frozen) {
+        // held: no movement, no reactions, no new behaviour. The pose still
+        // solves so the bodies read as people caught mid-motion rather than
+        // switched off.
+        n.v = 0;
+        n.motion.speed = 0;
+        n.motion.turn = 0;
+        n.anim.update(dt * 0.02);
+        if (!n.visible) {
+          this.batch.hide(i);
+          n.lod = -1;
+          return;
+        }
+        this.q.setFromAxisAngle(this.up, n.yaw + n.wrongYaw);
+        this.scl.setScalar(n.body.height);
+        this.root.compose(n.pos, this.q, this.scl);
+        solve(n.rig, this.root, n.body, n.outfit, n.motion, t, null);
+        this.batch.write(i, n.rig, n.parts, false);
+        return;
+      }
       if (n.culled) {
         if (n.lod !== -1 || n.visible) {
           n.visible = false;
@@ -1050,10 +1220,18 @@ export class Crowd {
         n.motion.glitch = Math.max(0, Math.min(1, k * 1.6));
       } else n.motion.glitch = 0;
 
-      this.q.setFromAxisAngle(this.up, n.yaw + n.wrongYaw);
-      this.scl.setScalar(n.body.height);
-      this.root.compose(n.pos, this.q, this.scl);
-      solve(n.rig, this.root, n.body, n.outfit, n.motion, t, animate ? n.anim : null);
+      const rag = this.rag[i];
+      if (rag && rag.alive) {
+        // the body is where the physics put it, and posed from its bones
+        rag.root(this.root, rag.yaw, n.body.height);
+        rag.pose(this.pose, n.body);
+        buildRig(n.rig, this.root, n.body, n.outfit, this.pose);
+      } else {
+        this.q.setFromAxisAngle(this.up, n.yaw + n.wrongYaw);
+        this.scl.setScalar(n.body.height);
+        this.root.compose(n.pos, this.q, this.scl);
+        solve(n.rig, this.root, n.body, n.outfit, n.motion, t, animate ? n.anim : null);
+      }
       const prop = n.anim.hasProp('ember') || n.anim.hasProp('phone');
       this.batch.write(i, n.rig, n.parts, n.glowOn || prop);
     });
@@ -1106,6 +1284,9 @@ export class Crowd {
         n.lookTarget = Math.atan2(dx, dz) - n.yaw;
       }
     }
+    // and they don't walk through each other: a walker reads the few people
+    // around them and steps wide, or slows and lets them pass
+    this.avoid(n, dt);
     m.lookYaw += (THREE.MathUtils.clamp(wrap(n.lookTarget), -1.1, 1.1) - m.lookYaw) * Math.min(1, dt * 3);
     if (n.paused <= 0 && n.lookTarget !== 0 && rng.next() < dt * 0.5) n.lookTarget *= 0.5;
     m.lookPitch = n.outfit.umbrella ? 0.08 : m.armR === 'pockets' ? 0.1 : 0;
@@ -1140,6 +1321,67 @@ export class Crowd {
     const dy = wrap(want - n.yaw) * Math.min(1, dt * 4);
     m.turn = dy / Math.max(dt, 1e-3);
     n.yaw += dy;
+  }
+
+/** Whether something is being watched right now (the uneasy watcher). */
+  get watched() {
+    return this.watcher.visible;
+  }
+
+  /**
+   * A power goes off nearby: everyone close enough to feel it looks up, and the
+   * ones who were already afraid look further away.
+   */
+  startle(at: THREE.Vector3, r: number) {
+    this.shock(at.x, at.z);
+    for (const n of this.npcs) {
+      if (!this.canReact(n)) continue;
+      if (Math.hypot(n.pos.x - at.x, n.pos.z - at.z) > r) continue;
+      n.idle.interrupt(n.anim);
+      n.lookTarget = wrap(Math.atan2(at.x - n.pos.x, at.z - n.pos.z) - n.yaw);
+      n.alarm = Math.max(n.alarm, 2.5);
+      n.recoil = Math.max(n.recoil, 0.4);
+      n.recoilX = (n.pos.x - at.x) / r;
+      n.recoilZ = (n.pos.z - at.z) / r;
+    }
+  }
+
+  /**
+   * Walkers and people standing about don't collide, so two on the same pavement
+ * drift through each other. This reads the neighbours and either steps wide
+ * (a walker, as a lateral offset from their route) or slows and turns to let
+ * them past. Only the nearest few are considered, and only ones in front.
+ */
+  private avoid(n: Npc, dt: number) {
+    if (n.dead >= 0 || n.frozen > 0 || !n.visible) return;
+    const fx = Math.sin(n.yaw), fz = Math.cos(n.yaw);
+    for (const o of this.npcs) {
+      if (o === n || o.dead >= 0 || !o.visible || o.mode === 'cop' || o.mode === 'crook') continue;
+      const dx = o.pos.x - n.pos.x, dz = o.pos.z - n.pos.z;
+      const d2 = dx * dx + dz * dz;
+      const near = 2.3;
+      if (d2 > near * near || d2 < 1e-4) continue;
+      // only what is in front of us, or we react to people behind us too
+      const ahead = (dx * fx + dz * fz) / Math.sqrt(d2);
+      const side = (dx * fz - dz * fx) / Math.sqrt(d2);
+      if (ahead < -0.35) continue;
+      const d = Math.sqrt(d2);
+      // get out of the way: sideways, away from them
+      const push = (near - d) * 0.9;
+      if (n.mode === 'walk') {
+        // to the side they're already on, so we pass rather than merge
+        const want = (side >= 0 ? 1 : -1) * push * 0.5;
+        n.lateral += (want - n.lateral) * Math.min(1, dt * 4);
+        n.lateral = THREE.MathUtils.clamp(n.lateral, -1.6, 1.6);
+      } else {
+        n.pos.x += (side >= 0 ? -1 : 1) * push * dt * 1.4;
+        n.pos.z += (side >= 0 ? 1 : -1) * push * dt * 1.4;
+      }
+      // and look where we're going, which is where they are
+      n.lookTarget = wrap(Math.atan2(dx, dz) - n.yaw);
+      // if we can't get past, slow down rather than shove through
+      if (d < 1.1 && ahead > 0.5) n.v *= 1 - Math.min(1, dt * 3);
+    }
   }
 
   /** Two people who know each other pass in the street: a wave. */

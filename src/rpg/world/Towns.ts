@@ -229,20 +229,61 @@ export class Towns {
     }
   }
 
-  /** Asphalt between the blocks, lane dashes, and cars parked along the kerbs. */
+  /**
+   * The streets between the blocks, their kerbs and lane dashes.
+   *
+   * The asphalt goes only on the street corridors — the gaps between blocks —
+   * not over the whole town. Tiling it across the settlement's full radius made
+   * every town one continuous slab with the block buildings stranded on it.
+   */
   private streets(ctx: WorldContext, plan: TownPlan, x0: number, z0: number, size: number, out: TownOut) {
     const s = plan.s;
-    const T = 16;
-    const y = s.y + 0.03;
     const mats = ctx.mats;
-    for (let tx = x0; tx < x0 + size; tx += T) for (let tz = z0; tz < z0 + size; tz += T) {
-      const mx = tx + T / 2, mz = tz + T / 2;
-      if (Math.hypot(mx - s.x, mz - s.z) > s.radius * 0.95) continue;
-      if (s.home && mx > DISTRICT_03.x0 && mx < DISTRICT_03.x1 && mz > DISTRICT_03.z0 && mz < DISTRICT_03.z1) continue;
-      const g = this.gen.ground(mx, mz, _g);
-      if (g.water != null || Math.abs(g.h - s.y) > 0.6) continue;
-      ctx.batch.add(s.kind === 'village' || s.kind === 'ruin' ? mats.yard : mats.asphalt, G.box, M(mx, y - 0.1, mz, T, 0.1, T), { cast: false });
-    }
+    const street = s.kind === 'village' ? 9 : plan.style.street;
+    const half = street / 2;
+    const y = s.y + 0.03;
+    const rough = s.kind === 'village' || s.kind === 'ruin' ? mats.yard : mats.asphalt;
+    const inD03 = (x: number, z: number) => s.home && x > DISTRICT_03.x0 && x < DISTRICT_03.x1 && z > DISTRICT_03.z0 && z < DISTRICT_03.z1;
+    const near = (x: number, z: number) => Math.hypot(x - s.x, z - s.z) <= s.radius * 0.95;
+
+    // one slab per street corridor, run in strips along its length so the
+    // chunk only pays for the part of it that falls inside
+    const strip = (along: 'x' | 'z', line: number) => {
+      // the cross extent runs over the whole town; the corridor's own extent
+      const lo = along === 'x' ? s.x - s.radius * 0.95 : line - half;
+      const hi = along === 'x' ? s.x + s.radius * 0.95 : line + half;
+      if (hi < x0 || lo > x0 + size) return;
+      const L = Math.hypot(
+        along === 'x' ? s.radius * 0.95 : street,
+        along === 'x' ? street : s.radius * 0.95,
+      );
+      const step = 16;
+      const n = Math.ceil(L / step);
+      for (let i = 0; i < n; i++) {
+        const a = lo + (i / n) * L;
+        const b = lo + ((i + 1) / n) * L;
+        const c = (a + b) / 2;
+        const px = along === 'x' ? c : line;
+        const pz = along === 'x' ? line : c;
+        if (px < x0 - 1 || px > x0 + size + 1 || pz < z0 - 1 || pz > z0 + size + 1) continue;
+        if (!near(px, pz) || inD03(px, pz)) continue;
+        const g = this.gen.ground(px, pz, _g);
+        if (g.water != null || Math.abs(g.h - s.y) > 0.6) continue;
+        const w = along === 'x' ? b - a : street;
+        const d = along === 'x' ? street : b - a;
+        ctx.batch.add(rough, G.box, M(px, y - 0.1, pz, w, 0.1, d), { cast: false });
+        // a kerb either side, so the carriageway has an edge to end on
+        if (street > 11) {
+          const kw = along === 'x' ? w : 0.4;
+          const kd = along === 'x' ? 0.4 : d;
+          const off = half - 0.2;
+          ctx.batch.add(mats.paving, G.box, M(along === 'x' ? px : line - off, y - 0.02, along === 'x' ? line - off : pz, kw, 0.14, kd), { cast: false });
+          ctx.batch.add(mats.paving, G.box, M(along === 'x' ? px : line + off, y - 0.02, along === 'x' ? line + off : pz, kw, 0.14, kd), { cast: false });
+        }
+      }
+    };
+    for (const lx of plan.xs) strip('z', lx);
+    for (const lz of plan.zs) strip('x', lz);
     if (s.kind === 'village' || s.kind === 'ruin' || s.kind === 'military') return;
     // dashes down the middle of each street line within the chunk
     const pitchLen = 9;

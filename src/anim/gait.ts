@@ -222,6 +222,25 @@ const minJerk = (u: number) => u * u * u * (10 - 15 * u + 6 * u * u);
 const wrapA = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 const TAU = Math.PI * 2;
 
+/**
+ * Integrate a critically-ish damped spring in fixed substeps. Explicit Euler on
+ * a stiff spring (k = 60..150 here) diverges once dt passes 2/√k, which a
+ * single long frame can do; capping the step keeps it stable and only costs a
+ * little accuracy on the frame that actually was long.
+ */
+export function springStep(dt: number, x: number, v: number, target: number, k: number, d: number, put: (x: number, v: number) => void) {
+  const max = 1 / 90;
+  let left = dt;
+  let guard = 0;
+  while (left > 1e-5 && guard++ < 24) {
+    const h = Math.min(max, left);
+    v += (k * (target - x) - d * v) * h;
+    x += v * h;
+    left -= h;
+  }
+  put(x, v);
+}
+
 /** Steps per second at a ground speed (m/s), for someone of average height. */
 export function stepRate(v: number) {
   v = Math.min(8, v);
@@ -238,11 +257,21 @@ export function duty(v: number) {
  * only runs while a step is needed or finishing.
  */
 export function advanceGait(phase: number, v: number, dt: number, g: GaitState | undefined, cadence: number, legScale: number): number {
-  let rate = 0;
-  if (v > 0.12) rate = stepRate(v) * cadence / Math.sqrt(Math.max(0.6, legScale));
-  if (g && g.need) rate = Math.max(rate, 1.75 * cadence);
-  else if (v <= 0.12) rate = 0;
+  let rate = gaitRate(v, g, cadence, legScale);
   return phase + dt * rate * Math.PI; // steps/s × π = radians/s (2π per two steps)
+}
+
+/**
+ * Steps per second. The pose needs the same number to work out where a foot
+ * will land as the clock does to get there — computing the two separately (one
+ * with a leg-length scale and a speed floor, the other without) made a foot
+ * land short of where it was aimed, which shows as sliding feet at speed.
+ */
+export function gaitRate(v: number, g: GaitState | undefined, cadence: number, legScale: number): number {
+  let rate = 0;
+  if (v > 0.12) rate = (stepRate(v) * cadence) / Math.sqrt(Math.max(0.6, legScale));
+  if (g && g.need) rate = Math.max(rate, 1.75 * cadence);
+  return rate;
 }
 
 /* ─────────────────────────── the pose ─────────────────────────── */
@@ -326,7 +355,9 @@ export function gaitPose(p: Pose, g: GaitState, i: GaitIn, out: GaitOut) {
 
   const run = smooth(1.9, 3.4, i.speed);
   const D = duty(i.speed);
-  const rate = stepRate(Math.max(i.speed, 0.8)) * st.cadence;
+  // the same rate the clock advances by, or a foot lands somewhere other than
+  // where it was aimed and the walk slides
+  const rate = gaitRate(i.speed, g.need ? g : undefined, st.cadence, st.step);
   const cycle = 2 / Math.max(0.5, rate); // seconds for two steps
   const ground = (x: number, z: number) => (i.ground ? i.ground(x, z) : py);
 
@@ -437,6 +468,11 @@ export function gaitPose(p: Pose, g: GaitState, i: GaitIn, out: GaitOut) {
         toWorld(side * width + (lx - side * width) * kk, lz * kk, tmp);
         f.x = tmp.x;
         f.z = tmp.z;
+        // Dragging the foot back has to bring its height with it: pulling only
+        // the horizontal left the sole at the unreachable terrain height it had
+        // been aimed at, which on a slope put the ankle through the ground (or
+        // in the air) and dragged the pelvis down after it.
+        f.y = ground(f.x, f.z);
       }
       // heel to toe: flat after the strike, then the heel comes up over the ball
       const ust = u / Ds;
@@ -448,12 +484,13 @@ export function gaitPose(p: Pose, g: GaitState, i: GaitIn, out: GaitOut) {
       f.cyaw = f.yaw;
       f.lift = 0;
       // is it where it should be? (at rest: stepping to keep up with a turn or a shift of weight)
-      const far = Math.hypot(tmp.x - f.x, tmp.z - f.z);
       toWorld(r.x, r.z, tmp);
       const off = Math.hypot(tmp.x - f.x, tmp.z - f.z) / h;
+      // A foot whose heading lags the body's (every turn) is not "far" — it's
+      // just turning. Testing that made everyone take a corrective step on every
+      // corner, which is what a fleet of tiny shuffling steps looks like.
       const tol = 0.13 - 0.05 * st.fidget;
-      if (off > tol || Math.abs(wrapA(tyaw - f.yaw)) > 0.55) anyFar = true;
-      void far;
+      if (off > tol) anyFar = true;
     }
     if (s === 0) g.stanceL = swing ? 0 : 1;
     else g.stanceR = swing ? 0 : 1;
@@ -477,9 +514,16 @@ export function gaitPose(p: Pose, g: GaitState, i: GaitIn, out: GaitOut) {
     ? (i.speed < 0.2 ? (w > 0 ? aL.x : aR.x) * 0.25 * Math.abs(w) : 0)
     : (g.stanceL ? aL.x : aR.x) * 0.28 * st.hipSway * (1 - 0.6 * run);
   const kS = 60, dS = 2 * Math.sqrt(kS) * 0.8;
-  g.sxv += (kS * (wantX - g.sx) - dS * g.sxv) * dt;
-  g.sx += g.sxv * dt;
-  const pelX = clamp(g.sx, -0.05, 0.05);
+  // Explicit Euler on a stiff spring goes unstable on a long frame: a hitch of
+  // 0.2 s is past the stability limit here (2/√k) and the hip snaps or rings.
+  // Take fixed steps instead, so a dropped frame costs accuracy rather than
+  // throwing the figure.
+  springStep(dt, g.sx, g.sxv, wantX, kS, dS, (x, v) => {
+    g.sx = x;
+    g.sxv = v;
+  });
+  g.sx = clamp(g.sx, -0.05, 0.05);
+  const pelX = g.sx;
 
   // standing knees are nearly straight; soft-kneed people and runners carry a bend
   const kneeBend = 0.05 + 0.3 * st.knee + 0.22 * run;
@@ -581,10 +625,14 @@ export function gaitPose(p: Pose, g: GaitState, i: GaitIn, out: GaitOut) {
   const gain = (0.6 + 1.1 * run) * st.arm * moving;
   const tL = -zDiff * gain * (1 + 0.25 * st.armAsym), tR = zDiff * gain * (1 - 0.25 * st.armAsym);
   const kA = 90 + 60 * run, dA = 2 * Math.sqrt(kA) * 0.55;
-  g.aLv += (kA * (tL - g.aL) - dA * g.aLv) * dt;
-  g.aL += g.aLv * dt;
-  g.aRv += (kA * (tR - g.aR) - dA * g.aRv) * dt;
-  g.aR += g.aRv * dt;
+  springStep(dt, g.aL, g.aLv, tL, kA, dA, (x, vv) => {
+    g.aL = x;
+    g.aLv = vv;
+  });
+  springStep(dt, g.aR, g.aRv, tR, kA, dA, (x, vv) => {
+    g.aR = x;
+    g.aRv = vv;
+  });
   out.armL = clamp(g.aL, -1.1, 1.4);
   out.armR = clamp(g.aR, -1.1, 1.4);
   // the elbow folds more on the forward swing, and a lot when running
