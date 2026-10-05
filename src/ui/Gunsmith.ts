@@ -62,6 +62,12 @@ export class Gunsmith {
   private canvas: HTMLCanvasElement;
   private note: HTMLElement;
   private onDone: (l: Loadout) => void = () => {};
+  /** your level: what's above it is shown, locked */
+  private level = 99;
+
+  setLevel(lv: number) {
+    this.level = lv;
+  }
 
   constructor(parent: HTMLElement) {
     this.list = h('div', { class: 'gs-rows' });
@@ -97,6 +103,7 @@ export class Gunsmith {
 
   close() {
     if (!this.open) return;
+    if (!this.el.isConnected) return;
     this.open = false;
     setOn(this.el, false);
     this.onDone(this.lo);
@@ -128,9 +135,11 @@ export class Gunsmith {
     const r = this.rows[this.row];
     this.note.textContent = '';
     if (r.kind === 'weapon') {
-      const pool = r.which === 'primary' ? PRIMARIES : SECONDARIES;
+      const pool = (r.which === 'primary' ? PRIMARIES : SECONDARIES).filter((w) => w.level <= this.level || w.id === this.gun(r.which).id);
       const cur = pool.findIndex((w) => w.id === this.gun(r.which).id);
       const next = pool[(cur + d + pool.length) % pool.length];
+      const locked = (r.which === 'primary' ? PRIMARIES : SECONDARIES).filter((w) => w.level > this.level).length;
+      if (locked) this.note.textContent = `${locked} more open as you level up.`;
       if (r.which === 'primary') this.lo.primary = next.id;
       else this.lo.secondary = next.id;
       // keep what still fits the new gun
@@ -139,7 +148,10 @@ export class Gunsmith {
       list.splice(0, list.length, ...keep);
     } else if (r.kind === 'att') {
       const w = this.gun(r.which), list = this.atts(r.which);
-      const opts = ['', ...attachmentsFor(w.cls, r.slot).map((a) => a.id)];
+      const all = attachmentsFor(w.cls, r.slot);
+      const opts = ['', ...all.filter((a) => a.level <= this.level || list.includes(a.id)).map((a) => a.id)];
+      const shut = all.filter((a) => a.level > this.level);
+      if (shut.length) this.note.textContent = `Locked: ${shut.map((a) => `${a.name} (level ${a.level})`).join(', ')}`;
       const curId = list.find((id) => ATTACH[id].slot === r.slot) ?? '';
       const next = opts[(opts.indexOf(curId) + d + opts.length) % opts.length];
       const without = list.filter((id) => ATTACH[id].slot !== r.slot);

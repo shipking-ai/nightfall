@@ -11,6 +11,8 @@ await waitState('landing');
 await t.wait(3000);
 await ev(() => { window.nf.mode = 'warzone'; window.nf.enter(); });
 console.log('state', await waitState('playing', 200));
+// Warzone opens on its menu: Deploy goes to the loadout screen
+await page.evaluate(() => document.querySelector('.wzm-go').click());
 await step(0.5);
 await press('A'); await step(9); // deploy; let the opening scene hand back
 console.log('deployed', JSON.stringify(await me()));

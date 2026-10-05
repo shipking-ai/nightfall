@@ -21,6 +21,8 @@ import { LADDER, MODE, type ModeId } from './warzone/modes';
 import { Viewmodel } from './warzone/Viewmodel';
 import { ARMOR_SOAK, BOT_PRIMARIES, GUNS, MAX_ARMOR, allLoadouts, damageAt, loadoutGuns, type Gun, type Loadout } from './warzone/weapons';
 import { WarzoneHud } from '../ui/WarzoneHud';
+import { WarzoneMenu, type MenuState } from '../ui/WarzoneMenu';
+import { Career } from './warzone/career';
 import { Gunsmith } from '../ui/Gunsmith';
 import { CUSTOM_SLOTS, PRESETS, saveCustom } from './warzone/weapons';
 
@@ -120,13 +122,15 @@ interface Pickup {
   up: boolean;
 }
 
-type Phase = 'idle' | 'loadout' | 'play' | 'over';
+type Phase = 'idle' | 'menu' | 'loadout' | 'play' | 'over';
 
 export class Warzone {
   group = new THREE.Group();
   active = false;
   hud: WarzoneHud;
   smith: Gunsmith;
+  menu: WarzoneMenu;
+  career = new Career();
   me: Me;
   bots: Soldier[] = [];
   private units: Unit[] = [];
@@ -265,11 +269,37 @@ export class Warzone {
     this.hud = new WarzoneHud(host.ui, {
       again: () => this.again(),
       level: () => this.cycleSkill(),
-      modes: () => host.onModes(),
+      modes: () => this.openMenu(),
       leave: () => host.onLeave(),
     });
     this.hud.level(this.skillName);
-    this.smith = new Gunsmith(this.hud.el);
+    this.smith = new Gunsmith(host.ui);
+    this.menu = new WarzoneMenu(host.ui, {
+      start: () => {
+        this.menu.close();
+        this.hud.show(true);
+        this.newMatch();
+      },
+      leave: () => host.onLeave(),
+      pick: (m) => {
+        this.modeId = m;
+        host.audio.uiTick();
+        this.menu.refresh(this.menuState);
+      },
+      bots: () => (this.cycleSkill(), this.menu.refresh(this.menuState)),
+      hardline: () => ((this.hardline = !this.hardline), host.audio.uiTick(), this.menu.refresh(this.menuState)),
+      view: () => ((this.firstPerson = !this.firstPerson), host.audio.uiTick(), this.menu.refresh(this.menuState)),
+      choose: (i) => ((this.loadout = this.loadouts[i]), host.audio.uiTick(), this.menu.refresh(this.menuState)),
+      edit: (i) => {
+        this.loadout = this.loadouts[i];
+        this.menu.close();
+        this.openSmith(() => this.menu.open(this.menuState));
+      },
+    });
+    this.career.onEvent = (text) => {
+      this.hud.announce(text, 'us');
+      this.career.save();
+    };
     this.battle = {
       units: this.units,
       points: this.points,
@@ -365,11 +395,42 @@ export class Warzone {
     this.lookRange();
     this.makeBots();
     this.baseFov = this.host.camera.fov;
-    this.hud.show(true);
-    this.newMatch();
+    this.openMenu();
+  }
+
+  /** Warzone's front end: the yard behind it, the bots skirmishing while you choose. */
+  openMenu() {
+    this.phase = 'menu';
+    this.hud.showEnd(null);
+    this.hud.loadout(false);
+    this.hud.death(null);
+    this.hud.crosshair(null);
+    this.hud.show(false);
+    this.me.alive = false;
+    RULES.ffa = false;
+    this.units.length = 0;
+    this.units.push(this.me, ...this.bots);
+    for (const b of this.bots) {
+      b.dummy = false;
+      this.spawnBot(b);
+    }
+    this.placeForPreview();
+    this.smith.setLevel(this.career.level);
+    this.menu.open(this.menuState);
+  }
+
+  get menuState(): MenuState {
+    return { mode: this.modeId, bots: this.skillName, hardline: this.hardline, firstPerson: this.firstPerson, loadouts: this.loadouts, loadout: Math.max(0, this.loadouts.indexOf(this.loadout)), career: this.career };
+  }
+
+  get menuOpen() {
+    return this.menu.isOpen;
   }
 
   stop() {
+    this.menu.close();
+    this.smith.close();
+    this.career.save();
     this.active = false;
     this.group.visible = false;
     this.phase = 'idle';
@@ -442,6 +503,8 @@ export class Warzone {
   }
 
   private newMatch() {
+    this.menu.close();
+    this.hud.show(true);
     this.score = [0, 0];
     this.clock = this.rules.time || 1e9;
     this.tickT = TICK;
@@ -589,6 +652,16 @@ export class Warzone {
     this.hud.el.classList.toggle('is-paused', !live);
     if (live) {
       this.battle.skill = this.skill;
+      if (this.phase === 'menu') {
+        if (this.smith.open) this.smith.update(this.host.input);
+        for (const b of this.bots) {
+          b.update(dt, this.battle);
+          if (!b.alive && (b.respawnT -= dt) <= 0) this.spawnBot(b);
+        }
+        this.separate();
+        this.shellsUpdate(dt);
+        this.gear.update(dt);
+      }
       if (this.phase === 'play' || this.phase === 'loadout') {
         this.playerGuns(dt);
         for (const b of this.bots) {
@@ -1259,6 +1332,7 @@ export class Warzone {
       const rel = Math.atan2(from.pos.x - u.pos.x, from.pos.z - u.pos.z) - Math.atan2(fwd.x, fwd.z);
       this.hud.damageFrom(wrap(rel));
     } else if (u instanceof Soldier) u.hurt(from);
+    if (this.modeId === 'range' && from === this.me && u !== this.me) this.hud.announce(`${Math.round(dmg)} damage · ${Math.round(u.pos.distanceTo(this.me.pos))} m${head ? ' · head' : ''}`, 'pickup');
     if (u.hp > 0) return false;
     u.hp = 0;
     this.kill(u, from, gun, head);
@@ -1270,6 +1344,7 @@ export class Warzone {
     // streaks run on kills in one life
     if (from === this.me && u !== this.me) {
       this.lifeKills++;
+      if (this.modeId !== 'range') this.career.kill(gun.id, head, this.lifeKills);
       const s = STREAKS.find((x) => x.kills === this.lifeKills);
       if (s) {
         this.earned.push(s.id);
@@ -1291,6 +1366,7 @@ export class Warzone {
       this.me.alive = false;
       this.me.deaths++;
       this.lifeKills = 0;
+      this.career.death();
       this.deadT = this.rules.respawn > 0 ? this.rules.respawn : Infinity;
       this.killedBy = { name: from.name, gun: gun.name, head };
       const p = this.host.player;
@@ -1410,6 +1486,7 @@ export class Warzone {
     p.cap = 0;
     p.capTeam = -1;
     for (const u of this.units) if (u.alive && u.team === team && Math.hypot(u.pos.x - p.pos.x, u.pos.z - p.pos.z) < p.radius) u.caps++;
+    if (this.me.alive && this.me.team === team && Math.hypot(this.me.pos.x - p.pos.x, this.me.pos.z - p.pos.z) < p.radius) this.career.objective();
     const ours = team === this.me.team;
     this.hud.announce(ours ? `${p.id} captured` : lost ? `${p.id} lost` : `${TEAM_NAMES[team]} took ${p.id}`, ours ? 'us' : 'them');
     this.host.audio.fight(ours ? 'bell' : 'block', 0.6);
@@ -1505,17 +1582,19 @@ export class Warzone {
   }
 
   /** Edit the chosen loadout. A preset is copied into one of your slots first. */
-  private openSmith() {
+  private openSmith(after?: () => void) {
     const i = this.loadouts.indexOf(this.loadout);
     const preset = !this.loadout.custom;
     const slot = preset ? i % CUSTOM_SLOTS : this.loadouts.slice(PRESETS.length).indexOf(this.loadout);
     this.host.audio.uiTick();
+    this.smith.setLevel(this.career.level);
     this.smith.edit(this.loadout, preset ? `Editing a copy of ${this.loadout.name}: it saves to custom slot ${slot + 1}.` : '', (l) => {
       const at = PRESETS.length + slot;
       this.loadouts[at] = { ...l, id: `custom${slot}`, custom: true };
       this.loadout = this.loadouts[at];
       saveCustom(this.loadouts);
       this.host.audio.uiTick();
+      after?.();
     });
   }
 
@@ -1525,6 +1604,7 @@ export class Warzone {
     const won = b > r, draw = b === r;
     const me = this.me;
     this.onMatchEnd?.(won, draw);
+    if (this.modeId !== 'range') this.career.match(this.modeId, won);
     // the end of it, on camera: round you slowly, time running slow, before the numbers
     const p = this.host.player;
     const you = subject(() => p.pos, () => p.facing, 1.6);
@@ -1718,6 +1798,7 @@ export class Warzone {
     if (confirm) {
       this.addScore(by.team, 1);
       by.caps++;
+      if (by === this.me) this.career.objective();
     }
     if (by === this.me) {
       this.hud.announce(confirm ? 'Kill confirmed' : 'Kill denied', 'pickup');
@@ -1775,6 +1856,7 @@ export class Warzone {
         if (other.home_ && Math.hypot(f.pos.x - other.home.x, f.pos.z - other.home.z) < 2) {
           const by = f.carrier;
           by.caps++;
+          if (by === this.me) this.career.objective();
           this.addScore(by.team, 1);
           this.hud.announce(by.team === this.me.team ? 'Flag captured' : 'They captured our flag', by.team === this.me.team ? 'us' : 'them');
           this.host.audio.fight('bell', 0.7);

@@ -592,6 +592,7 @@ export class App {
     });
     this.scene.add(this.warzone.group);
     this.nav.scope(this.warzone.hud.end, { back: () => undefined });
+    this.nav.scope(this.warzone.menu.el, { back: () => (this.warzone.menu.tab !== 'play' ? this.warzone.menu.cycleTab(-1) : undefined), tab: (d) => this.warzone.menu.cycleTab(d) });
     this.rpg = new Rpg({
       scene: this.scene,
       camera: this.camera,
@@ -2530,7 +2531,7 @@ export class App {
 
     // menus: a controller (or the arrow keys) moves the focus in whatever's open
     const menuUp =
-      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen || this.warzone?.endOpen;
+      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen || this.warzone?.endOpen || this.warzone?.menuOpen;
     this.nav.active = menuUp;
     if (menuUp) {
       if (this.overlay === 'settings') this.settingsView.update();
