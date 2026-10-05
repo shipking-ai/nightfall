@@ -395,7 +395,7 @@ export class Vehicles {
   }
 
   /** What a hit does to the car: a dent where it landed, lamps, the engine, the glass. */
-  private damage(car: DrivableCar, wx: number, wz: number, speed: number) {
+  damage(car: DrivableCar, wx: number, wz: number, speed: number) {
     const s = car.spec.shape;
     const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
     const dx = wx - car.pos.x, dz = wz - car.pos.z;

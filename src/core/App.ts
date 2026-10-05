@@ -515,6 +515,13 @@ export class App {
       shoot: (from, hit) => this.copShot(from.clone().setY(from.y - 1.45), hit),
       playerDriving: false,
       say: (line) => this.hud.toast(line),
+      rammed: (k, at) => {
+        this.audio.crash(Math.min(1, k / 8));
+        this.follow.shake?.(Math.min(1, k / 7));
+        this.input.rumble('hurt', Math.min(1, k / 6));
+        const v = this.vehicle;
+        if (v?.kind === 'drive') this.vehicles.damage(v.car, at.x, at.z, k);
+      },
       wrecked: (at, mil) => {
         this.tracers.shot(at.clone().setY(at.y + 0.6), at.clone().setY(at.y + 2.4), true);
         this.audio.crash(1);
@@ -3211,6 +3218,9 @@ case 'burn':
       // because the car is what has the speed — so this used to read as "on
       // foot, standing still" and the police never came after you driving.
       const chaseSpeed = this.vehicle ? this.vehicle.car.v : this.player.speed;
+      // the car you're in, so a pursuit car can actually hit it
+      const vd = this.vehicle?.kind === 'drive' ? this.vehicle.car : null;
+      this.police.chased = vd ? { dyn: vd.dyn, reach: vd.reach, mass: vd.spec.mech.mass } : null;
       this.police.update(dt, t, inWorld && !this.dying ? this.player.pos : null, stars, !!this.inside, this.camera.getWorldDirection(this.tmpDir), chaseSpeed, this.world.collision);
     }
       // the rotor sound follows whichever helicopter is closest, so a second one is audible

@@ -5,6 +5,7 @@ import type { VehicleSpec } from '../vehicles/specs';
 import { Dynamics } from '../vehicles/dynamics';
 import type { Collision } from '../world/Collision';
 import type { Materials } from '../world/materials';
+import { avoid, spawnPoint, waypoint } from './pursuit';
 
 /**
  * The police, when they mean it.
@@ -32,6 +33,15 @@ export interface PoliceHooks {
   say(line: string): void;
   /** a cruiser was destroyed and is burning where it stopped */
   wrecked(at: THREE.Vector3, mil: boolean): void;
+  /** a pursuit car hit yours (how hard, m/s of shove, and where) */
+  rammed?(strength: number, at: THREE.Vector3): void;
+}
+
+/** The car you're driving, for the pursuit to hit (its physics carries the shove). */
+export interface ChasedCar {
+  dyn: Dynamics;
+  reach: number;
+  mass: number;
 }
 
 /* ─────────────────────────── helicopter ─────────────────────────── */
@@ -197,6 +207,16 @@ interface Cruiser {
   turretCd: number;
   /** seconds left of the approach warning */
   beacon: number;
+  /** pursuit: stuck and backing out (seconds left), and how long it's been stuck */
+  backT?: number;
+  stuckT?: number;
+  /** which side of you it goes for when it tries to spin you */
+  side?: number;
+  /** seconds since it last hit you (one hit per contact) */
+  hitT?: number;
+  /** it's lost sight of you: where it last saw you, and for how long */
+  lostT?: number;
+  last?: THREE.Vector3;
 }
 
 /** The streets a cruiser can come down (avenue, and the three cross streets that run on forever). */
@@ -231,11 +251,11 @@ export class Police {
     this.group.add(this.milHeli.group, this.milHeli.light, this.milHeli.light.target, this.milHeli.beam);
     const paint = new THREE.MeshStandardMaterial({ color: 0x151a24, roughness: 0.35, metalness: 0.5 });
     const door = new THREE.MeshStandardMaterial({ color: 0xd7d9dc, roughness: 0.4, metalness: 0.3 });
-    for (let i = 0; i < 2; i++) this.addCruiser(SPECS.police, SPECS.police.paints[0], false);
+    for (let i = 0; i < 4; i++) this.addCruiser(SPECS.police, SPECS.police.paints[0], false);
     // The military do not turn up in a recoloured patrol car: they bring their
     // own hull, their own drivetrain and their own hitbox, because the whole
     // point of them arriving is that the thing in the mirror is not a cruiser.
-    for (let i = 0; i < 2; i++) this.addCruiser(SPECS.armoured, MIL_PAINT, true);
+    for (let i = 0; i < 3; i++) this.addCruiser(SPECS.armoured, MIL_PAINT, true);
   }
 
   private addCruiser(spec: VehicleSpec, paint: number, mil: boolean) {
@@ -402,7 +422,18 @@ export class Police {
     return this.heli.present || this.milHeli.present || this.cars.some((c) => c.state !== 'off');
   }
 
+  /** the car you're driving, if you are (set by the game each frame) */
+  chased: ChasedCar | null = null;
+  /** which way you're going (for coming up behind you) */
+  private heading = new THREE.Vector3(0, 0, 1);
+  private lastP = new THREE.Vector3();
+
   update(dt: number, t: number, player: THREE.Vector3 | null, stars: number, indoors: boolean, camFwd: THREE.Vector3, playerSpeed = 0, col: Collision | null = null) {
+    if (player) {
+      const mx = player.x - this.lastP.x, mz = player.z - this.lastP.z, m = Math.hypot(mx, mz);
+      if (m > 0.05 && m < 5) this.heading.set(mx / m, 0, mz / m);
+      this.lastP.copy(player);
+    }
     // The helicopters. The police one comes at four stars and opens fire at five;
     // past seven the military sends its own alongside it.
     const heliWanted = !!player && !indoors && stars >= 4;
@@ -439,9 +470,10 @@ export class Police {
     // Past five stars the police are no longer the whole answer: the military
     // come as their own vehicles, and they do not sit on the pavement.
     const mil = stars >= 6;
-    const want = player && !indoors ? (chasing ? (stars >= 3 ? 2 : 1) : stars >= 4 ? 2 : stars >= 2 ? 1 : 0) : 0;
+    // more of them the more they want you: one at a star, four at four
+    const want = player && !indoors && stars >= 1 ? Math.min(4, chasing ? stars : Math.max(0, stars - 1)) : 0;
     // the military only ever move when you're in the world and being looked for
-    const wantMil = player && !indoors && mil ? (chasing ? 2 : 1) : 0;
+    const wantMil = player && !indoors && mil ? (stars >= 8 ? 3 : chasing ? 2 : 1) : 0;
     if (this.hooks.playerDriving !== chasing) {
       this.hooks.playerDriving = chasing;
       // stand down out of a chase, or back off the road for it
@@ -461,15 +493,17 @@ export class Police {
         const cap = c.mil ? wantMil : want;
         const used = c.mil ? outMil : out;
         if (player && used < cap) {
-          this.dispatch(c, player, camFwd);
-          if (chasing || c.mil) this.beginChase(c);
+          this.dispatch(c, player, camFwd, col);
+          this.beginChase(c);
           if (c.mil) outMil++;
           else out++;
         }
         continue;
       }
+      // parked across you, but you've walked (or driven) off: back in the car after you
+      if (c.state === 'parked' && player && c.pos.distanceTo(player) > 28 && (c.mil ? wantMil : want) > 0) this.beginChase(c);
       if (c.state === 'chasing') {
-        if (player) this.chaseStep(c, dt, player, col);
+        if (player) this.chaseStep(c, dt, player, col, stars, playerSpeed);
         else {
           c.state = 'leaving';
           c.t = 0;
@@ -528,83 +562,179 @@ export class Police {
     if (!c.dyn) c.dyn = new Dynamics(spec.mech);
     // wherever it is now, and whatever way it was going
     c.dyn.place(c.pos.x, c.pos.y, c.pos.z, c.yaw);
+    // already rolling (it was driving in), so it doesn't start from a standstill
+    c.dyn.vx = Math.sin(c.yaw) * Math.max(0, c.v);
+    c.dyn.vz = Math.cos(c.yaw) * Math.max(0, c.v);
     c.state = 'chasing';
   }
 
   /**
-   * One frame of pursuit: steer toward you, throttle for the gap, and ease off
-   * as it closes so it doesn't drive through the back of your car.
+   * One frame of pursuit. Far off, it drives the streets to you (pursuit.ts);
+   * close and in sight, it comes straight for you. Police try to spin you:
+   * up to your back corner and through it. The military keep a distance and
+   * shoot, unless you're very wanted, when the armour just rams. If you stop,
+   * a patrol car pulls up across you and the officers get out. Lose them for
+   * long enough and they go and look where they last saw you, then give up.
    */
-  private chaseStep(c: Cruiser, dt: number, player: THREE.Vector3, col: Collision | null) {
+  private chaseStep(c: Cruiser, dt: number, player: THREE.Vector3, col: Collision | null, stars: number, playerSpeed: number) {
     const d = c.dyn!;
     const dx = player.x - c.pos.x, dz = player.z - c.pos.z;
     const dist = Math.hypot(dx, dz) || 1;
-    // Military vehicles are faster and heavier than patrol cars, and they do not
-    // ease off the way a cruiser does.
+    c.hitT = (c.hitT ?? 9) + dt;
+    // can it see you?
+    const sees = !col || (_o.set(c.pos.x, c.pos.y + 1.2, c.pos.z), _d.set(dx / dist, 0, dz / dist), col.raycast(_o, _d, dist) >= dist - 1.5);
+    if (sees || dist < 25) {
+      c.lostT = 0;
+      (c.last ??= new THREE.Vector3()).copy(player);
+    } else c.lostT = (c.lostT ?? 0) + dt;
+    const target = c.lostT && c.lostT > 1.5 && c.last ? c.last : player;
     if (c.mil) {
       c.turretCd -= dt;
       c.beacon -= dt;
-      if (dist < 46 && c.turretCd <= 0) {
+      if (dist < 46 && sees && c.turretCd <= 0) {
         c.turretCd = 1.1 + Math.random() * 0.9;
         this.hooks.shoot(c.pos.clone().setY(c.pos.y + 1.5), Math.random() < 0.34);
       }
       if (dist > 90 && c.beacon <= 0) {
         this.hooks.say('Military, closing from the ring road.');
-        c.beacon = 0.35;
+        c.beacon = 30;
       }
     }
-    // aim: straight at you, but damped so it doesn't flick about at speed
-    const want = Math.atan2(dx, dz);
-    let err = want - c.yaw;
+    // where to aim: you (leading your movement), your back corner, or the next street corner
+    const close = dist < 45 && sees;
+    const cf = this.chased;
+    const pvx = cf ? cf.dyn.vx : this.heading.x * playerSpeed, pvz = cf ? cf.dyn.vz : this.heading.z * playerSpeed;
+    const lead = Math.min(1.2, dist / 30);
+    _t.set(target.x + pvx * lead, 0, target.z + pvz * lead);
+    const ramming = c.mil ? stars >= 8 : true;
+    if (close && !c.mil && cf && playerSpeed > 7 && dist < 16) {
+      // the spin: line up on the rear quarter and drive through it
+      const fy = Math.atan2(pvx, pvz), fx = Math.sin(fy), fz = Math.cos(fy);
+      c.side ??= Math.random() < 0.5 ? -1 : 1;
+      _t.set(player.x - fx * 1.8 + fz * c.side * 1.0, 0, player.z - fz * 1.8 - fx * c.side * 1.0);
+    }
+    waypoint(c.pos, _t, close, _w, c.yaw);
+    const wx = _w.x - c.pos.x, wz = _w.z - c.pos.z, wd = Math.hypot(wx, wz) || 1;
+    let err = Math.atan2(wx, wz) - c.yaw;
     while (err > Math.PI) err -= Math.PI * 2;
     while (err < -Math.PI) err += Math.PI * 2;
-    const steer = Math.max(-1, Math.min(1, -err * 1.5));
-    // keep a following distance: it wants to be on your bumper, not in you
-    // The military hold further back, because they shoot from there instead.
-    const gap = c.mil ? 24 : 7;
-    const near = dist < gap;
-    const throttle = near ? 0 : Math.min(1, 0.45 + dist / (c.mil ? 40 : 26));
+    // positive steer turns toward +x, which is +yaw (Dynamics): steer with the error, not against it
+    let steer = Math.max(-1, Math.min(1, err * 1.6));
+    if (col) steer = Math.max(-1, Math.min(1, steer + avoid(col, c.pos.x, c.pos.y, c.pos.z, c.yaw, c.v, _o, _d) * (close ? 0.5 : 1)));
+    // speed: flat out on a straight, slowing into corners, holding a gap if it shouldn't ram
+    // as quick as anything you can steal: they don't let a car outrun them on a straight
+    const top = c.mil ? 36 : 44;
+    const corner = Math.abs(err) > 0.5 || (!close && wd < 22 && Math.abs(err) > 0.2);
+    let want = corner ? 9 + 6 * (1 - Math.min(1, Math.abs(err))) : top;
+    const gap = c.mil && !ramming ? 24 : 0;
+    if (close && gap && dist < gap) want = 0;
+    // you've stopped: pull up across you and get out (police, on foot or parked)
+    if (!c.mil && dist < 13 && playerSpeed < 2.5) {
+      want = 0;
+      if (Math.abs(c.v) < 1.2) {
+        c.state = 'parked';
+        c.v = 0;
+        c.dyn = null;
+        const side = new THREE.Vector3(Math.cos(c.yaw), 0, -Math.sin(c.yaw));
+        this.hooks.deploy(c.pos.clone().addScaledVector(side, 1.6).setY(0.15));
+        this.hooks.deploy(c.pos.clone().addScaledVector(side, -1.6).setY(0.15));
+        return;
+      }
+    }
+    let throttle = c.v < want ? Math.min(1, 0.35 + (want - c.v) / 8) : 0;
+    let brake = c.v > want + 2 ? Math.min(1, (c.v - want) / 10) : 0;
+    // stuck against something: back out, wheel the other way, try again
+    if ((c.backT ?? 0) > 0) {
+      c.backT! -= dt;
+      throttle = 0;
+      brake = 1;
+      steer = -steer;
+    } else if (throttle > 0.5 && Math.abs(c.v) < 1.2) {
+      c.stuckT = (c.stuckT ?? 0) + dt;
+      if (c.stuckT > 1.4) {
+        c.stuckT = 0;
+        c.backT = 1.1;
+      }
+    } else c.stuckT = 0;
     const world = {
       ground: (x: number, z: number) => (col ? col.groundAt(x, z, c.pos.y + 0.8, 1, 0.9) : 0),
-      surface: () => ({ grip: 1.15, rough: 0 }),
+      surface: () => ({ grip: c.mil ? 1.25 : 1.15, rough: 0 }),
       wet: 0,
     };
-    d.step(dt, { throttle, brake: near && dist < gap * 0.62 ? 0.4 : 0, steer, handbrake: false, boost: dist > (c.mil ? 46 : 30) }, world);
+    d.step(dt, { throttle, brake, steer, handbrake: false, boost: !corner && dist > (c.mil ? 46 : 22) }, world);
     c.pos.set(d.x, d.y, d.z);
     c.yaw = d.yaw;
     c.v = d.forward;
-    // it shouldn't drive through walls
-    if (col) col.resolve(c.pos, 1.1, 1.5, 0.4);
+    if (col) {
+      const before = _o.copy(c.pos);
+      col.resolve(c.pos, 1.1, 1.5, 0.4);
+      const px = c.pos.x - before.x, pz = c.pos.z - before.z, pl = Math.hypot(px, pz);
+      if (pl > 1e-4) d.hit(px / pl, pz / pl, c.pos.x - (px / pl) * 1.1, c.pos.z - (pz / pl) * 1.1);
+    }
     d.x = c.pos.x;
     d.z = c.pos.z;
-    // lost you: give up after a while so they don't follow forever
-    if (dist > 150) {
+    // hitting your car: momentum both ways, and a spin if it caught a corner
+    if (cf && ramming) this.contact(c, cf);
+    // lost you: they search where they last saw you, then give up
+    if (dist > 220 || (c.lostT ?? 0) > 14) {
       c.state = 'leaving';
       c.t = 0;
       c.dyn = null;
     }
   }
 
-  /** Bring a cruiser down the nearest street, from the far side of where you're looking. */
-  private dispatch(c: Cruiser, p: THREE.Vector3, camFwd: THREE.Vector3) {
-    const road = roadFor(p);
-    const along = road.axis === 'z' ? camFwd.z : camFwd.x;
-    // come from behind the camera's view; a second car comes from the other way
-    const second = this.cars.some((o) => o !== c && o.state !== 'off');
-    const from = (along > 0 ? -1 : 1) * (second ? -1 : 1);
-    const dist = 60;
-    if (road.axis === 'z') {
-      c.pos.set(road.at, 0.15, p.z + from * dist);
-      c.stopAt.set(road.at, 0.15, p.z + from * 9);
-      c.yaw = from > 0 ? Math.PI : 0;
-    } else {
-      c.pos.set(p.x + from * dist, 0.15, road.at);
-      c.stopAt.set(p.x + from * 9, 0.15, road.at);
-      c.yaw = from > 0 ? -Math.PI / 2 : Math.PI / 2;
-    }
-    c.v = 17;
+  /** Car on car: the pursuit car and yours trade momentum where they touch. */
+  private contact(c: Cruiser, you: ChasedCar) {
+    const d = c.dyn!, y = you.dyn;
+    const mc = c.mil ? 4200 : 1750, my = you.mass;
+    const cfx = Math.sin(c.yaw), cfz = Math.cos(c.yaw), yfx = Math.sin(y.yaw), yfz = Math.cos(y.yaw);
+    for (const kc of [-1.5, 0, 1.5])
+      for (const ky of [-1, 0, 1]) {
+        const ax = c.pos.x + cfx * kc, az = c.pos.z + cfz * kc;
+        const bx = y.x + yfx * ky * you.reach, bz = y.z + yfz * ky * you.reach;
+        const nx = bx - ax, nz = bz - az, dd = Math.hypot(nx, nz), min = 1.9;
+        if (dd >= min || dd < 1e-4) continue;
+        const ux = nx / dd, uz = nz / dd;
+        // apart, shared by weight
+        const pen = min - dd, share = mc / (mc + my);
+        y.x += ux * pen * share;
+        y.z += uz * pen * share;
+        c.pos.x -= ux * pen * (1 - share);
+        c.pos.z -= uz * pen * (1 - share);
+        d.x = c.pos.x;
+        d.z = c.pos.z;
+        const rel = (y.vx - d.vx) * ux + (y.vz - d.vz) * uz;
+        if (rel >= 0) return;
+        const j = (-(1 + 0.25) * rel) / (1 / mc + 1 / my);
+        d.vx -= (ux * j) / mc;
+        d.vz -= (uz * j) / mc;
+        y.vx += (ux * j) / my;
+        y.vz += (uz * j) / my;
+        // caught off-centre (a back corner): it turns you
+        const lx = (bx - y.x) * Math.cos(y.yaw) - (bz - y.z) * Math.sin(y.yaw), lz = (bx - y.x) * Math.sin(y.yaw) + (bz - y.z) * Math.cos(y.yaw);
+        const jx = (ux * Math.cos(y.yaw) - uz * Math.sin(y.yaw)) * (j / my), jz = (ux * Math.sin(y.yaw) + uz * Math.cos(y.yaw)) * (j / my);
+        y.r += (lz * jx - lx * jz) * 0.6;
+        if ((c.hitT ?? 9) > 0.5 && j / my > 1.2) {
+          c.hitT = 0;
+          this.hooks.rammed?.(j / my, _o.set((ax + bx) / 2, c.pos.y + 0.6, (az + bz) / 2).clone());
+        }
+        return;
+      }
+  }
+
+  /** Bring a car in: somewhere on the streets out of your sight, a long way off, facing the way it needs to go. */
+  private dispatch(c: Cruiser, p: THREE.Vector3, camFwd: THREE.Vector3, col: Collision | null) {
+    const taken = this.cars.filter((o) => o !== c && o.state !== 'off').map((o) => o.pos);
+    const s = spawnPoint(p, this.heading, camFwd, taken, col);
+    c.pos.set(s.x, 0.15, s.z);
+    c.yaw = s.yaw;
+    c.stopAt.copy(p);
+    c.v = 14;
     c.state = 'coming';
     c.group.visible = true;
+    c.lostT = 0;
+    c.backT = c.stuckT = 0;
+    c.side = undefined;
     // a car that came back from a wreck is a whole car again
     c.hp = c.mil ? CRUISER_HP_MIL : CRUISER_HP;
     c.burn = 0;
@@ -612,6 +742,11 @@ export class Police {
     c.model.body.rotation.z = 0;
   }
 }
+
+const _o = new THREE.Vector3();
+const _d = new THREE.Vector3();
+const _t = new THREE.Vector3();
+const _w = new THREE.Vector3();
 
 function wrap(a: number) {
   while (a > Math.PI) a -= Math.PI * 2;
