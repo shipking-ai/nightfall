@@ -587,6 +587,7 @@ export class App {
       hurtFlash: (k) => this.warzone.hud.hurt(k),
       onModes: () => this.fightToModes(),
       scene: (s) => this.scenes.play(s),
+      cutscene: () => this.sceneBusy,
       onLeave: () => this.leave(),
     });
     this.scene.add(this.warzone.group);

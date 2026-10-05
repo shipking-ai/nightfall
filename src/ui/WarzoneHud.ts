@@ -4,6 +4,7 @@ import { glyph, hintRow } from '../input/glyphs';
 import type { Action } from '../input/actions';
 import type { CapturePoint, Unit } from '../modes/warzone/Soldier';
 import type { Loadout } from '../modes/warzone/weapons';
+import { WEAPON } from '../modes/warzone/arsenal';
 
 /**
  * WARZONE's interface: the score and the clock at the top with the three
@@ -45,6 +46,8 @@ export class WarzoneHud {
   private magEl: HTMLElement;
   private reserveEl: HTMLElement;
   private otherEl: HTMLElement;
+  private modeEl: HTMLElement;
+  private scopeEl: HTMLElement;
   private reloadEl: HTMLElement;
   private cross: HTMLElement;
   private dot: HTMLElement;
@@ -96,8 +99,10 @@ export class WarzoneHud {
     this.magEl = h('b');
     this.reserveEl = h('span', { class: 'wz-gun__res' });
     this.otherEl = h('span', { class: 'wz-gun__other meta' });
+    this.modeEl = h('span', { class: 'wz-gun__mode meta' });
+    this.scopeEl = h('div', { class: 'wz-scope' }, h('i', { class: 'wz-scope__h' }), h('i', { class: 'wz-scope__v' }));
     this.reloadEl = h('i', { class: 'wz-gun__reload' });
-    const gun = h('div', { class: 'wz-gun' }, this.gunEl, h('div', { class: 'wz-gun__ammo' }, this.magEl, this.reserveEl), this.reloadEl, this.otherEl);
+    const gun = h('div', { class: 'wz-gun' }, h('div', { class: 'wz-gun__head' }, this.modeEl, this.gunEl), h('div', { class: 'wz-gun__ammo' }, this.magEl, this.reserveEl), this.reloadEl, this.otherEl);
     this.cross = h('div', { class: 'wz-cross' }, h('i'), h('i'), h('i'), h('i'));
     this.dot = h('div', { class: 'wz-dot' });
     this.hitEl = h('div', { class: 'wz-hit' }, h('i'), h('i'), h('i'), h('i'));
@@ -113,7 +118,7 @@ export class WarzoneHud {
       this.deathEl,
       this.loadTitle,
       this.loadCards,
-      h('div', { class: 'wz-load__help' }, h('span', { class: 'hintrow' }, glyph('tabPrev'), glyph('tabNext'), h('span', { class: 'meta' }, 'Loadout')), h('span', { class: 'hintrow' }, glyph('jump'), h('span', { class: 'meta' }, 'Deploy'))),
+      h('div', { class: 'wz-load__help' }, h('span', { class: 'hintrow' }, glyph('tabPrev'), glyph('tabNext'), h('span', { class: 'meta' }, 'Loadout')), h('span', { class: 'hintrow' }, glyph('interact'), h('span', { class: 'meta' }, 'Gunsmith')), h('span', { class: 'hintrow' }, glyph('jump'), h('span', { class: 'meta' }, 'Deploy'))),
     );
     this.boardEl = h('div', { class: 'wz-board' });
     this.hints = h('div', { class: 'wz-hints' }, ...HINTS.map(([a, t]) => hintRow(a, t)));
@@ -146,6 +151,7 @@ export class WarzoneHud {
       vitals,
       gun,
       this.cross,
+      this.scopeEl,
       this.dot,
       this.hitEl,
       this.annEl,
@@ -251,20 +257,24 @@ export class WarzoneHud {
     this.armorEl.style.transform = `scaleX(${Math.max(0, armor / 50).toFixed(3)})`;
   }
 
-  weapon(name: string, mag: number, reserve: number, other: string, reload: number | null) {
+  /** `mag` -1: a blade (nothing to count). */
+  weapon(name: string, mag: number, reserve: number, other: string, reload: number | null, mode = '') {
     this.gunEl.textContent = name;
-    this.magEl.textContent = String(mag);
-    this.magEl.classList.toggle('is-low', mag <= 3);
-    this.reserveEl.textContent = `/ ${reserve}`;
+    this.modeEl.textContent = mode;
+    this.magEl.textContent = mag < 0 ? '—' : String(mag);
+    this.magEl.classList.toggle('is-low', mag >= 0 && mag <= 3);
+    this.reserveEl.textContent = mag < 0 ? '' : `/ ${reserve}`;
     this.otherEl.textContent = other;
     this.reloadEl.style.transform = `scaleX(${reload == null ? 0 : reload.toFixed(3)})`;
     this.reloadEl.classList.toggle('is-on', reload != null);
   }
 
-  crosshair(c: { spread: number; enemy: boolean; aiming: boolean; fp?: boolean } | null) {
+  /** `scope`: looking through a magnified optic (the view goes dark round the glass). */
+  crosshair(c: { spread: number; enemy: boolean; aiming: boolean; fp?: boolean; scope?: boolean } | null) {
     const on = !!c && !(c.aiming && c.fp);
     setOn(this.cross, on);
-    setOn(this.dot, !!c && !!c.fp && c.aiming);
+    setOn(this.dot, !!c && !!c.fp && c.aiming && !c.scope);
+    setOn(this.scopeEl, !!c && !!c.fp && !!c.scope);
     if (!c) return;
     this.cross.style.setProperty('--s', `${Math.max(5, Math.min(90, c.spread)).toFixed(1)}px`);
     this.cross.classList.toggle('is-enemy', c.enemy);
@@ -303,16 +313,20 @@ export class WarzoneHud {
     this.annT = kind === 'pickup' ? 1 : 2.2;
   }
 
-  loadout(on: boolean, list?: Loadout[], sel = 0, first = false) {
+  loadout(on: boolean, list?: Loadout[], sel = 0, first = false, force = false) {
     setOn(this.loadEl, on);
     if (!on || !list) return;
     const key = `${sel}|${first}`;
+    if (force) this.lastLoadout = '';
     if (key === this.lastLoadout) return;
     this.lastLoadout = key;
     this.loadTitle.textContent = first ? 'Choose a loadout' : 'Next life';
     this.loadCards.replaceChildren(
-      ...list.map((l, i) => h('div', { class: `wz-card${i === sel ? ' is-sel' : ''}` }, h('b', {}, l.name), h('span', { class: 'meta' }, l.line))),
+      ...list.map((l, i) =>
+        h('div', { class: `wz-card${i === sel ? ' is-sel' : ''}${l.custom ? ' is-custom' : ''}` }, h('b', {}, l.name), h('span', { class: 'meta' }, l.line), h('em', { class: 'meta' }, `${WEAPON[l.primary]?.name ?? ''} · ${WEAPON[l.secondary]?.name ?? ''}`)),
+      ),
     );
+    this.loadCards.children[sel]?.scrollIntoView({ block: 'nearest' });
   }
 
   death(d: { name: string; gun: string; head: boolean; t: number } | null) {

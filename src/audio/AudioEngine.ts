@@ -24,6 +24,13 @@ export interface EngineIn {
   damage: number;
 }
 
+/** What a shot sounds like: calibre weight 0..1, the character of the report, and whether it's suppressed. */
+export interface ShotSpec {
+  caliber: number;
+  report: 'crack' | 'boom' | 'snap' | 'thump' | 'whump' | 'none';
+  quiet?: boolean;
+}
+
 export class AudioEngine {
   ctx: AudioContext | null = null;
   private master!: GainNode;
@@ -662,51 +669,152 @@ export class AudioEngine {
     };
   }
 
-  /** A gunshot: a hard crack, a chest thump, and the street throwing it back. null pos = yours. */
-  gunshot(pos: THREE.Vector3 | null, kind: 'pistol' | 'smg' | 'cop' = 'pistol') {
+  /**
+   * A gunshot: a hard crack, a chest thump, and the street throwing it back.
+   * null pos = yours. A spec shapes it by calibre (a pistol pops, a .50
+   * splits the air and rolls on) and report; suppressed it's a cough.
+   */
+  gunshot(pos: THREE.Vector3 | null, kind: 'pistol' | 'smg' | 'cop' | ShotSpec = 'pistol') {
     if (!this.ctx || !this.enabled) return;
+    const spec: ShotSpec = typeof kind === 'string' ? (kind === 'smg' ? { caliber: 0.35, report: 'snap' } : kind === 'pistol' ? { caliber: 0.3, report: 'crack' } : { caliber: 0.55, report: 'crack' }) : kind;
     const ctx = this.ctx, t = ctx.currentTime;
     const out = ctx.createGain();
-    let dest: AudioNode = this.sfx;
     if (pos) {
-      const pan = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 6, rolloffFactor: 1.1, maxDistance: 400 });
+      const pan = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 6, rolloffFactor: spec.quiet ? 2 : 1.1, maxDistance: 400 });
       pan.positionX.value = pos.x;
       pan.positionY.value = pos.y + 1.4;
       pan.positionZ.value = pos.z;
       out.connect(pan).connect(this.sfx);
-      dest = pan;
     } else out.connect(this.sfx);
-    void dest;
-    const vol = kind === 'smg' ? 0.55 : 0.8;
-    // crack
+    const c = spec.caliber, q = !!spec.quiet;
+    const boom = spec.report === 'boom' || spec.report === 'whump';
+    const vol = (0.45 + c * 0.5) * (q ? 0.32 : 1);
+    const len = (0.07 + c * 0.16) * (q ? 0.6 : 1);
+    // crack: brighter for small fast rounds, darker for big ones
     const n = ctx.createBufferSource();
     n.buffer = this.noise;
     n.playbackRate.value = 0.8 + Math.random() * 0.4;
     const bp = ctx.createBiquadFilter();
-    bp.type = 'bandpass';
-    bp.frequency.value = kind === 'smg' ? 1900 : 1300;
+    bp.type = q ? 'lowpass' : 'bandpass';
+    bp.frequency.value = q ? 900 : (spec.report === 'snap' ? 2100 : 1600) - c * 700;
     bp.Q.value = 0.7;
     const ng = ctx.createGain();
     ng.gain.setValueAtTime(0, t);
     ng.gain.linearRampToValueAtTime(vol, t + 0.002);
-    ng.gain.exponentialRampToValueAtTime(0.001, t + (kind === 'smg' ? 0.09 : 0.16));
+    ng.gain.exponentialRampToValueAtTime(0.001, t + len);
     n.connect(bp).connect(ng).connect(out);
     n.start(t, Math.random());
-    n.stop(t + 0.3);
-    // thump
+    n.stop(t + len + 0.1);
+    // thump: the chest hit, deeper and longer the bigger the round
     const o = ctx.createOscillator();
-    o.frequency.setValueAtTime(140, t);
-    o.frequency.exponentialRampToValueAtTime(38, t + 0.12);
+    o.frequency.setValueAtTime(boom ? 110 : 150 - c * 40, t);
+    o.frequency.exponentialRampToValueAtTime(boom ? 28 : 40, t + 0.1 + c * 0.1);
     const og = ctx.createGain();
-    og.gain.setValueAtTime(vol * 0.9, t);
-    og.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    og.gain.setValueAtTime(vol * (0.7 + c * 0.5) * (q ? 0.6 : 1), t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.14 + c * 0.16);
     o.connect(og).connect(out);
     o.start(t);
-    o.stop(t + 0.2);
-    // the buildings answer
+    o.stop(t + 0.4);
+    // the buildings answer (barely, for a suppressed shot)
     const send = ctx.createGain();
-    send.gain.value = 0.9;
+    send.gain.value = q ? 0.15 : 0.7 + c * 0.6;
     out.connect(send).connect(this.reverbIn);
+  }
+
+  /** An explosion: the crack of it, the low roll, debris falling. */
+  explosion(pos: THREE.Vector3, power = 1) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const pan = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 10, rolloffFactor: 0.8, maxDistance: 800 });
+    pan.positionX.value = pos.x;
+    pan.positionY.value = pos.y;
+    pan.positionZ.value = pos.z;
+    const out = ctx.createGain();
+    out.gain.value = 0.9 * power;
+    out.connect(pan).connect(this.sfx);
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(3200, t);
+    lp.frequency.exponentialRampToValueAtTime(140, t + 1.4);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(1, t + 0.006);
+    g.gain.setTargetAtTime(0.0001, t + 0.08, 0.5);
+    src.connect(lp).connect(g).connect(out);
+    src.start(t, Math.random() * 2);
+    src.stop(t + 3);
+    const o = ctx.createOscillator();
+    o.frequency.setValueAtTime(70, t);
+    o.frequency.exponentialRampToValueAtTime(22, t + 0.8);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(1.1, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 1);
+    o.connect(og).connect(out);
+    o.start(t);
+    o.stop(t + 1.1);
+    const send = ctx.createGain();
+    send.gain.value = 1.2;
+    out.connect(send).connect(this.reverbIn);
+  }
+
+  /** The gun's own noises: a bolt worked, a pump racked, a magazine out and in, an empty click, a blade through air. */
+  mechanism(kind: 'bolt' | 'pump' | 'magOut' | 'magIn' | 'click' | 'swing' | 'shell' | 'pin', pos: THREE.Vector3 | null = null) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = pos ? 0.6 : 0.35;
+    if (pos) {
+      const pan = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 2, rolloffFactor: 2, maxDistance: 60 });
+      pan.positionX.value = pos.x;
+      pan.positionY.value = pos.y + 1.3;
+      pan.positionZ.value = pos.z;
+      out.connect(pan).connect(this.sfx);
+    } else out.connect(this.sfx);
+    // a few clicks of filtered noise, spaced like the mechanism moves
+    const clicks: [number, number, number][] =
+      kind === 'bolt' ? [[0, 2600, 0.5], [0.12, 1800, 0.6], [0.3, 2200, 0.5], [0.42, 3000, 0.7]]
+      : kind === 'pump' ? [[0, 900, 0.8], [0.16, 1300, 0.9]]
+      : kind === 'magOut' ? [[0, 1500, 0.5], [0.05, 700, 0.4]]
+      : kind === 'magIn' ? [[0, 1200, 0.7], [0.08, 2600, 0.6]]
+      : kind === 'click' ? [[0, 3800, 0.5]]
+      : kind === 'shell' ? [[0, 1700, 0.6], [0.06, 2400, 0.4]]
+      : kind === 'pin' ? [[0, 4200, 0.4], [0.1, 3000, 0.3]]
+      : [];
+    if (kind === 'swing') {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(600, t);
+      bp.frequency.exponentialRampToValueAtTime(2400, t + 0.18);
+      bp.Q.value = 1.5;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.7, t + 0.09);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      src.connect(bp).connect(g).connect(out);
+      src.start(t, Math.random());
+      src.stop(t + 0.3);
+      return;
+    }
+    for (const [dt, f, v] of clicks) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = f;
+      bp.Q.value = 3;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t + dt);
+      g.gain.linearRampToValueAtTime(v, t + dt + 0.002);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dt + 0.045);
+      src.connect(bp).connect(g).connect(out);
+      src.start(t + dt, Math.random());
+      src.stop(t + dt + 0.06);
+    }
   }
 
   /** A fist landing (or not). */

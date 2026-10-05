@@ -14,9 +14,12 @@ import type { Blood } from '../fx/Blood';
 import { NavGrid } from './warzone/NavGrid';
 import { Soldier, chestY, headY, wrap, type Battle, type CapturePoint, type Unit } from './warzone/Soldier';
 import { GunMeshes } from './warzone/Guns';
+import { Blasts } from './warzone/Blasts';
 import { Viewmodel } from './warzone/Viewmodel';
-import { ARMOR_SOAK, GUNS, LOADOUTS, MAX_ARMOR, damageAt, type Gun, type GunId, type Loadout } from './warzone/weapons';
+import { ARMOR_SOAK, BOT_PRIMARIES, GUNS, MAX_ARMOR, allLoadouts, damageAt, loadoutGuns, type Gun, type Loadout } from './warzone/weapons';
 import { WarzoneHud } from '../ui/WarzoneHud';
+import { Gunsmith } from '../ui/Gunsmith';
+import { CUSTOM_SLOTS, PRESETS, saveCustom } from './warzone/weapons';
 
 /**
  * WARZONE: Domination in Pier 9 Yard, six against six. The same yard you can
@@ -75,6 +78,8 @@ export interface WarzoneHost {
   onLeave(): void;
   /** play an in-engine scene (the match opening, its end) */
   scene?(s: Scene): void;
+  /** a scene has the camera (your hands are off the gun) */
+  cutscene?(): boolean;
 }
 
 /** You, as the match sees you. */
@@ -116,12 +121,16 @@ export class Warzone {
   group = new THREE.Group();
   active = false;
   hud: WarzoneHud;
+  smith: Gunsmith;
   me: Me;
   bots: Soldier[] = [];
   private units: Unit[] = [];
   private batch = new FigureBatch(11);
   private guns = new GunMeshes(12);
   private vm = new Viewmodel();
+  private blasts = new Blasts();
+  /** rockets, grenades and slow rounds in the air */
+  private shells: Shell[] = [];
   private nav: NavGrid | null = null;
   private walls: Box[] = [];
   private points: CapturePoint[] = POINTS.map(([id, x, z]) => ({ id, pos: new THREE.Vector3(x, 0, z), owner: -1, cap: 0, capTeam: -1, contested: false, radius: 5 }));
@@ -136,9 +145,24 @@ export class Warzone {
   /** first person (the default) or over the shoulder */
   firstPerson = true;
   // your guns
-  loadout: Loadout = LOADOUTS[0];
+  loadouts: Loadout[] = allLoadouts();
+  loadout: Loadout = this.loadouts[0];
   private slot = 0;
-  private held: [GunId, GunId] = ['carbine', 'pistol'];
+  private held: [Gun, Gun] = [GUNS.carbine, GUNS.pistol];
+  /** how far the sights are up (0 hip … 1 aimed), at the gun's own speed */
+  private adsK = 0;
+  private sinceSprint = 99;
+  private burstLeft = 0;
+  /** working the action after a shot (bolt, pump, lever) */
+  private cycleT = 0;
+  private cycleDur = 1;
+  private shotIndex = 0;
+  private reloadDur = 1;
+  private reloadEmpty = false;
+  private meleeT = 0;
+  private recoilYawDebt = 0;
+  /** the ground shaking under you (a blast nearby) */
+  private shakeK = 0;
   private mag: [number, number] = [30, 12];
   private reserve: [number, number] = [120, 48];
   private reloadT = 0;
@@ -163,7 +187,7 @@ export class Warzone {
 
   constructor(private host: WarzoneHost) {
     this.me = new Me(host.player);
-    this.group.add(this.batch.group, this.guns.group, this.vm.group);
+    this.group.add(this.batch.group, this.guns.group, this.vm.group, this.blasts.group);
     this.group.visible = false;
     // the points: a ring on the ground, a faint disc, a thin beam of light
     for (const p of this.points) {
@@ -194,6 +218,7 @@ export class Warzone {
       leave: () => host.onLeave(),
     });
     this.hud.level(this.skillName);
+    this.smith = new Gunsmith(this.hud.el);
     this.battle = {
       units: this.units,
       points: this.points,
@@ -300,9 +325,9 @@ export class Warzone {
       const team: 0 | 1 = i < 5 ? 0 : 1;
       const p = makePerson(this.rng, 'soldier');
       const o = this.teamKit(p.outfit, team);
-      const lo = LOADOUTS[Math.floor(this.rng.next() * LOADOUTS.length)];
+      const gun = BOT_PRIMARIES[Math.floor(this.rng.next() * BOT_PRIMARIES.length)];
       const name = names.splice(Math.floor(this.rng.next() * names.length), 1)[0];
-      const s = new Soldier(team, name, p.body, o, lo.primary);
+      const s = new Soldier(team, name, p.body, o, gun);
       this.batch.dress(i, o, 0x9fc4ff, p.body);
       this.bots.push(s);
     }
@@ -326,7 +351,9 @@ export class Warzone {
     this.me.alive = false;
     this.deadT = RESPAWN;
     this.killedBy = null;
-    this.hud.loadout(true, LOADOUTS, LOADOUTS.indexOf(this.loadout), true);
+    this.shells.length = 0;
+    this.blasts.clear();
+    this.hud.loadout(true, this.loadouts, this.loadouts.indexOf(this.loadout), true);
     this.placeForPreview();
   }
 
@@ -382,19 +409,20 @@ export class Warzone {
 
   private spawnBot(b: Soldier) {
     const [x, z] = this.spawnSpot(b.team);
-    const lo = LOADOUTS[Math.floor(Math.random() * LOADOUTS.length)];
-    b.spawn(x, z, this.host.collision.groundAt(x, z, 2, 3, 0.3), this.faceInto(x, z), lo.primary);
+    const gun = BOT_PRIMARIES[Math.floor(Math.random() * BOT_PRIMARIES.length)];
+    b.spawn(x, z, this.host.collision.groundAt(x, z, 2, 3, 0.3), this.faceInto(x, z), gun);
   }
 
   /** Into the fight with the chosen loadout. */
   private deploy() {
     const lo = this.loadout;
     const firstDrop = this.phase === 'loadout';
-    this.held = [lo.primary, lo.secondary];
+    this.held = loadoutGuns(lo);
     this.slot = 0;
-    this.mag = [GUNS[lo.primary].mag, GUNS[lo.secondary].mag];
-    this.reserve = [GUNS[lo.primary].reserve, GUNS[lo.secondary].reserve];
-    this.reloadT = this.switchT = this.cool = this.bloom = this.recoilDebt = 0;
+    this.mag = [this.held[0].mag, this.held[1].mag];
+    this.reserve = [this.held[0].reserve, this.held[1].reserve];
+    this.reloadT = this.switchT = this.cool = this.bloom = this.recoilDebt = this.recoilYawDebt = 0;
+    this.adsK = this.burstLeft = this.cycleT = this.shotIndex = this.meleeT = 0;
     const me = this.me;
     me.alive = true;
     me.hp = 100;
@@ -444,6 +472,7 @@ export class Warzone {
         this.separate();
         this.pointsUpdate(dt);
         this.pickupsUpdate(dt);
+        this.shellsUpdate(dt);
         this.respawnFlow(dt);
         if (this.phase === 'play') {
           this.clock -= dt;
@@ -459,15 +488,18 @@ export class Warzone {
     this.bots.forEach((b, i) => {
       b.pose(live ? dt : 0, t);
       this.batch.write(i, b.rig, b.parts, false);
-      this.guns.set(i + 1, b.alive ? b.gun.id : null, b.rig, b.yaw);
+      this.guns.set(i + 1, b.alive ? b.gun : null, b.rig, b.yaw);
     });
     this.batch.flush();
     const p = this.host.player;
     const gun = this.gun;
     const fp = this.fpActive;
     p.hidden = fp;
-    this.vm.visible = fp;
-    this.guns.set(0, this.me.alive && this.phase === 'play' && !fp ? gun.id : null, p.rig, p.facing, this.muzzle);
+    // through a magnified scope you see the glass, not the gun
+    this.vm.visible = fp && !(this.adsK > 0.85 && gun.zoom <= 24);
+    this.guns.set(0, this.me.alive && this.phase === 'play' && !fp ? gun : null, p.rig, p.facing, this.muzzle);
+    this.drawShells();
+    this.blasts.update(live ? dt : 0);
     this.drawPoints(t);
     this.drawPickups(t);
     // the HUD
@@ -476,8 +508,8 @@ export class Warzone {
     this.hud.markers(this.points, cam, this.me);
     this.hud.tags(this.bots, cam, this.me);
     this.hud.vitals(this.me.hp, this.me.armor);
-    const other = GUNS[this.held[1 - this.slot]];
-    this.hud.weapon(gun.name, this.mag[this.slot], this.reserve[this.slot], other.name, this.reloadT > 0 ? 1 - this.reloadT / gun.reload : null);
+    const other = this.held[1 - this.slot];
+    this.hud.weapon(gun.name, gun.cls === 'melee' ? -1 : this.mag[this.slot], this.reserve[this.slot], other.name, this.reloadT > 0 ? 1 - this.reloadT / this.reloadDur : null, MODE_NAME[gun.mode] + (gun.mode === 'burst' ? ` ×${gun.burst}` : ''));
     this.hud.update(dt);
   }
 
@@ -498,11 +530,20 @@ export class Warzone {
     const fx = Math.sin(f.yaw) * Math.cos(f.pitch), fy = -Math.sin(f.pitch), fz = Math.cos(f.yaw) * Math.cos(f.pitch);
     cam.position.set(p.pos.x + Math.sin(f.yaw) * 0.14, p.pos.y + this.eyeY, p.pos.z + Math.cos(f.yaw) * 0.14);
     cam.lookAt(cam.position.x + fx, cam.position.y + fy, cam.position.z + fz);
+    if (this.shakeK > 0) {
+      const k = this.shakeK * this.shakeK * 0.035;
+      cam.rotateX((Math.random() - 0.5) * k);
+      cam.rotateY((Math.random() - 0.5) * k);
+      cam.rotateZ((Math.random() - 0.5) * k * 0.6);
+      this.shakeK = Math.max(0, this.shakeK - dt * 1.6);
+    }
     this.vm.update(dt, cam, {
-      aim: this.host.follow.aim,
+      aim: this.adsK,
       speed: p.speed,
       sprint: p.sprinting,
-      reload: this.reloadT > 0 ? 1 - this.reloadT / this.gun.reload : null,
+      reload: this.reloadT > 0 ? 1 - this.reloadT / this.reloadDur : null,
+      empty: this.reloadEmpty,
+      cycle: this.cycleT > 0 ? 1 - this.cycleT / this.cycleDur : 0,
       swap: this.switchT,
       yaw: f.yaw,
       pitch: f.pitch,
@@ -512,7 +553,7 @@ export class Warzone {
   }
 
   get gun(): Gun {
-    return GUNS[this.held[this.slot]];
+    return this.held[this.slot];
   }
 
   /* ─────────────────────────── your guns ─────────────────────────── */
@@ -542,14 +583,25 @@ export class Warzone {
       this.hud.crosshair(null);
       return;
     }
+    if (this.host.cutscene?.()) {
+      inp.aiming = f.aim = false;
+      this.adsK = 0;
+      this.hud.crosshair(null);
+      return;
+    }
     const gun = this.gun;
-    this.vm.setGun(gun.id, SLEEVE[this.me.team]);
+    this.vm.setGun(gun, SLEEVE[this.me.team]);
+    const melee = gun.cls === 'melee';
     // switch, reload
     if (this.switchT > 0) this.switchT -= dt;
+    if (this.cycleT > 0) this.cycleT -= dt;
+    if (this.meleeT > 0) this.meleeT -= dt;
+    this.sinceSprint = p.sprinting ? 0 : this.sinceSprint + dt;
     if (inp.pressed('nextWeapon') || inp.pressed('prevWeapon')) {
       this.slot = 1 - this.slot;
       this.switchT = 0.45;
-      this.reloadT = 0;
+      this.reloadT = this.burstLeft = this.cycleT = 0;
+      this.adsK = 0;
       p.act('gun.switch');
       this.host.audio.uiTick();
     }
@@ -557,40 +609,77 @@ export class Warzone {
       this.reloadT -= dt;
       if (this.reloadT <= 0) {
         this.reloadT = 0;
-        const need = this.gun.mag - this.mag[this.slot];
-        const take = Math.min(need, this.reserve[this.slot]);
-        this.mag[this.slot] += take;
-        this.reserve[this.slot] -= take;
-        inp.rumble('reloadDone');
+        if (gun.single) {
+          // one round in; keep going until it's full (or you fire)
+          if (this.reserve[this.slot] > 0 && this.mag[this.slot] < gun.mag) {
+            this.mag[this.slot]++;
+            this.reserve[this.slot]--;
+            this.host.audio.mechanism('shell');
+          }
+          if (this.reserve[this.slot] > 0 && this.mag[this.slot] < gun.mag) this.reloadT = this.reloadDur;
+          else if (this.reloadEmpty) this.cycle(gun);
+        } else {
+          const need = gun.mag - this.mag[this.slot];
+          const take = Math.min(need, this.reserve[this.slot]);
+          this.mag[this.slot] += take;
+          this.reserve[this.slot] -= take;
+          this.host.audio.mechanism('magIn');
+          inp.rumble('reloadDone');
+        }
       }
     }
-    const startReload = () => {
-      if (this.reloadT > 0 || this.switchT > 0 || this.mag[this.slot] >= gun.mag || this.reserve[this.slot] <= 0) return;
-      this.reloadT = gun.reload;
-      p.anim.play('gun.reload', { group: 'reload', fadeIn: 0.1, fadeOut: 0.2, speed: 2.2 / gun.reload });
-      inp.rumble('reload');
-    };
-    if (inp.pressed('reload')) startReload();
-    // aim
-    const aiming = inp.state('aim') && this.switchT <= 0 && !p.sprinting;
-    inp.aiming = aiming;
-    f.aim = aiming;
-    this.zoom(aiming ? gun.zoom : this.baseFov, dt);
-    p.speedMul = gun.weight * (aiming ? 0.62 : 1) * (this.reloadT > 0 ? 0.9 : 1);
+    if (!melee && inp.pressed('reload')) this.startReload();
+    // aim: the sights come up at the gun's own speed, and not while sprinting or swapping
+    const aiming = !melee && inp.state('aim') && this.switchT <= 0 && !p.sprinting && this.meleeT <= 0;
+    const adsRate = 1 / Math.max(0.08, gun.adsTime);
+    this.adsK = THREE.MathUtils.clamp(this.adsK + (aiming ? adsRate : -adsRate * 1.3) * dt, 0, 1);
+    const k = this.adsK;
+    inp.aiming = k > 0.5;
+    f.aim = k > 0.5;
+    this.zoom(this.baseFov + (gun.zoom - this.baseFov) * easeInOut(k), dt, true);
+    p.speedMul = gun.weight * (1 - k * 0.38) * (this.reloadT > 0 ? 0.9 : 1);
     this.aimAssist(aiming);
     this.wasAiming = aiming;
     // fire
-    const want = gun.auto ? inp.value('attack') > 0.35 : inp.pressed('attack');
-    if (want && this.cool <= 0 && this.reloadT <= 0 && this.switchT <= 0 && !p.sprinting && inp.locked) {
-      if (this.mag[this.slot] <= 0) startReload();
-      else this.shoot(aiming);
+    const ready = this.cool <= 0 && this.switchT <= 0 && !p.sprinting && this.sinceSprint >= gun.sprintFire && this.cycleT <= 0 && this.meleeT <= 0 && inp.locked;
+    if (melee) {
+      if ((inp.pressed('attack') || inp.pressed('melee')) && this.meleeT <= 0 && this.switchT <= 0) this.swing(gun);
+    } else {
+      // quick melee with whatever's in your hands
+      if (inp.pressed('melee') && this.meleeT <= 0 && this.switchT <= 0) this.swing(gun);
+      const trigger = inp.value('attack') > 0.35;
+      const pulled = inp.pressed('attack');
+      // a single-loader can be stopped mid-reload to fire what's in it
+      if (pulled && gun.single && this.reloadT > 0 && this.mag[this.slot] > 0) this.reloadT = 0;
+      const want = gun.mode === 'auto' ? trigger : pulled;
+      if (gun.mode === 'burst' && pulled && ready && this.reloadT <= 0 && this.burstLeft <= 0 && this.mag[this.slot] > 0) this.burstLeft = gun.burst;
+      if (this.burstLeft > 0) {
+        if (this.cool <= 0 && this.reloadT <= 0 && this.switchT <= 0) {
+          if (this.mag[this.slot] <= 0) this.burstLeft = 0;
+          else {
+            this.burstLeft--;
+            this.shoot(k);
+            // a pause after the burst before the next can start
+            if (this.burstLeft === 0) this.cool = gun.rate * 3.2;
+          }
+        }
+      } else if (want && gun.mode !== 'burst' && ready && this.reloadT <= 0) {
+        if (this.mag[this.slot] <= 0) {
+          if (pulled) this.host.audio.mechanism('click');
+          this.startReload();
+        } else this.shoot(k);
+      }
     }
-    // recoil settles back (most of it)
-    if (this.recoilDebt > 0) {
-      const back = Math.min(this.recoilDebt, dt * 0.09);
+    // recoil settles back: the gun's own recovery, faster once you let go
+    if (this.recoilDebt > 0 && this.sinceFire > gun.rate * 0.9) {
+      const back = Math.min(this.recoilDebt, dt * (0.06 + gun.recover * 0.6));
       this.recoilDebt -= back;
-      f.pitch += back * 0.6;
+      f.pitch += back * 0.7;
+      const yb = this.recoilYawDebt * Math.min(1, dt * gun.recover * 6);
+      this.recoilYawDebt -= yb;
+      f.yaw -= yb * 0.5;
     }
+    if (this.sinceFire > gun.rate * 2.5) this.shotIndex = 0;
     // the body: gun up while aiming or just after a shot, at the ready otherwise
     const up = aiming || this.sinceFire < 0.7;
     if (gun.long) {
@@ -602,77 +691,264 @@ export class Warzone {
     }
     p.aimYaw = up || this.fpActive ? f.yaw : null;
     p.lookPitch = up ? -f.pitch * 0.8 : 0;
-    // the crosshair: as wide as the spread really is
-    const spread = this.spread(aiming);
+    // inspect: hold reload with a full magazine
+    if (inp.held('reload') && this.mag[this.slot] >= gun.mag && this.reloadT <= 0 && !aiming) this.vm.inspect();
+    // the crosshair: as wide as the spread really is (none through a scope)
+    const spread = this.spread(k);
     const px = (Math.tan(spread) / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2))) * (innerHeight / 2);
-    this.hud.crosshair({ spread: px, enemy: this.enemyUnderCrosshair(), aiming, fp: this.fpActive });
+    this.hud.crosshair({ spread: melee ? 6 : px, enemy: this.enemyUnderCrosshair(), aiming: k > 0.5, fp: this.fpActive, scope: k > 0.85 && gun.zoom <= 24 });
   }
 
-  private zoom(fov: number, dt: number) {
+  private startReload() {
+    const gun = this.gun, p = this.host.player, inp = this.host.input;
+    if (gun.cls === 'melee' || this.reloadT > 0 || this.switchT > 0 || this.mag[this.slot] >= gun.mag || this.reserve[this.slot] <= 0) return;
+    this.reloadEmpty = this.mag[this.slot] === 0;
+    this.burstLeft = 0;
+    this.reloadDur = this.reloadT = gun.single ? gun.reload : this.reloadEmpty ? gun.reloadEmpty : gun.reload;
+    const whole = gun.single ? gun.reload * (gun.mag - this.mag[this.slot]) : this.reloadDur;
+    p.anim.play('gun.reload', { group: 'reload', fadeIn: 0.1, fadeOut: 0.2, speed: 2.2 / Math.max(0.5, whole) });
+    if (!gun.single) this.host.audio.mechanism('magOut');
+    inp.rumble('reload');
+  }
+
+  /** Work the action: a bolt, a pump, a lever. */
+  private cycle(gun: Gun) {
+    this.cycleDur = this.cycleT = Math.max(0.25, gun.rate * 0.85);
+    this.host.audio.mechanism(gun.mode === 'pump' ? 'pump' : 'bolt');
+  }
+
+  private zoom(fov: number, dt: number, direct = false) {
     const cam = this.host.camera;
-    const next = cam.fov + (fov - cam.fov) * Math.min(1, dt * 12);
+    const next = direct ? fov : cam.fov + (fov - cam.fov) * Math.min(1, dt * 12);
     if (Math.abs(next - cam.fov) > 0.01) {
       cam.fov = next;
       cam.updateProjectionMatrix();
     }
   }
 
-  private spread(aiming: boolean) {
+  /** The cone a shot can land in: the hip spread blending to the aimed one as the sights come up. */
+  private spread(k: number) {
     const g = this.gun, p = this.host.player;
-    let s = (aiming ? g.ads : g.hip) + this.bloom;
-    s += Math.min(0.03, p.speed * (aiming ? 0.0015 : 0.004));
+    let s = g.hip + (g.ads - g.hip) * k + this.bloom;
+    s += Math.min(0.03, p.speed * (0.004 - k * 0.0025));
     if (!p.grounded) s += 0.04;
     if (p.crouching) s *= 0.75;
     return s;
   }
 
-  private shoot(aiming: boolean) {
+  private shoot(k: number) {
     const gun = this.gun, p = this.host.player, f = this.host.follow, cam = this.host.camera, inp = this.host.input;
     this.mag[this.slot]--;
     this.cool = gun.rate;
     this.sinceFire = 0;
-    this.me.sinceShot = 0;
-    const spread = this.spread(aiming);
-    this.bloom = Math.min(0.05, this.bloom + gun.bloom);
+    this.me.sinceShot = gun.quiet ? -0.5 : 0;
+    this.shotIndex++;
+    const spread = this.spread(k);
+    this.bloom = Math.min(0.05, this.bloom + gun.bloom * (1 - k * 0.6));
     const fwd = cam.getWorldDirection(this.dir);
     const skip = this.fpActive ? 0.25 : cam.position.distanceTo(p.pos) * 0.85;
     let anyHit = false, killed = false, headHit = false;
-    for (let k = 0; k < gun.pellets; k++) {
+    for (let n = 0; n < gun.pellets; n++) {
       const dir = this.tmp.copy(fwd);
       // a random point in the cone
       const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * spread;
       const right = _r.set(fwd.z, 0, -fwd.x).normalize(), up = _u.crossVectors(right, fwd);
       dir.addScaledVector(right, Math.cos(a) * r).addScaledVector(up, Math.sin(a) * r).normalize();
       const o = _o.copy(cam.position).addScaledVector(dir, skip);
-      const wall = this.host.collision.raycast(o, dir, 160);
-      const hit = this.rayUnits(o, dir, wall, this.me.team);
-      const end = _e.copy(o).addScaledVector(dir, hit ? hit.t : wall);
-      if (k === 0 || k % 3 === 0) this.host.tracers.shot(this.muzzle, end, hit ? true : wall < 160);
-      if (hit) {
+      // launchers and slow, heavy rounds fly; everything else arrives at once
+      if (gun.blast > 0 || gun.velocity > 0) {
+        this.launch(gun, this.me, gun.blast > 0 ? this.muzzle : o, dir);
+        continue;
+      }
+      const res = this.trace(gun, this.me, o, dir, skip);
+      if (n === 0 || n % 3 === 0) this.host.tracers.shot(this.muzzle, res.end, res.hit || res.wall);
+      if (res.hit) {
         anyHit = true;
-        headHit ||= hit.head;
-        const dmg = damageAt(gun, hit.t + skip) * (hit.head ? gun.headshot : 1);
-        if (this.damage(hit.u, dmg, this.me, gun, hit.head)) killed = true;
-        this.host.blood.spray(end, dir, gun.pellets > 1 ? 0.3 : 0.6);
+        headHit ||= res.head;
+        killed ||= res.killed;
       }
     }
-    this.host.audio.gunshot(null, gun.sound);
-    inp.rumble(gun.id === 'smg' || gun.id === 'carbine' ? 'smg' : 'gunshot', gun.pellets > 1 ? 1.2 : 0.8);
-    // kick: up, and a little either way; aiming and crouching steady it
-    const kick = gun.recoil * (aiming ? 0.72 : 1) * (p.crouching ? 0.8 : 1);
+    this.host.audio.gunshot(null, { caliber: gun.caliber, report: gun.report, quiet: gun.quiet });
+    inp.rumble(gun.cls === 'smg' || gun.cls === 'ar' || gun.cls === 'pdw' || gun.cls === 'lmg' ? 'smg' : 'gunshot', Math.min(1.4, 0.5 + gun.caliber + (gun.pellets > 1 ? 0.3 : 0)));
+    // the kick: it climbs, and leans the way this gun leans, more the longer you hold it
+    const steady = (1 - k * 0.28) * (p.crouching ? 0.8 : 1);
+    const climb = 1 + Math.min(0.6, this.shotIndex * 0.035);
+    const kick = gun.recoil * steady * climb;
+    const wob = Math.sin(this.shotIndex * 1.7 + gun.id.length) * 0.6 + (Math.random() - 0.5) * 0.8;
+    const side = gun.kickH * steady * (gun.bias + wob);
     f.pitch = Math.max(f.pitchMin, f.pitch - kick);
-    f.yaw += (Math.random() - 0.45) * kick * 0.55;
-    this.recoilDebt += kick;
+    f.yaw += side;
+    this.recoilDebt += kick * 0.85;
+    this.recoilYawDebt += side;
     p.anim.play('gun.recoil', { group: 'recoil', fadeIn: 0.01, fadeOut: 0.08 });
-    this.vm.kick(gun.recoil * 25);
+    this.vm.kick(gun.recoil * 25 * (1 + gun.caliber));
     if (anyHit) {
       this.hud.hitmarker(killed, headHit);
       inp.rumble(killed ? 'kill' : 'hitmarker', 0.8);
     }
-    if (this.mag[this.slot] === 0 && this.reserve[this.slot] > 0) {
-      this.reloadT = gun.reload;
-      p.anim.play('gun.reload', { group: 'reload', fadeIn: 0.1, fadeOut: 0.2, speed: 2.2 / gun.reload });
+    if (gun.mode === 'bolt' || gun.mode === 'pump' || gun.mode === 'lever') {
+      if (this.mag[this.slot] > 0) this.cycle(gun);
     }
+    if (this.mag[this.slot] === 0 && this.reserve[this.slot] > 0) this.startReload();
+  }
+
+  /**
+   * One round along a line: the first body it meets, or the wall. A round
+   * with penetration goes through a thin wall (a sheet, a crate side) and
+   * keeps going with less behind it.
+   */
+  private trace(gun: Gun, from: Unit, o: THREE.Vector3, dir: THREE.Vector3, already: number) {
+    let start = _t1.copy(o), travelled = already, power = 1, wallHit = false;
+    const end = _e.copy(o);
+    for (let pass = 0; pass < 2; pass++) {
+      const wall = this.host.collision.raycast(start, dir, 160);
+      const hit = this.rayUnits(start, dir, wall, from.team);
+      if (hit) {
+        end.copy(start).addScaledVector(dir, hit.t);
+        const limb = !hit.head && end.y < hit.u.pos.y + 0.85;
+        const dmg = damageAt(gun, travelled + hit.t) * (hit.head ? gun.headshot : limb ? gun.limb : 1) * power;
+        const killed = this.damage(hit.u, dmg, from, gun, hit.head);
+        this.host.blood.spray(end, dir, gun.pellets > 1 ? 0.3 : 0.4 + gun.caliber * 0.5);
+        return { hit: true, head: hit.head, killed, end, wall: false };
+      }
+      end.copy(start).addScaledVector(dir, wall);
+      wallHit = wall < 160;
+      if (!wallHit || gun.pen <= 0.05 || pass === 1) break;
+      // how thick is it? come back at it from the far side
+      const reach = gun.pen * 0.5;
+      const back = _t2.copy(end).addScaledVector(dir, reach + 0.02);
+      const thick = reach + 0.02 - this.host.collision.raycast(back, _t3.copy(dir).negate(), reach + 0.02);
+      if (thick >= reach) break;
+      start = _t1.copy(end).addScaledVector(dir, thick + 0.03);
+      travelled += wall + thick;
+      power *= 0.55;
+    }
+    return { hit: false, head: false, killed: false, end, wall: wallHit };
+  }
+
+  /** Something that flies: a rocket, a 40 mm round, a heavy bullet with drop. */
+  private launch(gun: Gun, owner: Unit, at: THREE.Vector3, dir: THREE.Vector3) {
+    const kind: Shell['kind'] = gun.blast > 0 ? (gun.cls === 'launcher' && gun.id === 'thresher' ? 'rocket' : 'grenade') : 'bullet';
+    this.shells.push({ pos: at.clone(), prev: at.clone(), vel: dir.clone().multiplyScalar(gun.velocity || 800), gun, owner, life: kind === 'bullet' ? 0.6 : 6, travelled: 0, kind });
+    if (kind === 'rocket') this.blasts.puff(at, 0.5, 1.2);
+  }
+
+  private shellsUpdate(dt: number) {
+    for (let i = this.shells.length - 1; i >= 0; i--) {
+      const s = this.shells[i];
+      s.life -= dt;
+      s.prev.copy(s.pos);
+      // a rocket burns straight; a grenade arcs; a bullet drops a little
+      if (s.kind !== 'rocket') s.vel.y -= 9.8 * dt;
+      const step = _t1.copy(s.vel).multiplyScalar(dt);
+      const len = step.length();
+      const dir = _t2.copy(step).divideScalar(len || 1);
+      const wall = this.host.collision.raycast(s.pos, dir, len);
+      const ground = s.pos.y + step.y < 0.02;
+      const hit = this.rayUnits(s.pos, dir, Math.min(wall, len), s.owner.team);
+      if (s.kind === 'bullet') {
+        if (hit) {
+          const at = _e.copy(s.pos).addScaledVector(dir, hit.t);
+          const limb = !hit.head && at.y < hit.u.pos.y + 0.85;
+          const dmg = damageAt(s.gun, s.travelled + hit.t) * (hit.head ? s.gun.headshot : limb ? s.gun.limb : 1);
+          const killed = this.damage(hit.u, dmg, s.owner, s.gun, hit.head);
+          this.host.blood.spray(at, dir, 0.4 + s.gun.caliber * 0.5);
+          this.host.tracers.shot(s.prev, at, true);
+          if (s.owner === this.me) {
+            this.hud.hitmarker(killed, hit.head);
+            this.host.input.rumble(killed ? 'kill' : 'hitmarker', 0.8);
+          }
+          this.shells.splice(i, 1);
+          continue;
+        }
+        const stop = wall < len || ground || s.life <= 0;
+        const to = stop ? _e.copy(s.pos).addScaledVector(dir, Math.min(wall, len)) : _e.copy(s.pos).add(step);
+        this.host.tracers.shot(s.prev, to, stop);
+        if (stop) this.shells.splice(i, 1);
+        else (s.pos.copy(to), (s.travelled += len));
+        continue;
+      }
+      // explosives: go off on whatever they touch (a 40 mm round needs a few metres to arm)
+      const armed = s.kind === 'rocket' || s.travelled > 6;
+      if (hit || wall < len || ground || s.life <= 0) {
+        const at = _e.copy(s.pos).addScaledVector(dir, hit ? hit.t : Math.min(wall, len) - 0.05);
+        if (ground) at.y = Math.max(at.y, 0.1);
+        if (armed) this.explode(at, s.gun, s.owner);
+        else this.blasts.puff(at, 0.4, 0.8);
+        this.shells.splice(i, 1);
+        continue;
+      }
+      s.pos.add(step);
+      s.travelled += len;
+      if (s.kind === 'rocket' && Math.random() < dt * 60) this.blasts.puff(s.pos, 0.55, 1.6);
+    }
+  }
+
+  private drawShells() {
+    this.blasts.beginFly();
+    for (const s of this.shells) if (s.kind !== 'bullet') this.blasts.flying(s.pos, s.vel, s.kind === 'rocket' ? 1.2 : 0.4);
+  }
+
+  /** A blast: everyone it can reach, hurt by how close they were. You can hurt yourself; not your own side. */
+  private explode(at: THREE.Vector3, gun: Gun, owner: Unit) {
+    const r = gun.blast;
+    this.blasts.boom(at, r);
+    this.host.audio.explosion(at, 0.6 + r * 0.1);
+    const dMe = at.distanceTo(this.me.pos);
+    if (dMe < r * 6) {
+      this.host.input.rumble('kill', Math.min(1, (r * 6 - dMe) / (r * 4)));
+      this.shakeK = Math.max(this.shakeK, Math.min(1, (r * 5 - dMe) / (r * 4)));
+    }
+    let hits = 0, kills = 0;
+    const eye = _t3.copy(at).setY(at.y + 0.3);
+    for (const u of this.units) {
+      if (!u.alive) continue;
+      if (u !== owner && u.team === owner.team) continue;
+      const c = _t2.set(u.pos.x, chestY(u), u.pos.z);
+      const d = c.distanceTo(at);
+      if (d > r || !this.sees(eye, c)) continue;
+      const dmg = gun.blastDmg * Math.pow(1 - d / r, 0.7) * (u === owner ? 0.5 : 1);
+      if (dmg < 1) continue;
+      hits++;
+      if (this.damage(u, dmg, owner, gun, false)) kills++;
+      this.host.blood.spray(c, _t1.subVectors(c, at).normalize(), 0.8);
+    }
+    if (owner === this.me && hits) {
+      this.hud.hitmarker(kills > 0, false);
+      this.host.input.rumble(kills ? 'kill' : 'hitmarker', 0.9);
+    }
+  }
+
+  /**
+   * A melee hit: the knife (or the butt of the gun) at whoever's in front
+   * of you and in reach. From behind, a blade finishes it.
+   */
+  private swing(gun: Gun) {
+    const p = this.host.player, f = this.host.follow;
+    const blade = gun.cls === 'melee';
+    this.meleeT = blade ? gun.rate : 0.75;
+    this.vm.swing();
+    this.host.audio.mechanism('swing');
+    p.act("act.shove");
+    const reach = blade ? gun.range[0] : 1.8;
+    let best: Unit | null = null, bestD = Infinity;
+    for (const u of this.units) {
+      if (!u.alive || u.team === this.me.team) continue;
+      const dx = u.pos.x - p.pos.x, dz = u.pos.z - p.pos.z, d = Math.hypot(dx, dz);
+      if (d > reach + 0.4 || Math.abs(u.pos.y - p.pos.y) > 1.2) continue;
+      const ang = Math.abs(wrap(Math.atan2(dx, dz) - f.yaw));
+      if (ang > 0.9 || d >= bestD) continue;
+      best = u;
+      bestD = d;
+    }
+    if (!best) return;
+    const behind = best instanceof Soldier && Math.abs(wrap(Math.atan2(best.pos.x - p.pos.x, best.pos.z - p.pos.z) - best.yaw)) < 0.9;
+    const dmg = blade ? (behind && gun.id === 'knife' ? 300 : gun.dmg) : 55;
+    const killed = this.damage(best, dmg, this.me, blade ? gun : MELEE_HIT, false);
+    this.host.audio.fight(killed ? 'heavy' : 'hit', 0.8);
+    this.host.blood.spray(_e.set(best.pos.x, chestY(best), best.pos.z), this.dir.set(Math.sin(f.yaw), 0, Math.cos(f.yaw)), blade ? 0.8 : 0.3);
+    this.hud.hitmarker(killed, false);
+    this.host.input.rumble(killed ? 'kill' : 'hitmarker', 1);
   }
 
   /** The first enemy body a ray meets before `max`: a head, or the cylinder of a body. */
@@ -780,13 +1056,13 @@ export class Warzone {
       f.pitchMin = -0.55;
       f.pitchMax = 1.0;
       this.host.input.rumble('kill', 1);
-      this.hud.loadout(true, LOADOUTS, LOADOUTS.indexOf(this.loadout), false);
+      this.hud.loadout(true, this.loadouts, this.loadouts.indexOf(this.loadout), false);
     }
   }
 
   /** A bot's shot: a hit lands on the body (or head); a miss goes past them into whatever's behind. */
   private botFire(s: Soldier, t: Unit, hit: boolean, head: boolean) {
-    const muzzle = this.guns.set(this.bots.indexOf(s) + 1, s.gun.id, s.rig, s.yaw, _m) ?? _m.set(s.pos.x, s.pos.y + 1.4, s.pos.z);
+    const muzzle = this.guns.set(this.bots.indexOf(s) + 1, s.gun, s.rig, s.yaw, _m) ?? _m.set(s.pos.x, s.pos.y + 1.4, s.pos.z);
     const aim = _e.set(t.pos.x, head ? headY(t) : chestY(t) - 0.15 + Math.random() * 0.4, t.pos.z);
     if (!hit) {
       aim.x += (Math.random() - 0.5) * 1.6;
@@ -800,7 +1076,7 @@ export class Warzone {
     const clear = wall >= dist - 0.3;
     const end = _o.copy(muzzle).addScaledVector(dir, hit && clear ? dist : Math.min(wall, 120));
     this.host.tracers.shot(muzzle, end, true);
-    this.host.audio.gunshot(muzzle, s.gun.sound);
+    this.host.audio.gunshot(muzzle, { caliber: s.gun.caliber, report: s.gun.report });
     if (hit && clear) {
       const dmg = damageAt(s.gun, dist) * (head ? s.gun.headshot : 1) * (s.gun.pellets > 1 ? s.gun.pellets * 0.6 : 1);
       this.damage(t, dmg, s, s.gun, head);
@@ -916,9 +1192,9 @@ export class Warzone {
       me.armor = Math.min(MAX_ARMOR, me.armor + 25);
       this.hud.announce('Armor', 'pickup');
     } else {
-      const full = this.held.every((id, i) => this.reserve[i] >= GUNS[id].reserve);
+      const full = this.held.every((g, i) => this.reserve[i] >= g.reserve);
       if (full) return false;
-      this.held.forEach((id, i) => (this.reserve[i] = Math.min(GUNS[id].reserve * 1.5, this.reserve[i] + Math.ceil(GUNS[id].reserve * 0.5))));
+      this.held.forEach((g, i) => (this.reserve[i] = Math.min(g.reserve * 1.5, this.reserve[i] + Math.ceil(g.reserve * 0.5))));
       this.hud.announce('Ammo', 'pickup');
     }
     this.host.audio.fight('grab', 0.6);
@@ -939,18 +1215,44 @@ export class Warzone {
     if (this.me.alive) return;
     const inp = this.host.input;
     this.deadT -= dt;
-    const i = LOADOUTS.indexOf(this.loadout);
-    if (inp.pressed('tabNext')) this.loadout = LOADOUTS[(i + 1) % LOADOUTS.length];
-    if (inp.pressed('tabPrev')) this.loadout = LOADOUTS[(i + LOADOUTS.length - 1) % LOADOUTS.length];
-    if (this.loadout !== LOADOUTS[i]) this.host.audio.uiTick();
+    // the gunsmith takes the input while it's open
+    if (this.smith.open) {
+      this.smith.update(inp);
+      this.hud.loadout(false);
+      if (!this.smith.open) this.hud.loadout(true, this.loadouts, this.loadouts.indexOf(this.loadout), this.phase === 'loadout', true);
+      return;
+    }
+    if (inp.pressed('interact')) {
+      this.openSmith();
+      return;
+    }
+    const L = this.loadouts, i = L.indexOf(this.loadout);
+    if (inp.pressed('tabNext')) this.loadout = L[(i + 1) % L.length];
+    if (inp.pressed('tabPrev')) this.loadout = L[(i + L.length - 1) % L.length];
+    if (this.loadout !== L[i]) this.host.audio.uiTick();
     const first = this.phase === 'loadout';
     const ready = first || this.deadT <= 0;
-    this.hud.loadout(true, LOADOUTS, LOADOUTS.indexOf(this.loadout), first);
+    this.hud.loadout(true, this.loadouts, this.loadouts.indexOf(this.loadout), first);
     this.hud.death(this.killedBy && !first ? { ...this.killedBy, t: Math.max(0, this.deadT) } : null);
     if (ready && (inp.pressed('jump') || (this.deadT < -6 && !first))) {
       this.deploy();
       this.lookRange();
     }
+  }
+
+  /** Edit the chosen loadout. A preset is copied into one of your slots first. */
+  private openSmith() {
+    const i = this.loadouts.indexOf(this.loadout);
+    const preset = !this.loadout.custom;
+    const slot = preset ? i % CUSTOM_SLOTS : this.loadouts.slice(PRESETS.length).indexOf(this.loadout);
+    this.host.audio.uiTick();
+    this.smith.edit(this.loadout, preset ? `Editing a copy of ${this.loadout.name}: it saves to custom slot ${slot + 1}.` : '', (l) => {
+      const at = PRESETS.length + slot;
+      this.loadouts[at] = { ...l, id: `custom${slot}`, custom: true };
+      this.loadout = this.loadouts[at];
+      saveCustom(this.loadouts);
+      this.host.audio.uiTick();
+    });
   }
 
   private over() {
@@ -1025,6 +1327,25 @@ export class Warzone {
   }
 }
 
+/** Something in the air. */
+interface Shell {
+  pos: THREE.Vector3;
+  prev: THREE.Vector3;
+  vel: THREE.Vector3;
+  gun: Gun;
+  owner: Unit;
+  life: number;
+  travelled: number;
+  kind: 'rocket' | 'grenade' | 'bullet';
+}
+
+const MODE_NAME: Record<Gun['mode'], string> = { auto: 'Auto', semi: 'Semi', burst: 'Burst', bolt: 'Bolt', pump: 'Pump', lever: 'Lever', single: 'Single', swing: 'Melee' };
+/** A rifle butt or a pistol whip, for the kill feed. */
+const MELEE_HIT: Gun = { ...GUNS.knife, name: 'Melee' };
+const easeInOut = (k: number) => k * k * (3 - 2 * k);
+const _t1 = new THREE.Vector3();
+const _t2 = new THREE.Vector3();
+const _t3 = new THREE.Vector3();
 const _r = new THREE.Vector3();
 const _u = new THREE.Vector3();
 const _o = new THREE.Vector3();
