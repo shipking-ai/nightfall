@@ -260,6 +260,33 @@ export const ENTRIES: Entry[] = [
 
   /* ── objects ────────────────────────────────────────────── */
   {
+    id: 'power-found',
+    no: 'NF-299',
+    cat: 'objects',
+    title: 'Something You Were Standing Near',
+    quote: 'You did not choose it. You were simply there at 03:17.',
+    body: [
+      'The district has been leaving things where they fall. Lamps that should be decommissioned, figures that move wrong, a watcher under a street light that has been watching something other than you.',
+      'Stand close enough to one of those moments while it happens and it does not pass you by. You come out of it with a thing you can do. There is no menu for this, and no way to practice at it.',
+      'Use them where there is nobody watching and they are tools. Use them on someone and the district counts it, the way it counts everything — and at six stars the police stop being the answer.',
+    ],
+    where: 'D03 · wherever it happened',
+    art: 'quote',
+  },
+  {
+    id: 'bank-vault',
+    no: 'NF-300',
+    cat: 'objects',
+    title: 'Merrow Savings Bank',
+    quote: 'Six hundred kilos of steel, and nobody thought it needed locking.',
+    body: [
+      'The branch has stood on Central Avenue since before the avenue was lit end to end. The portico columns are original; the doors are not, and have been replaced so often the frames are worn smooth.',
+      'The vault is at the back, behind the counters. Its door is open. It has been open as long as anyone can remember, which is not the same as always.',
+    ],
+    where: 'D03 · Central Avenue',
+    art: 'quote',
+  },
+  {
     id: 'station-clock',
     no: 'NF-301',
     cat: 'objects',

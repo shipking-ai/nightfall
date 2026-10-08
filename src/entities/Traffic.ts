@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { CAR_ROUTES } from '../world/layout';
-import { carParts, CAR_COLORS, CAR_GLASS, SEATS } from '../world/builders/props';
+import { CAR_COLORS, SEATS } from '../world/builders/props';
+import { SPECS, type VehicleClass, type VehicleSpec } from '../vehicles/specs';
+import { buildVehicle, setLights, type VehicleModel } from '../vehicles/model';
 import { FigureBatch } from './FigureBatch';
-import { newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from './Humanoid';
+import { newMotion, newRig, seatedRoot, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type Rig } from './Humanoid';
 import { makePerson, weighted } from '../data/people';
 import type { Lamp, WorldContext } from '../world/WorldContext';
 import { mulberry32 } from '../world/rng';
@@ -27,6 +29,13 @@ export interface Car {
   taxi?: TaxiState;
   /** per-car tail-lamp material, so the brake lights are this car's alone */
   tailMat: THREE.MeshStandardMaterial;
+  /** the car itself (vehicles/model.ts): wheels to turn, lamps to light */
+  model: VehicleModel;
+  /** which class this is, and what it was painted: what you'd get if you took it */
+  spec: VehicleSpec;
+  color: number;
+  /** last position, for the wheels' roll */
+  lastS: number;
   /** seconds spent stopped behind you (or a car you left in the road) */
   blocked: number;
   honkIn: number;
@@ -53,6 +62,21 @@ export type CarWire = [number, number, number, number];
 const T_HAILED = 1, T_RIDER = 2, T_STOPPING = 4, T_ARRIVED = 8;
 
 export const TAXI_COLOR = 0xa8842c;
+
+/**
+ * What District 03 actually drives. Weighted towards the two classes that make
+ * a street look like a street, with the rest in enough numbers that pulling
+ * someone out of a car is a small surprise rather than a fixed set.
+ */
+const TRAFFIC_CLASSES: [VehicleClass, number][] = [
+  ['sedan', 5],
+  ['hatch', 4],
+  ['sports', 1.2],
+  ['pickup', 1.5],
+  ['offroad', 1],
+  ['van', 1.5],
+  ['motorcycle', 1.5],
+];
 
 /**
  * A handful of cars that cross the district and leave. They slow for the
@@ -106,25 +130,21 @@ export class Traffic {
       const isTaxi = i === 0;
       const color = isTaxi ? TAXI_COLOR : this.rng.pick(CAR_COLORS);
       const g = new THREE.Group();
-      const tailMat = (ctx.mats.lampRed as THREE.MeshStandardMaterial).clone();
-      for (const part of carParts(color, false, true)) {
-        const mat = part.kind === 'paint' ? new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.3 }) : part.kind === 'tail' ? tailMat : part.kind === 'glass' ? CAR_GLASS : part.mat(ctx);
-        const mesh = new THREE.Mesh(part.geo, mat);
-        mesh.applyMatrix4(part.m);
-        mesh.castShadow = part.kind === 'paint';
-        g.add(mesh);
-      }
+      // The city drives the same machines you can. A taxi, and a spread of
+      // ordinary traffic, so the car you pull someone out of is never one you
+      // couldn't otherwise have found parked.
+      const cls: VehicleClass = isTaxi ? 'taxi' : weighted(this.rng, TRAFFIC_CLASSES);
+      const spec = SPECS[cls];
+      const model = buildVehicle(spec, spec.livery ? spec.paints[0] : color);
+      g.add(model.root);
+      const tailMat = model.mats.tail;
       for (const sx of [-0.62, 0.62]) {
         const beam = new THREE.Mesh(beamGeo, beamMat);
         beam.position.set(sx, 0.62, 2.25);
         beam.rotation.x = 0.06;
         g.add(beam);
       }
-      if (isTaxi) {
-        const roof = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.2, 0.3), sign);
-        roof.position.set(0, 1.32, -0.2);
-        g.add(roof);
-      }
+      void sign;
       g.visible = false;
       this.group.add(g);
       // lamps travel with the car: two white fronts (one pooled), two red rears
@@ -135,7 +155,7 @@ export class Traffic {
         ctx.lamp(new THREE.Vector3(), 'red', { pooled: false, cone: false, halo: 0.4, streak: 0.7, ground: 0 }),
       ];
       lamps.forEach((l) => (l.dynamic = true));
-      const car: Car = { group: g, path: null, s: 0, v: 0, vmax: 10, wait: i * 5 + 1, lamps, yaw: 0, tailMat, blocked: 0, honkIn: 0 };
+      const car: Car = { group: g, path: null, s: 0, v: 0, vmax: 10, wait: i * 5 + 1, lamps, yaw: 0, tailMat, blocked: 0, honkIn: 0, model, spec, color, lastS: 0 };
       if (isTaxi) car.taxi = { hailed: false, wait: 0, cooldown: 0, rider: false, stopping: false, arrived: false, riderId: '' };
       this.cars.push(car);
     }
@@ -162,7 +182,9 @@ export class Traffic {
       const d = car.group.position.distanceTo(cam);
       if (d > 70) return this.drivers.hide(i);
       car.group.updateMatrixWorld();
-      this.seatM.copy(car.group.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.driver.x, SEATS.driver.y, SEATS.driver.z));
+      // each car's own seat (a hatch's is not a saloon's), and hips on the cushion
+      // rather than feet on it, or the driver's head goes through the roof
+      const st = car.model.root.userData.seat ?? (car.model.root.userData.seat = car.model.spec.seat);
       const m = p.motion;
       const turn = wrapA(car.yaw - p.lastYaw) / Math.max(dt, 1e-3);
       p.lastYaw = car.yaw;
@@ -172,12 +194,57 @@ export class Traffic {
       m.lookYaw += ((watch ?? m.steer * 0.35 + Math.sin(t * 0.3 + i * 2) * 0.15) - m.lookYaw) * Math.min(1, dt * 2);
       m.speed = 0;
       stepPhase(m, dt);
-      this.tmpM.makeScale(p.body.height, p.body.height, p.body.height);
-      this.seatM.multiply(this.tmpM);
+      seatedRoot(this.seatM, car.model.body.matrixWorld, st, p.body);
       solve(p.rig, this.seatM, p.body, p.outfit, m, t);
       this.drivers.write(i, p.rig, visibleParts(p.outfit, d), false);
     });
     this.drivers.flush();
+  }
+
+  /**
+   * The nearest car out on a route that you could reach through the driver's
+   * door. Only moving cars: a car waiting at the kerb with nobody in it is
+   * scenery, and the taxi has its own interaction.
+   */
+  nearestDrivable(p: THREE.Vector3, reach = 2.6): { car: Car; d: number } | null {
+    let best: { car: Car; d: number } | null = null;
+    for (const car of this.cars) {
+      if (!car.path || car.taxi?.rider) continue;
+      const pos = car.group.position;
+      const d = Math.hypot(pos.x - p.x, pos.z - p.z);
+      if (d > reach) continue;
+      if (!best || d < best.d) best = { car, d };
+    }
+    return best;
+  }
+
+  /**
+   * Take a car off the road: it stops being traffic and becomes the player's.
+   * The slot is retired (its path dropped, its lamps freed, its driver hidden)
+   * so the pool can send it out again later as a different vehicle.
+   */
+  takeOver(car: Car): { pos: THREE.Vector3; yaw: number; spec: VehicleSpec; color: number } | null {
+    if (!car.path) return null;
+    const out = { pos: car.group.position.clone(), yaw: car.yaw, spec: car.spec, color: car.color };
+    this.retire(car);
+    return out;
+  }
+
+  /** Drop one car out of the traffic pool: no route, no lamps, no driver. */
+  retire(car: Car) {
+    car.path = null;
+    car.s = 0;
+    car.v = 0;
+    car.blocked = 0;
+    car.honkIn = 0;
+    // out of the pool for good, not just parked: only setDensity() brings it back
+    car.wait = Infinity;
+    car.group.visible = false;
+    car.taxi = undefined;
+    for (const l of car.lamps) l.gain = 0;
+    const i = this.cars.indexOf(car);
+    if (i >= 0) this.drivers.hide(i);
+    return i;
   }
 
   /** The taxi standing at the kerb within reach of p, if any. */
@@ -299,7 +366,16 @@ export class Traffic {
     car.lamps[3].pos.set(0.68, 0.74, -2.3).applyMatrix4(m);
     car.lamps[0].gain = car.lamps[1].gain = 1;
     car.lamps[2].gain = car.lamps[3].gain = braking ? 2.6 : 1;
-    car.tailMat.emissiveIntensity = braking ? 11 : 4;
+    // lamps lit, brakes when it slows, the wheels roll with the road and steer into its bends
+    setLights(car.model, { head: 1, brake: braking, reverse: false, indicator: 0, hazard: !!car.taxi?.hailed && car.v < 0.5, beacons: false, running: true }, performance.now() / 1000, { head: false, tail: false });
+    const ds = car.s - car.lastS;
+    car.lastS = car.s;
+    const turn = wrapA(yaw - (car.model.root.userData.yaw ?? yaw));
+    car.model.root.userData.yaw = yaw;
+    for (const w of car.model.wheels) {
+      if (Math.abs(ds) < 5) w.spin.rotation.x += ds / w.r;
+      if (w.front) w.steer.rotation.y += (THREE.MathUtils.clamp(turn * 25, -0.5, 0.5) - w.steer.rotation.y) * 0.2;
+    }
     car.sound?.setPosition(tmp, car.v);
   }
 
@@ -364,6 +440,22 @@ export class Traffic {
     }
   }
 
+  /**
+   * The outskirts' traffic: a made-up run along whichever of the long roads
+   * is near you, starting well out of sight behind or ahead and ending as far
+   * past you. Right-hand lanes, as in the district.
+   */
+  private local(p: THREE.Vector3): Path | null {
+    const lanes: [number, number][] = [[-38.5, 1], [-41.5, -1], [55.5, 1], [52.5, -1], [142.6, 1], [139.8, -1]];
+    const near = lanes.filter(([z]) => Math.abs(z - p.z) < 130);
+    if (!near.length) return null;
+    const [z, dir] = this.rng.pick(near);
+    const x0 = p.x - dir * this.rng.range(140, 180), x1 = p.x + dir * 200;
+    // not on top of someone already setting off there
+    if (this.cars.some((o) => o.path && Math.hypot(o.group.position.x - x0, o.group.position.z - z) < 30)) return null;
+    return roundPath([new THREE.Vector3(x0, 0, z), new THREE.Vector3(x1, 0, z)], 6);
+  }
+
   update(dt: number, player: THREE.Vector3 | null, playerSpeed = 0, blockers: THREE.Vector3[] = [], others: { pos: THREE.Vector3; speed: number }[] = []) {
     if (!this.group.visible || this.held) return;
     if (this.puppet) return this.follow(dt);
@@ -377,7 +469,29 @@ export class Traffic {
         for (const l of car.lamps) l.gain = 0;
         if (this.cars.indexOf(car) >= this.limit) car.wait = Math.max(car.wait, 1);
         if (car.wait <= 0) {
-          car.path = this.rng.pick(this.paths);
+          // out past the district's edges: a run along your road, through where you are
+          const out = player && Math.abs(player.x) > 165 && this.rng.chance(0.7) ? this.local(player) : null;
+          if (out) {
+            car.path = out;
+            car.s = 0;
+            car.v = 10;
+            car.vmax = this.rng.range(10, 15);
+            car.group.visible = true;
+            continue;
+          }
+          // the emptiest of a few roads, so the traffic spreads over the whole district
+          let path = this.rng.pick(this.paths), fewest = Infinity;
+          for (let k = 0; k < 3; k++) {
+            const p = this.rng.pick(this.paths);
+            const n = this.cars.filter((o) => o.path === p).length;
+            if (n < fewest) (fewest = n), (path = p);
+          }
+          // not straight into the back of a car that's just set off along the same road
+          if (this.cars.some((o) => o !== car && o.path === path && o.s < 28)) {
+            car.wait = 0.8;
+            continue;
+          }
+          car.path = path;
           car.s = 0;
           car.v = 8;
           car.vmax = this.rng.range(8.5, 12);
@@ -386,6 +500,13 @@ export class Traffic {
         continue;
       }
       sample(car.path, car.s, tmp, fwd);
+      // you're out past the edge and this one is nowhere near: let it go, so it can come round your way
+      if (player && Math.abs(player.x) > 165 && !tx?.rider && !tx?.hailed && Math.hypot(tmp.x - player.x, tmp.z - player.z) > 260) {
+        car.path = null;
+        car.group.visible = false;
+        car.wait = this.rng.range(0.3, 2.5);
+        continue;
+      }
       // brake for the player and for the car in front
       let limit = car.vmax;
       if (tx?.rider) {
@@ -460,7 +581,7 @@ export class Traffic {
       if (car.s >= car.path.total && !tx?.rider) {
         car.path = null;
         car.group.visible = false;
-        car.wait = this.rng.range(3, 12);
+        car.wait = this.rng.range(1.5, 6);
         continue;
       }
       this.place(car, tmp, fwd, braking);

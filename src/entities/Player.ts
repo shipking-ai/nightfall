@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { newMotion, newRig, solve, stepPhase, visibleParts, type ArmMode, type Body, type Outfit } from './Humanoid';
+import { styleFor } from '../anim/gait';
+import { newMotion, newRig, seatedRoot, solve, stepPhase, visibleParts, type ArmMode, type Body, type Outfit } from './Humanoid';
 import { FigureBatch } from './FigureBatch';
-import type { Collision } from '../world/Collision';
+import type { Collision, Contact } from '../world/Collision';
 import type { Input } from '../core/Input';
 import { bodyFromLook, outfitFromLook, type Look } from './Look';
 import { WATER_Y, RIVER_Z0, RIVER_Z1, QUAY_Z, inRiver } from './Boats';
@@ -66,14 +67,46 @@ export class Player {
   lookPitch = 0;
   /** admin: walk faster/slower; fly through everything */
   speedMul = 1;
+  /** game seconds this body has been animated (the pose's clock) */
+  private clock = 0;
+  /** a soldier's moves (WARZONE): tactical sprint (sprint again while sprinting), slide (crouch while sprinting), mantle (jump at a ledge) */
+  tactical = false;
+  /** seconds of tactical sprint left, and before it's back */
+  tacT = 0;
+  private tacCool = 0;
+  private sinceSprint = 99;
+  slideT = 0;
+  private slideDx = 0;
+  private slideDz = 0;
+  /** climbing over something: progress 0..1 from `mantleFrom` to `mantleTo` */
+  mantleT = 0;
+  private mantleFrom = new THREE.Vector3();
+  private mantleTo = new THREE.Vector3();
   fly = false;
   /** in the river: floating at the surface, slow; Space by the quay wall climbs out */
   swimming = false;
+  /** RPG: open water anywhere (the sea, lakes, rivers); null = District 03's river only */
+  waterAt: ((x: number, z: number) => number | null | undefined) | null = null;
+  /** RPG: the water level where you're swimming */
+  private swimLevel = WATER_Y;
+  private openWater = false;
   /**
    * In a vehicle: sat in a seat (world matrix of the seat), hands on the wheel
    * if driving. The figure is drawn there; `pos` still follows the car.
    */
-  seat: { m: THREE.Matrix4; drive: boolean; steer: number } | null = null;
+  seat: {
+    /** the pre-built root, used when there is nothing better */
+    m: THREE.Matrix4;
+    drive: boolean;
+    steer: number;
+    /** the vehicle's sprung body and seat datum: the root is built from these
+     *  so the hips land on the cushion (the seat is a hip point, the rig's
+     *  origin is the feet) */
+    car?: THREE.Matrix4;
+    at?: { x: number; y: number; z: number };
+    /** how far the squab's top sits above the seat datum, in metres */
+    cushion?: number;
+  } | null = null;
   /** a pistol in the right hand, shown while armed */
   gun = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.2, 0.11).translate(0, -0.13, 0.03), new THREE.MeshStandardMaterial({ color: 0x151618, roughness: 0.4, metalness: 0.6 }));
   onStep: ((intensity: number) => void) | null = null;
@@ -89,6 +122,11 @@ export class Player {
     this.motion.stride = 1.05;
     this.motion.armSwing = 0.9;
     this.motion.slouch = 0.02;
+    // the lead: steady, unhurried, a little guarded
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    this.motion.style = styleFor({ energy: 0.55, confidence: 0.7, nervous: 0.2, tired: 0.25, age: 0.3 }, rnd, { bulk: this.outfit.bulk, femme: 0.2 });
+    this.motion.face.restless = 0.35;
   }
 
   place(x: number, y: number, z: number, yaw: number) {
@@ -141,16 +179,57 @@ export class Player {
     this.busy = false;
   }
 
+  /** Stop whatever action is playing (a loop, or one that holds its last frame). */
+  stopAct(fade = 0.3) {
+    this.anim.stop('act', fade);
+    this.busy = false;
+  }
+
   /** A short action over whatever else is happening (a door, a button, answering a phone). */
-  act(clip: string, opts: { hold?: boolean; loop?: boolean } = {}) {
-    this.anim.play(clip, { group: 'act', fadeIn: 0.18, fadeOut: 0.3, loop: opts.loop });
+  act(clip: string, opts: { hold?: boolean; loop?: boolean; stay?: boolean } = {}) {
+    this.anim.play(clip, { group: 'act', fadeIn: 0.18, fadeOut: 0.3, loop: opts.loop, stay: opts.stay });
     if (opts.hold) this.busy = true;
     if (opts.hold) setTimeout(() => (this.busy = false), 900);
   }
 
+  /** A ledge in front, between knee and head height, with room on top: climb it. */
+  private tryMantle(col: Collision) {
+    const dx = Math.sin(this.facing), dz = Math.cos(this.facing);
+    for (const reach of [0.55, 0.85]) {
+      const ax = this.pos.x + dx * reach, az = this.pos.z + dz * reach;
+      const top = col.groundAt(ax, az, this.pos.y + 2.1, 2.2, 0.15);
+      const rise = top - this.pos.y;
+      if (rise < 0.55 || rise > 2.1) continue;
+      // room to stand up there?
+      _probe.set(ax + dx * 0.25, top + 0.1, az + dz * 0.25);
+      const head = col.raycast(_probe, _upv, 1.6);
+      if (head < 1.5) continue;
+      this.mantleFrom.copy(this.pos);
+      this.mantleTo.set(ax + dx * 0.25, top, az + dz * 0.25);
+      this.mantleT = 0.001;
+      this.slideT = 0;
+      this.anim.play('act.climb', { group: 'act', fadeIn: 0.05 });
+      return true;
+    }
+    return false;
+  }
+
   update(dt: number, input: Input | null, camYaw: number, col: Collision, obstacles: { x: number; z: number; r: number }[]) {
+    this.clock += dt;
     this.anim.update(dt);
     const m = this.motion;
+    // The feet find kerbs, steps and slopes for themselves. The probe samples a
+    // patch wide enough to cover the stance footprint — a 5 cm radius returns a
+    // single point, so on a slope each foot read a different height and the
+    // pelvis bobbed sideways as they alternated. The window is anchored to the
+    // root, not to the head, and asks a little above it, so a foot planted
+    // uphill is still measured at its own height.
+    if (!m.ground) {
+      m.ground = (x, z) => {
+        const h = col.groundAt(x, z, this.pos.y + 0.9, 1.4, 0.34);
+        return h;
+      };
+    }
     if (this.seat) return this.updateSeated(dt);
 
     // analog on a stick (a gentle push walks slowly), full speed from the keys
@@ -164,11 +243,46 @@ export class Player {
     // held emotes end when you walk off; the rest play on over the walk
     if (moving && this.emote?.hold) this.stopEmote(0.3);
 
+    const wasSprint = this.sprinting;
+    // (look before the hold-or-toggle logic uses the press up)
+    const crouchTap = !!input && input.peek('crouch'), sprintTap = !!input && input.peek('sprint');
     this.crouching = this.canCrouch && !!input && input.state('crouch') && !this.swimming;
     this.sprinting = !!input && moving && input.state('sprint', !moving) && mv.mag > 0.5 && !this.crouching;
-    this.swimming = !this.fly && inRiver(this.pos.x, this.pos.z, this.pos.y);
+    if (this.tactical && input && !this.busy) {
+      this.tacCool = Math.max(0, this.tacCool - dt);
+      // sprint again while sprinting: a burst, gun up and away
+      // (a hold-to-sprint player lets go and presses again: a moment's gap still counts)
+      this.sinceSprint = wasSprint ? 0 : this.sinceSprint + dt;
+      if (this.sprinting && sprintTap && this.sinceSprint < 0.35 && this.tacCool <= 0 && this.tacT <= 0) {
+        this.tacT = 3;
+        this.tacCool = 8;
+      }
+      this.tacT = this.sprinting ? Math.max(0, this.tacT - dt) : 0;
+      // crouch at a run: a slide
+      if (wasSprint && this.grounded && this.slideT <= 0 && crouchTap) {
+        const v = Math.hypot(this.vel.x, this.vel.z) || 1;
+        this.slideDx = this.vel.x / v;
+        this.slideDz = this.vel.z / v;
+        this.slideT = 0.8;
+        this.onStep?.(1);
+      }
+    }
+    if (this.slideT > 0) {
+      this.slideT -= dt;
+      this.crouching = true;
+      this.sprinting = false;
+    }
+    // (undefined from waterAt: a handcrafted place with its own water rules — District 03's river)
+    const openW = this.waterAt && !this.fly ? this.waterAt(this.pos.x, this.pos.z) : undefined;
+    this.openWater = openW !== undefined;
+    if (openW !== undefined) {
+      // anywhere: deep enough water, and you're in it rather than on a bridge over it
+      const floor = openW == null ? 0 : col.groundAt(this.pos.x, this.pos.z, this.pos.y, 0.1, 0.1);
+      this.swimming = openW != null && openW - floor > 1.25 && this.pos.y < openW - 0.6;
+      if (openW != null) this.swimLevel = openW;
+    } else this.swimming = !this.fly && inRiver(this.pos.x, this.pos.z, this.pos.y);
     const push = Math.min(1, mv.mag * 1.15);
-    const base = this.sprinting ? SPRINT : WALK * (this.crouching ? 0.55 : 1) * (0.35 + 0.65 * push);
+    const base = this.sprinting ? SPRINT * (this.tacT > 0 ? 1.22 : 1) : WALK * (this.crouching ? 0.55 : 1) * (0.35 + 0.65 * push);
     const speed = this.swimming ? (this.sprinting ? 2.9 : 1.8) : (this.sitting ? 0 : base) * this.speedMul * (this.aimYaw != null && !this.fly ? 0.7 : 1);
     const fwdX = Math.sin(camYaw), fwdZ = Math.cos(camYaw);
     let wx = fwdX * iz + fwdZ * ix;
@@ -182,8 +296,42 @@ export class Player {
     const rate = (moving ? ACCEL : DECEL) * (this.grounded ? 1 : 0.35);
     this.vel.x += clampAbs(tx - this.vel.x, rate * dt);
     this.vel.z += clampAbs(tz - this.vel.z, rate * dt);
+    if (this.slideT > 0) {
+      // the slide carries you, fading
+      const k = this.slideT / 0.8, v = SPRINT * (0.45 + 0.95 * k) * this.speedMul;
+      this.vel.x = this.slideDx * v;
+      this.vel.z = this.slideDz * v;
+    }
 
-    if (this.swimming) {
+    if (this.swimming && this.openWater) {
+      // open water: float, and wade out wherever the bottom comes up to meet you
+      const surface = this.swimLevel - 1.32;
+      this.vel.y = 0;
+      const nx = this.pos.x + this.vel.x * dt, nz = this.pos.z + this.vel.z * dt;
+      this.pos.x = nx;
+      this.pos.z = nz;
+      col.resolve(this.pos, RADIUS, HEIGHT, 0.2);
+      this.pos.y += (surface + Math.sin(performance.now() * 0.002) * 0.04 - this.pos.y) * Math.min(1, dt * 4);
+      this.grounded = false;
+      const floor = col.groundAt(this.pos.x, this.pos.z, this.pos.y + 2, 2.4, RADIUS);
+      if (floor > this.pos.y - 0.2) {
+        // shallows: stand up
+        this.pos.y = floor;
+        this.swimming = false;
+        this.grounded = true;
+      } else if (input && input.pressed('jump')) {
+        // a ledge within reach: haul yourself out
+        const ax = this.pos.x + Math.sin(this.facing) * 1.1, az = this.pos.z + Math.cos(this.facing) * 1.1;
+        const ledge = col.groundAt(ax, az, this.swimLevel + 1.6, 3, RADIUS);
+        if (ledge > this.swimLevel - 0.6 && ledge < this.swimLevel + 1.7) {
+          this.pos.set(ax, ledge, az);
+          this.vel.set(0, 0, 0);
+          this.grounded = true;
+          this.swimming = false;
+          this.anim.play('act.climb', { group: 'act', fadeIn: 0.05 });
+        }
+      }
+    } else if (this.swimming) {
       // float with your head out; the quay wall has iron rungs: jump to climb out beside it
       const surface = WATER_Y - 1.32;
       this.vel.y = 0;
@@ -206,24 +354,60 @@ export class Player {
       this.pos.z += this.vel.z * dt;
       this.pos.y = Math.max(0.15, this.pos.y + this.vel.y * dt);
       this.grounded = false;
-    } else if (input && this.grounded && !this.sitting && !this.busy && input.pressed('jump')) {
+    } else if (input && this.grounded && !this.sitting && !this.busy && input.pressed('jump') && !(this.tactical && this.tryMantle(col))) {
       this.vel.y = JUMP_V;
       this.grounded = false;
       this.stopEmote(0.1);
     }
-    if (!this.fly && !this.swimming) this.vel.y -= GRAVITY * dt;
+    if (this.mantleT > 0) {
+      // up and over: a hand on the edge, the body follows
+      this.mantleT = Math.min(1, this.mantleT + dt / 0.42);
+      const k = this.mantleT, up = Math.min(1, k * 1.6), fwd = Math.max(0, (k - 0.35) / 0.65);
+      this.pos.set(
+        THREE.MathUtils.lerp(this.mantleFrom.x, this.mantleTo.x, fwd),
+        THREE.MathUtils.lerp(this.mantleFrom.y, this.mantleTo.y, up * up * (3 - 2 * up)),
+        THREE.MathUtils.lerp(this.mantleFrom.z, this.mantleTo.z, fwd),
+      );
+      this.vel.set(0, 0, 0);
+      this.grounded = true;
+      if (this.mantleT >= 1) this.mantleT = 0;
+    }
+    if (!this.fly && !this.swimming && this.mantleT <= 0) this.vel.y -= GRAVITY * dt;
 
-    if (!this.sitting && !this.fly && !this.swimming) {
+    if (!this.sitting && !this.fly && !this.swimming && this.mantleT <= 0) {
       this.pos.x += this.vel.x * dt;
       this.pos.z += this.vel.z * dt;
       this.pos.y += this.vel.y * dt;
-      col.resolve(this.pos, RADIUS, HEIGHT, STEP);
+      // Resolve, then take the velocity component that was going into whatever
+      // we hit. Without this you keep accelerating into a wall every frame and
+      // only slide by luck of the push-out; along a wall, running into it at a
+      // shallow angle would stop you dead instead of sliding along it.
+      col.resolvePush(this.pos, RADIUS, HEIGHT, STEP, _contact);
+      if (_contact.depth > 0) {
+        const into = this.vel.x * _contact.nx + this.vel.z * _contact.nz;
+        if (into < 0) {
+          this.vel.x -= _contact.nx * into;
+          this.vel.z -= _contact.nz * into;
+        }
+        // a real knock, not a graze: it costs you some of your speed
+        if (-into > 6 && this.grounded) {
+          this.vel.x *= 0.6;
+          this.vel.z *= 0.6;
+        }
+      }
       for (const o of obstacles) {
         const dx = this.pos.x - o.x, dz = this.pos.z - o.z;
         const d = Math.hypot(dx, dz), min = RADIUS + o.r;
         if (d < min && d > 1e-4) {
           this.pos.x = o.x + (dx / d) * min;
           this.pos.z = o.z + (dz / d) * min;
+          // and slide off a person rather than sticking to them
+          const nx = dx / d, nz = dz / d;
+          const into2 = this.vel.x * nx + this.vel.z * nz;
+          if (into2 < 0) {
+            this.vel.x -= nx * into2;
+            this.vel.z -= nz * into2;
+          }
         }
       }
       const g = col.groundAt(this.pos.x, this.pos.z, this.pos.y, this.grounded ? STEP : 0.05, RADIUS);
@@ -283,7 +467,8 @@ export class Player {
       m.phase += dt * (1.2 + hs);
       m.armL = m.armR = Math.sin(m.phase * 2) > 0 ? 'punch' : 'guard';
     }
-    m.weight = Math.sin(performance.now() * 0.00021);
+    // the weight moves from one foot to the other now and then, not continuously
+    m.weight = Math.sin(performance.now() * 0.00021) > 0 ? 0.8 : -0.8;
     m.steer = 0;
 
     this.root.compose(this.pos, _q.setFromAxisAngle(_up, this.facing), _one.setScalar(this.body.height));
@@ -301,12 +486,34 @@ export class Player {
     m.steer += (s.steer - m.steer) * Math.min(1, dt * 8);
     m.lookYaw = m.steer * 0.25;
     m.breath += dt * 1.2;
-    this.root.copy(s.m).multiply(_s.makeScale(this.body.height, this.body.height, this.body.height));
+    // the seat datum is a hip point and the rig's origin is the feet, so the hips
+    // have to be put on the cushion or the head goes through the roof
+    if (s.car && s.at) seatedRoot(this.root, s.car, s.at, this.body, s.cushion ?? 0.08);
+    else {
+      const k = this.real ? 1 : this.body.height;
+      this.root.copy(s.m);
+      if (this.real) this.root.multiply(_s.makeTranslation(0, -0.12 - (this.body.torsoLen ?? 1) * 0.1, -0.02));
+      this.root.multiply(_s.makeScale(k, k, k));
+    }
     this.draw();
   }
 
+  /**
+   * RPG: a realistic body drawn in place of the city figure (rpg/people). Its
+   * bones follow the same rig, solved with its own proportions.
+   */
+  real: { group: THREE.Object3D; ready: boolean; pose(camDist: number): void } | null = null;
+
   private draw() {
-    solve(this.rig, this.root, this.body, this.outfit, this.motion, performance.now() / 1000, this.anim);
+    // game time, not the wall clock: the walk reads the body's speed from how far it moved in
+    // this much time, so a slow frame, slow motion or a skipped frame must not change the answer
+    solve(this.rig, this.root, this.body, this.outfit, this.motion, this.clock, this.anim);
+    if (this.real?.ready) {
+      this.real.pose(0);
+      this.batch.group.visible = false;
+      if (this.gun.visible) this.gun.matrix.copy(this.rig.handR);
+      return;
+    }
     this.batch.write(0, this.rig, this.parts, false);
     this.batch.flush();
     if (this.gun.visible) this.gun.matrix.copy(this.rig.handR);
@@ -330,7 +537,8 @@ export class Player {
 
   /** in a car with no windows to see through: the figure is not drawn, but position still drives the world */
   set hidden(v: boolean) {
-    this.batch.group.visible = !v;
+    this.batch.group.visible = !v && !this.real?.ready;
+    if (this.real) this.real.group.visible = !v;
   }
 
   get speed() {
@@ -339,6 +547,8 @@ export class Player {
 }
 
 const _q = new THREE.Quaternion();
+/** the deepest contact from the last resolve, so velocity can be redirected */
+const _contact: Contact = { nx: 0, nz: 0, depth: 0, inside: false };
 const _up = new THREE.Vector3(0, 1, 0);
 const _one = new THREE.Vector3(1, 1, 1);
 const _s = new THREE.Matrix4();
@@ -352,3 +562,6 @@ export function wrap(a: number) {
   while (a < -Math.PI) a += Math.PI * 2;
   return a;
 }
+
+const _probe = new THREE.Vector3();
+const _upv = new THREE.Vector3(0, 1, 0);

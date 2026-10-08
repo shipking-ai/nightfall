@@ -8,6 +8,31 @@ import { speak, type Mood, type VoiceSpec } from './Voice';
  * electrical hum, water, machinery, a radio, footsteps, and a sparse score.
  * Web Audio only — no files to load.
  */
+export interface EngineIn {
+  rpm: number;
+  idle: number;
+  redline: number;
+  load: number;
+  speed: number;
+  slip: number;
+  cyl: number;
+  rough: number;
+  whine: number;
+  turbo: number;
+  diesel: boolean;
+  inside: boolean;
+  damage: number;
+  /** 0..1: the boost, when the car has one */
+  boost?: number;
+}
+
+/** What a shot sounds like: calibre weight 0..1, the character of the report, and whether it's suppressed. */
+export interface ShotSpec {
+  caliber: number;
+  report: 'crack' | 'boom' | 'snap' | 'thump' | 'whump' | 'none';
+  quiet?: boolean;
+}
+
 export class AudioEngine {
   ctx: AudioContext | null = null;
   private master!: GainNode;
@@ -18,6 +43,8 @@ export class AudioEngine {
   private reverb!: ConvolverNode;
   private reverbIn!: GainNode;
   private noise!: AudioBuffer;
+  /** the bank alarm, while it is going */
+  private alarmNodes: { o: OscillatorNode; lfo: OscillatorNode; g: GainNode } | null = null;
   private brown!: AudioBuffer;
   private rain!: RainSound;
   private trafficGain!: GainNode;
@@ -409,6 +436,106 @@ export class AudioEngine {
     };
   }
 
+  /**
+   * The car you're driving, built from its numbers: the firing note (rpm ×
+   * cylinders ÷ 2) as a pulse train through a filter that opens with load, a
+   * rough half-order under it (big V8s and diesels burble), intake whine,
+   * a turbo's whistle, tyre squeal from slip, wind with speed, and a dull
+   * inside-the-cabin filter when you're sat in it. Each class sounds like
+   * itself because its specs differ, not because of a sample.
+   */
+  engineVoice(): { set(p: THREE.Vector3, e: EngineIn): void; mute(): void } | undefined {
+    if (!this.ctx) return undefined;
+    const ctx = this.ctx;
+    const panner = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 5, rolloffFactor: 1, maxDistance: 200 });
+    const out = ctx.createGain();
+    out.gain.value = 0;
+    const cabin = ctx.createBiquadFilter();
+    cabin.type = 'lowpass';
+    cabin.frequency.value = 18000;
+    // the firing note and its half-order
+    const fire = new OscillatorNode(ctx, { type: 'sawtooth', frequency: 40 });
+    const half = new OscillatorNode(ctx, { type: 'square', frequency: 20 });
+    const whine = new OscillatorNode(ctx, { type: 'sine', frequency: 800 });
+    const turbo = new OscillatorNode(ctx, { type: 'sine', frequency: 3000 });
+    const fireG = ctx.createGain(), halfG = ctx.createGain(), whineG = ctx.createGain(), turboG = ctx.createGain();
+    halfG.gain.value = 0.3;
+    whineG.gain.value = 0;
+    turboG.gain.value = 0;
+    const body = ctx.createBiquadFilter();
+    body.type = 'lowpass';
+    body.frequency.value = 400;
+    body.Q.value = 2.5;
+    // grit: noise, amplitude-modulated by the firing note
+    const grit = this.loopSource(this.noise);
+    const gritF = ctx.createBiquadFilter();
+    gritF.type = 'bandpass';
+    gritF.frequency.value = 900;
+    const gritG = ctx.createGain();
+    gritG.gain.value = 0;
+    // tyres and wind
+    const tyre = this.loopSource(this.noise);
+    const tyreF = ctx.createBiquadFilter();
+    tyreF.type = 'bandpass';
+    tyreF.frequency.value = 1100;
+    tyreF.Q.value = 6;
+    const tyreG = ctx.createGain();
+    tyreG.gain.value = 0;
+    const wind = this.loopSource(this.brown);
+    const windF = ctx.createBiquadFilter();
+    windF.type = 'lowpass';
+    windF.frequency.value = 600;
+    const windG = ctx.createGain();
+    windG.gain.value = 0;
+    fire.connect(fireG).connect(body);
+    half.connect(halfG).connect(body);
+    body.connect(cabin);
+    grit.connect(gritF).connect(gritG).connect(cabin);
+    whine.connect(whineG).connect(cabin);
+    turbo.connect(turboG).connect(cabin);
+    tyre.connect(tyreF).connect(tyreG).connect(cabin);
+    wind.connect(windF).connect(windG).connect(cabin);
+    cabin.connect(out).connect(panner).connect(this.sfx);
+    for (const o of [fire, half, whine, turbo]) o.start();
+    let last = 0;
+    return {
+      set: (p, e) => {
+        const t = ctx.currentTime;
+        if (t - last < 0.03) return;
+        last = t;
+        const f = Math.max(8, (e.rpm / 60) * (e.cyl / 2));
+        const tc = 0.04;
+        panner.positionX.setTargetAtTime(p.x, t, tc);
+        panner.positionY.setTargetAtTime(p.y + 0.5, t, tc);
+        panner.positionZ.setTargetAtTime(p.z, t, tc);
+        fire.frequency.setTargetAtTime(f, t, tc);
+        half.frequency.setTargetAtTime(f / 2, t, tc);
+        const r = Math.min(1, (e.rpm - e.idle) / Math.max(1, e.redline - e.idle));
+        // the filter opens with load and revs: a car on the throttle is louder and brighter
+        body.frequency.setTargetAtTime(160 + f * (1.4 + 3.2 * e.load) + (e.diesel ? 300 : 0), t, tc);
+        fireG.gain.setTargetAtTime(0.16 + 0.22 * e.load + 0.1 * r, t, tc);
+        halfG.gain.setTargetAtTime((0.12 + 0.35 * e.rough) * (0.6 + 0.4 * (1 - r)), t, tc);
+        gritF.frequency.setTargetAtTime(500 + f * 6, t, tc);
+        gritG.gain.setTargetAtTime((0.02 + 0.06 * e.rough + (e.diesel ? 0.05 : 0) + 0.12 * e.damage) * (0.4 + e.load), t, tc);
+        whine.frequency.setTargetAtTime(300 + e.speed * 38, t, tc);
+        whineG.gain.setTargetAtTime(e.whine * 0.02 * Math.min(1, e.speed / 20), t, tc);
+        // On boost the turbine spools: the whistle climbs much higher and gets louder,
+        // which is the sound that tells you the boost is doing something.
+        const b = e.boost ?? 0;
+        turbo.frequency.setTargetAtTime(1800 + r * 4200 + b * 2600, t, b > 0.2 ? 0.05 : 0.15);
+        turboG.gain.setTargetAtTime(e.turbo * 0.012 * e.load * r + e.turbo * b * 0.075 * (0.3 + 0.7 * r), t, b > 0.2 ? 0.06 : 0.15);
+        tyreF.frequency.setTargetAtTime(900 + e.slip * 700, t, tc);
+        tyreG.gain.setTargetAtTime(Math.min(0.5, e.slip * e.slip * 0.5 * Math.min(1, e.speed / 4)), t, 0.05);
+        windG.gain.setTargetAtTime(Math.min(0.35, e.speed * e.speed * 0.0003), t, 0.2);
+        windF.frequency.setTargetAtTime(300 + e.speed * 25, t, 0.2);
+        // sat inside: the cabin muffles everything outside it
+        cabin.frequency.setTargetAtTime(e.inside ? 1400 + e.speed * 20 : 16000, t, 0.1);
+        out.gain.setTargetAtTime(0.5, t, 0.2);
+      },
+      mute: () => out.gain.setTargetAtTime(0, ctx.currentTime, 0.25),
+    };
+  }
+
   /* ── one-shots ────────────────────────────────────────────── */
 
   footstep(intensity: number, wet = true) {
@@ -461,6 +588,28 @@ export class AudioEngine {
   /** Where outside audio (the car radio) joins the mix: after the volume, before the pause muffle. */
   get output(): AudioNode | null {
     return this.ctx ? this.master : null;
+  }
+
+  /** Thunder: a crack if it's close, then a long rolling rumble (distance = how muffled). */
+  thunder(strength: number) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(strength > 0.8 ? 2400 : 500, t);
+    lp.frequency.exponentialRampToValueAtTime(120, t + 3.5);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.9 * strength, t + (strength > 0.8 ? 0.02 : 0.4));
+    g.gain.setTargetAtTime(0.35 * strength, t + 0.4, 0.3);
+    g.gain.setTargetAtTime(0.0001, t + 1.6, 1.4);
+    src.connect(lp).connect(g).connect(this.sfx);
+    g.connect(this.reverbIn);
+    src.start(t, Math.random() * 3);
+    src.stop(t + 7);
   }
 
   /** A metal-on-metal crunch for a car hitting something. */
@@ -527,51 +676,152 @@ export class AudioEngine {
     };
   }
 
-  /** A gunshot: a hard crack, a chest thump, and the street throwing it back. null pos = yours. */
-  gunshot(pos: THREE.Vector3 | null, kind: 'pistol' | 'smg' | 'cop' = 'pistol') {
+  /**
+   * A gunshot: a hard crack, a chest thump, and the street throwing it back.
+   * null pos = yours. A spec shapes it by calibre (a pistol pops, a .50
+   * splits the air and rolls on) and report; suppressed it's a cough.
+   */
+  gunshot(pos: THREE.Vector3 | null, kind: 'pistol' | 'smg' | 'cop' | ShotSpec = 'pistol') {
     if (!this.ctx || !this.enabled) return;
+    const spec: ShotSpec = typeof kind === 'string' ? (kind === 'smg' ? { caliber: 0.35, report: 'snap' } : kind === 'pistol' ? { caliber: 0.3, report: 'crack' } : { caliber: 0.55, report: 'crack' }) : kind;
     const ctx = this.ctx, t = ctx.currentTime;
     const out = ctx.createGain();
-    let dest: AudioNode = this.sfx;
     if (pos) {
-      const pan = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 6, rolloffFactor: 1.1, maxDistance: 400 });
+      const pan = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 6, rolloffFactor: spec.quiet ? 2 : 1.1, maxDistance: 400 });
       pan.positionX.value = pos.x;
       pan.positionY.value = pos.y + 1.4;
       pan.positionZ.value = pos.z;
       out.connect(pan).connect(this.sfx);
-      dest = pan;
     } else out.connect(this.sfx);
-    void dest;
-    const vol = kind === 'smg' ? 0.55 : 0.8;
-    // crack
+    const c = spec.caliber, q = !!spec.quiet;
+    const boom = spec.report === 'boom' || spec.report === 'whump';
+    const vol = (0.45 + c * 0.5) * (q ? 0.32 : 1);
+    const len = (0.07 + c * 0.16) * (q ? 0.6 : 1);
+    // crack: brighter for small fast rounds, darker for big ones
     const n = ctx.createBufferSource();
     n.buffer = this.noise;
     n.playbackRate.value = 0.8 + Math.random() * 0.4;
     const bp = ctx.createBiquadFilter();
-    bp.type = 'bandpass';
-    bp.frequency.value = kind === 'smg' ? 1900 : 1300;
+    bp.type = q ? 'lowpass' : 'bandpass';
+    bp.frequency.value = q ? 900 : (spec.report === 'snap' ? 2100 : 1600) - c * 700;
     bp.Q.value = 0.7;
     const ng = ctx.createGain();
     ng.gain.setValueAtTime(0, t);
     ng.gain.linearRampToValueAtTime(vol, t + 0.002);
-    ng.gain.exponentialRampToValueAtTime(0.001, t + (kind === 'smg' ? 0.09 : 0.16));
+    ng.gain.exponentialRampToValueAtTime(0.001, t + len);
     n.connect(bp).connect(ng).connect(out);
     n.start(t, Math.random());
-    n.stop(t + 0.3);
-    // thump
+    n.stop(t + len + 0.1);
+    // thump: the chest hit, deeper and longer the bigger the round
     const o = ctx.createOscillator();
-    o.frequency.setValueAtTime(140, t);
-    o.frequency.exponentialRampToValueAtTime(38, t + 0.12);
+    o.frequency.setValueAtTime(boom ? 110 : 150 - c * 40, t);
+    o.frequency.exponentialRampToValueAtTime(boom ? 28 : 40, t + 0.1 + c * 0.1);
     const og = ctx.createGain();
-    og.gain.setValueAtTime(vol * 0.9, t);
-    og.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    og.gain.setValueAtTime(vol * (0.7 + c * 0.5) * (q ? 0.6 : 1), t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.14 + c * 0.16);
     o.connect(og).connect(out);
     o.start(t);
-    o.stop(t + 0.2);
-    // the buildings answer
+    o.stop(t + 0.4);
+    // the buildings answer (barely, for a suppressed shot)
     const send = ctx.createGain();
-    send.gain.value = 0.9;
+    send.gain.value = q ? 0.15 : 0.7 + c * 0.6;
     out.connect(send).connect(this.reverbIn);
+  }
+
+  /** An explosion: the crack of it, the low roll, debris falling. */
+  explosion(pos: THREE.Vector3, power = 1) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const pan = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 10, rolloffFactor: 0.8, maxDistance: 800 });
+    pan.positionX.value = pos.x;
+    pan.positionY.value = pos.y;
+    pan.positionZ.value = pos.z;
+    const out = ctx.createGain();
+    out.gain.value = 0.9 * power;
+    out.connect(pan).connect(this.sfx);
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(3200, t);
+    lp.frequency.exponentialRampToValueAtTime(140, t + 1.4);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(1, t + 0.006);
+    g.gain.setTargetAtTime(0.0001, t + 0.08, 0.5);
+    src.connect(lp).connect(g).connect(out);
+    src.start(t, Math.random() * 2);
+    src.stop(t + 3);
+    const o = ctx.createOscillator();
+    o.frequency.setValueAtTime(70, t);
+    o.frequency.exponentialRampToValueAtTime(22, t + 0.8);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(1.1, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 1);
+    o.connect(og).connect(out);
+    o.start(t);
+    o.stop(t + 1.1);
+    const send = ctx.createGain();
+    send.gain.value = 1.2;
+    out.connect(send).connect(this.reverbIn);
+  }
+
+  /** The gun's own noises: a bolt worked, a pump racked, a magazine out and in, an empty click, a blade through air. */
+  mechanism(kind: 'bolt' | 'pump' | 'magOut' | 'magIn' | 'click' | 'swing' | 'shell' | 'pin', pos: THREE.Vector3 | null = null) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = pos ? 0.6 : 0.35;
+    if (pos) {
+      const pan = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: 2, rolloffFactor: 2, maxDistance: 60 });
+      pan.positionX.value = pos.x;
+      pan.positionY.value = pos.y + 1.3;
+      pan.positionZ.value = pos.z;
+      out.connect(pan).connect(this.sfx);
+    } else out.connect(this.sfx);
+    // a few clicks of filtered noise, spaced like the mechanism moves
+    const clicks: [number, number, number][] =
+      kind === 'bolt' ? [[0, 2600, 0.5], [0.12, 1800, 0.6], [0.3, 2200, 0.5], [0.42, 3000, 0.7]]
+      : kind === 'pump' ? [[0, 900, 0.8], [0.16, 1300, 0.9]]
+      : kind === 'magOut' ? [[0, 1500, 0.5], [0.05, 700, 0.4]]
+      : kind === 'magIn' ? [[0, 1200, 0.7], [0.08, 2600, 0.6]]
+      : kind === 'click' ? [[0, 3800, 0.5]]
+      : kind === 'shell' ? [[0, 1700, 0.6], [0.06, 2400, 0.4]]
+      : kind === 'pin' ? [[0, 4200, 0.4], [0.1, 3000, 0.3]]
+      : [];
+    if (kind === 'swing') {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(600, t);
+      bp.frequency.exponentialRampToValueAtTime(2400, t + 0.18);
+      bp.Q.value = 1.5;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.7, t + 0.09);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      src.connect(bp).connect(g).connect(out);
+      src.start(t, Math.random());
+      src.stop(t + 0.3);
+      return;
+    }
+    for (const [dt, f, v] of clicks) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = f;
+      bp.Q.value = 3;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t + dt);
+      g.gain.linearRampToValueAtTime(v, t + dt + 0.002);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dt + 0.045);
+      src.connect(bp).connect(g).connect(out);
+      src.start(t + dt, Math.random());
+      src.stop(t + dt + 0.06);
+    }
   }
 
   /** A fist landing (or not). */
@@ -800,6 +1050,91 @@ export class AudioEngine {
       o.start(t);
       o.stop(t + 5.2);
     });
+  }
+
+  /** The bank's alarm: a hard two-tone that keeps going, started once. */
+  bankAlarm(on: boolean) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx;
+    if (on && !this.alarmNodes) {
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.2);
+      const o = ctx.createOscillator();
+      o.type = 'square';
+      o.frequency.value = 660;
+      const lfo = ctx.createOscillator();
+      lfo.type = 'square';
+      lfo.frequency.value = 1.6;
+      const lfoG = ctx.createGain();
+      lfoG.gain.value = 190;
+      lfo.connect(lfoG).connect(o.frequency);
+      const f = ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = 1400;
+      o.connect(f).connect(g);
+      g.connect(this.sfx);
+      g.connect(this.reverbIn);
+      o.start();
+      lfo.start();
+      this.alarmNodes = { o, lfo, g };
+    } else if (!on && this.alarmNodes) {
+      const { o, lfo, g } = this.alarmNodes;
+      const t = ctx.currentTime;
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      o.stop(t + 0.35);
+      lfo.stop(t + 0.35);
+      this.alarmNodes = null;
+    }
+  }
+
+  /** The vault wheel: metal turning, called repeatedly while you hold it. */
+  vaultWheel(strength: number) {
+    if (!this.ctx || !this.enabled || Math.random() > 0.12 + strength * 0.2) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.playbackRate.value = 0.5 + Math.random() * 0.3;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = 220 + Math.random() * 260;
+    f.Q.value = 7;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.05 + strength * 0.07, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    src.connect(f).connect(g);
+    g.connect(this.sfx);
+    g.connect(this.reverbIn);
+    src.start(t);
+    src.stop(t + 0.32);
+  }
+
+  /** The vault coming off its hinges, and the money going in a bag. */
+  vaultOpen() {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    // the wheel spinning free, then the door
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.playbackRate.value = 0.35;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(200, t);
+    f.frequency.exponentialRampToValueAtTime(900, t + 1.4);
+    f.Q.value = 3;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.16, t + 0.15);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
+    src.connect(f).connect(g);
+    g.connect(this.sfx);
+    g.connect(this.reverbIn);
+    src.start(t);
+    src.stop(t + 1.9);
+    this.footstep(0.5, true);
   }
 
   /** The loop reset: the whole district's power sags. */

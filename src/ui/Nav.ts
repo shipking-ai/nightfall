@@ -18,7 +18,7 @@ const FOCUSABLE =
 interface ScopeHandlers {
   back?: () => void;
   tab?: (dir: -1 | 1) => void;
-  /** a scope that wants the pad itself (the map pans with the stick) */
+  /** a scope that wants the pad (or the keys) itself: the map pans with the stick. True if it used them. */
   pad?: (dt: number) => boolean;
 }
 
@@ -55,7 +55,7 @@ export class Nav {
   /** The element that owns the controller right now, if any. */
   top(): HTMLElement | null {
     if (this.osk.isOpen) return this.osk.el;
-    const cands = [...this.root.querySelectorAll<HTMLElement>('.layer.is-on:not(.is-passive), [data-nav-scope].is-on, [data-nav-scope].is-open')].filter((el) => visible(el) && el.querySelector(FOCUSABLE));
+    const cands = [...this.root.querySelectorAll<HTMLElement>('.layer.is-on:not(.is-passive), [data-nav-scope].is-on, [data-nav-scope].is-open')].filter((el) => visible(el, false) && el.querySelector(FOCUSABLE));
     if (!cands.length) return null;
     // the last one in the document that's stacked highest
     let best = cands[0], bz = zOf(best);
@@ -67,7 +67,7 @@ export class Nav {
   }
 
   focusables(scope: HTMLElement): HTMLElement[] {
-    return [...scope.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => visible(el) && !el.closest('[data-nav-skip]'));
+    return [...scope.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => visible(el, false) && !el.closest('[data-nav-skip]'));
   }
 
   /** Focus something (with the pad focus ring). */
@@ -88,7 +88,8 @@ export class Nav {
     if (!scope) return false;
     if (this.osk.isOpen) return this.osk.update(this.input, dt, this);
     const h = this.handlers.get(scope);
-    if (pad && h?.pad?.(dt)) return true;
+    // (a scope that wants the controls itself: the pad, or keys when it has them)
+    if (h?.pad?.(dt)) return true;
 
     const act = document.activeElement as HTMLElement | null;
     let cur = act && scope.contains(act) && act !== scope ? act : null;
@@ -101,7 +102,7 @@ export class Nav {
       }
       // arriving in a menu with a pad: something is always focused
       next ??= scope.querySelector<HTMLElement>('[autofocus], [data-nav-first]') ?? all[0] ?? null;
-      if (next && visible(next)) this.focus(next);
+      if (next && visible(next, false)) this.focus(next);
       cur = next;
     } else if (cur && cur !== this.current) {
       this.current?.classList.remove('nav-focus');
@@ -235,10 +236,16 @@ function keyOf(el: HTMLElement): string {
   return `${el.tagName}|${el.dataset.navId ?? ''}|${el.getAttribute('aria-label') ?? ''}|${(el.textContent ?? '').trim().slice(0, 60)}`;
 }
 
-function visible(el: HTMLElement): boolean {
+/**
+ * Showing? `opacity` counts for controls inside a screen, but not for choosing
+ * the screen itself: a layer that's just been opened is fading in from 0, and
+ * the pad has to work in it from the first frame (a layer fading out has
+ * already lost its is-on and isn't a candidate).
+ */
+function visible(el: HTMLElement, opacity = true): boolean {
   if (el.hidden) return false;
   const c = el as HTMLElement & { checkVisibility?: (o?: object) => boolean };
-  if (c.checkVisibility) return c.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+  if (c.checkVisibility) return c.checkVisibility({ checkOpacity: opacity, checkVisibilityCSS: true });
   const r = el.getBoundingClientRect();
   return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
 }

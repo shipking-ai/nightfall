@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { MUZZLE, gunGeometry } from './Guns';
-import type { GunId } from './weapons';
+import { gunKey, gunModel, type GunModel } from './Guns';
+import type { Gun } from './weapons';
 
 /**
  * First person: the gun in your hands at the bottom of the view, with the
@@ -10,10 +10,6 @@ import type { GunId } from './weapons';
  * sights when you aim (the sight lined up on the middle of the screen).
  */
 
-/** how high each gun's sight sits over its grip (so aiming puts it dead centre) */
-const SIGHT: Record<GunId, number> = { carbine: 0.118, smg: 0.1, marksman: 0.148, shotgun: 0.076, pistol: 0.072 };
-/** where the left hand holds it, along the gun */
-const FORE: Record<GunId, number> = { carbine: 0.3, smg: 0.2, marksman: 0.34, shotgun: 0.36, pistol: 0.0 };
 
 export class Viewmodel {
   group = new THREE.Group();
@@ -22,7 +18,13 @@ export class Viewmodel {
   private arms = new THREE.Group();
   private sleeve = new THREE.MeshStandardMaterial({ color: 0x2c3644, roughness: 0.9, emissive: 0x0b0c0e });
   private glove = new THREE.MeshStandardMaterial({ color: 0x1a1a1b, roughness: 0.7, emissive: 0x080808 });
-  private id: GunId | null = null;
+  private id: string | null = null;
+  private model: GunModel | null = null;
+  private melee = false;
+  /** a launcher carried on the shoulder */
+  private shoulder = false;
+  private swingT = 0;
+  private inspectT = 0;
   private aim = 0;
   private bob = 0;
   private kickV = 0;
@@ -31,12 +33,11 @@ export class Viewmodel {
   private lastYaw = 0;
   private lastPitch = 0;
   private sprint = 0;
-  private geos = new Map<GunId, THREE.BufferGeometry>();
 
   constructor() {
     this.group.matrixAutoUpdate = false;
     // a touch lighter than the guns in the world: it's close to your eye and the yard is dark
-    this.gun = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ color: 0x34363a, roughness: 0.4, metalness: 0.5, emissive: 0x0e0f11 }));
+    this.gun = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.5, emissive: 0x0e0f11 }));
     this.rig.scale.setScalar(0.82);
     this.gun.rotation.y = Math.PI; // the gun points down -z, into the view
     this.rig.add(this.gun, this.arms);
@@ -46,17 +47,22 @@ export class Viewmodel {
   }
 
   /** Hold a different gun (and dress the sleeves in the team's colour). */
-  setGun(id: GunId, sleeve: number) {
+  setGun(gun: Gun, sleeve: number) {
     this.sleeve.color.setHex(sleeve);
-    if (id === this.id) return;
-    this.id = id;
-    let g = this.geos.get(id);
-    if (!g) this.geos.set(id, (g = gunGeometry(id)));
-    this.gun.geometry = g;
+    const key = gunKey(gun);
+    if (key === this.id) return;
+    this.id = key;
+    const model = (this.model = gunModel(gun));
+    this.melee = gun.cls === 'melee';
+    this.shoulder = gun.id === 'thresher';
+    this.gun.geometry = model.geo;
     this.arms.clear();
     // camera space: the grip at the origin, the gun running away down -z
-    const fore = FORE[id];
-    if (id === 'pistol') {
+    const fore = model.fore;
+    if (this.melee) {
+      this.limb(new THREE.Vector3(0.0, -0.03, 0.02), new THREE.Vector3(0.12, -0.22, 0.42), 0.065, this.sleeve);
+      this.hand(new THREE.Vector3(0, 0, 0.0));
+    } else if (model.oneHand) {
       this.limb(new THREE.Vector3(0.0, -0.06, 0.02), new THREE.Vector3(0.1, -0.22, 0.4), 0.065, this.sleeve);
       this.limb(new THREE.Vector3(-0.02, -0.08, 0.0), new THREE.Vector3(-0.16, -0.24, 0.38), 0.065, this.sleeve);
       this.hand(new THREE.Vector3(0, -0.035, 0.0));
@@ -84,6 +90,16 @@ export class Viewmodel {
     this.arms.add(m);
   }
 
+  /** A melee swing: the blade comes across the view. */
+  swing() {
+    this.swingT = 0.001;
+  }
+
+  /** Turn the gun over and look at it. */
+  inspect() {
+    if (this.inspectT <= 0) this.inspectT = 0.001;
+  }
+
   /** A shot: the gun comes back and up, then settles. */
   kick(k: number) {
     this.kickV = Math.min(1.4, this.kickV + k);
@@ -92,10 +108,12 @@ export class Viewmodel {
   update(
     dt: number,
     cam: THREE.Camera,
-    s: { aim: boolean; speed: number; sprint: boolean; reload: number | null; swap: number; yaw: number; pitch: number; crouch: boolean },
+    s: { aim: number; speed: number; sprint: boolean; reload: number | null; swap: number; yaw: number; pitch: number; crouch: boolean; cycle?: number; empty?: boolean },
   ) {
-    if (!this.id) return;
-    this.aim += ((s.aim ? 1 : 0) - this.aim) * Math.min(1, dt * 14);
+    if (!this.id || !this.model) return;
+    this.aim = this.melee ? 0 : s.aim;
+    if (this.swingT > 0) this.swingT = this.swingT + dt > 0.42 ? 0 : this.swingT + dt;
+    if (this.inspectT > 0) this.inspectT = this.inspectT + dt > 2.6 || s.aim > 0.1 || s.reload != null ? 0 : this.inspectT + dt;
     this.sprint += ((s.sprint ? 1 : 0) - this.sprint) * Math.min(1, dt * 8);
     this.bob += dt * (s.speed * 2.1 + 0.6);
     this.kickV = Math.max(0, this.kickV - dt * 7);
@@ -112,9 +130,9 @@ export class Viewmodel {
     const bx = Math.sin(this.bob) * 0.011 * walk;
     const by = -Math.abs(Math.cos(this.bob)) * 0.012 * walk;
     const breathe = Math.sin(performance.now() * 0.0016) * 0.003 * (1 - a * 0.6);
-    const hip = new THREE.Vector3(0.15, -0.19, -0.42);
+    const hip = this.shoulder ? new THREE.Vector3(0.2, -0.1, -0.12) : new THREE.Vector3(0.15, -0.19, -0.42);
     // aimed: the sight a touch under the middle (the dot is the reticle), the gun low enough to see past
-    const ads = new THREE.Vector3(0, -SIGHT[this.id] * 0.82 - 0.03, -0.52);
+    const ads = this.shoulder ? new THREE.Vector3(0.07, -0.15, -0.2) : new THREE.Vector3(0, -this.model.sight * 0.82 - 0.03, -0.52);
     const p = hip.lerp(ads, a);
     p.x += bx + this.swayX * 0.5;
     p.y += by + breathe - this.swayY * 0.4 - (s.crouch ? 0.01 : 0);
@@ -122,9 +140,26 @@ export class Viewmodel {
     // a reload: down and tipped; a swap: down out of view and back
     const r = s.reload == null ? 0 : Math.sin(Math.PI * Math.min(1, s.reload));
     const swap = s.swap > 0 ? Math.sin(Math.PI * Math.min(1, s.swap / 0.45)) : 0;
-    p.y -= r * 0.07 + swap * 0.3 + this.sprint * 0.06;
+    // a reload from empty goes further: the gun tips right over to work the action
+    const deep = s.empty ? 1.35 : 1;
+    // working a bolt or a pump: a quick dip and roll
+    const cyc = s.cycle != null && s.cycle > 0 ? Math.sin(Math.PI * Math.min(1, s.cycle)) : 0;
+    // a swing: wound back, across and through
+    const sw = this.swingT > 0 ? this.swingT / 0.42 : 0;
+    const swA = sw ? Math.sin(Math.PI * sw) : 0, swB = sw ? (sw < 0.35 ? -sw / 0.35 : -1 + ((sw - 0.35) / 0.65) * 2) : 0;
+    // inspecting: turned to show its side, then the other
+    const ins = this.inspectT > 0 ? Math.sin(Math.PI * Math.min(1, this.inspectT / 2.6)) : 0;
+    const insRoll = this.inspectT > 0 ? Math.sin((this.inspectT / 2.6) * Math.PI * 2) : 0;
+    p.y -= r * 0.07 * deep + swap * 0.3 + this.sprint * 0.06 + cyc * 0.02 - ins * 0.03;
+    p.x += swB * 0.1 - ins * 0.08;
+    p.z += swA * -0.12 + cyc * 0.02;
     this.rig.position.copy(p);
-    this.rig.rotation.set(this.kickV * 0.1 - r * 0.55 - swap * 0.6 + this.sprint * 0.25 - this.swayY * 0.6, -this.swayX * 0.8 + this.sprint * 0.55, r * 0.35 + this.sprint * 0.3 + bx * 2, 'YXZ');
+    this.rig.rotation.set(
+      this.kickV * 0.1 - r * 0.55 * deep - swap * 0.6 + this.sprint * 0.25 - this.swayY * 0.6 - swA * 0.5 + cyc * 0.12 + ins * 0.2,
+      -this.swayX * 0.8 + this.sprint * 0.55 + swB * 0.9 + ins * 0.9,
+      r * 0.35 * deep + this.sprint * 0.3 + bx * 2 + cyc * 0.25 + insRoll * 0.6 + swA * 0.8,
+      'YXZ',
+    );
     cam.updateMatrixWorld();
     this.group.matrix.copy(cam.matrixWorld);
     this.group.matrixWorld.copy(cam.matrixWorld);
@@ -133,9 +168,9 @@ export class Viewmodel {
 
   /** The muzzle, in the world (for the tracer and the flash). */
   muzzle(out: THREE.Vector3) {
-    if (!this.id) return out;
+    if (!this.model) return out;
     this.gun.updateMatrixWorld(true);
-    return out.set(0, 0.05, MUZZLE[this.id]).applyMatrix4(this.gun.matrixWorld);
+    return out.copy(this.model.muzzle).applyMatrix4(this.gun.matrixWorld);
   }
 
   set visible(v: boolean) {

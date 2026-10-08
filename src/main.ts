@@ -2,6 +2,7 @@ import './styles/main.css';
 import './styles/controller.css';
 import './styles/fight.css';
 import './styles/warzone.css';
+import './styles/rpg.css';
 import { App } from './core/App';
 
 function supportsWebGL2() {
@@ -26,6 +27,7 @@ if (!supportsWebGL2()) {
   if (import.meta.env.DEV) {
     (window as unknown as { nf: App }).nf = app;
     import('./dev/lineup').then((m) => ((window as unknown as { nfLineup: unknown }).nfLineup = m.makeLineup));
+    import('./rpg/game/quests').then((m) => ((app as unknown as { rpgMain: unknown }).rpgMain = m.mainPlaces));
   }
   app.boot().catch((err) => {
     console.error(err);

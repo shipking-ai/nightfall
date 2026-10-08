@@ -10,10 +10,24 @@ export interface AdminHooks {
   // you
   fly(on: boolean): void;
   god(on: boolean): void;
+  /** the boost reservoir never runs down, and the car can always boost */
+  infiniteBoost(on: boolean): void;
   speed(k: number): void;
   heal(): void;
   wanted(d: number): void;
+  /** set the wanted level outright, 0..8 (the +1 button only ever adds one) */
+  wantedLevel(stars: number): void;
   bringCar(): void;
+  /** put a specific class in front of the player ('sedan', 'bus', 'offroad'…) */
+  spawnVehicle(cls: string): void;
+  /** every class the city knows, for the picker */
+  vehicleClasses(): string[];
+  /** put the player back on their feet wherever they fell */
+  revive(): void;
+  /** grant every power at once (testing discovery otherwise takes a whole night) */
+  grantPowers(): void;
+  /** put the player somewhere by coordinate */
+  teleportTo(x: number, z: number): void;
   teleport(place: string): void;
   places(): string[];
   resetQuests(): void;
@@ -22,6 +36,13 @@ export interface AdminHooks {
   rain(v: number | null): void;
   event(kind: 'blackout' | 'unease'): void;
   announce(text: string): void;
+  /** clear the streets, put everybody on the floor, change how busy the city is */
+  clearTraffic(): void;
+  knockDownAll(): void;
+  /** how many cars and people are out, as a fraction */
+  density(v: number): void;
+  /** stand the clock still (freezes the night, not the frame rate) */
+  freeze(on: boolean): void;
   // players
   players(): { id: string; name: string; muted: boolean }[];
   player(act: 'kick' | 'ban' | 'mute' | 'unmute' | 'jail', id: string): void;
@@ -47,7 +68,7 @@ export class AdminPanel {
   private body: HTMLElement;
   private tab: Tab = 'you';
   private tabs: Record<Tab, HTMLButtonElement> = {} as Record<Tab, HTMLButtonElement>;
-  private flags = { fly: false, god: false };
+  private flags = { fly: false, god: false, boost: false };
   private speedK = 1;
   private liveT = 0;
   isOpen = false;
@@ -100,7 +121,7 @@ export class AdminPanel {
   private render(t: Tab): Node[] {
     const on = this.on;
     const btn = (label: string, fn: () => void, cls = '') => h('button', { class: `admin__btn ${cls}`, onclick: fn }, label);
-    const toggle = (label: string, key: 'fly' | 'god', fn: (v: boolean) => void) => {
+    const toggle = (label: string, key: 'fly' | 'god' | 'boost', fn: (v: boolean) => void) => {
       const b = h('button', { class: `admin__btn${this.flags[key] ? ' is-on' : ''}`, 'aria-pressed': String(this.flags[key]) }, label);
       b.onclick = () => {
         this.flags[key] = !this.flags[key];
@@ -123,11 +144,22 @@ export class AdminPanel {
         on.speed(this.speedK);
       };
       const sel = h('select', { 'aria-label': 'Place' }, ...on.places().map((p) => h('option', { value: p }, p))) as HTMLSelectElement;
+      // straight to a star count: +1 at a time is no use when you want to see
+      // what six stars does, or eight
+      const wv = h('input', { type: 'range', min: '0', max: '8', step: '1', value: '0', 'aria-label': 'Wanted level' }) as HTMLInputElement;
+      const wn = h('span', { class: 'admin__val' }, '0 stars');
+      wv.oninput = () => (wn.textContent = `${wv.value} stars`);
+      const cls = h('select', { 'aria-label': 'Vehicle' }, ...on.vehicleClasses().map((c) => h('option', { value: c }, c))) as HTMLSelectElement;
+      const cx = h('input', { type: 'number', placeholder: 'X', 'aria-label': 'X' }) as HTMLInputElement;
+      const cz = h('input', { type: 'number', placeholder: 'Z', 'aria-label': 'Z' }) as HTMLInputElement;
       return [
-        section('Powers', row(toggle('Fly / noclip', 'fly', on.fly), toggle('God mode', 'god', on.god)), h('p', { class: 'admin__note' }, 'Fly: Space up, C down.')),
+        section('Powers', row(toggle('Fly / noclip', 'fly', on.fly), toggle('God mode', 'god', on.god), toggle('Infinite boost', 'boost', on.infiniteBoost)), h('p', { class: 'admin__note' }, 'Fly: Space up, C down. Infinite boost: the reservoir never empties.')),
+        section('Wanted', row(wv, wn), row(btn('Set', () => on.wantedLevel(Number(wv.value))), btn('Wanted +1', () => on.wanted(1)), btn('Clear', () => on.wanted(-9)))),
+        section('Vehicles', row(cls, btn('Spawn behind me', () => on.spawnVehicle(cls.value))), row(btn('Bring a car', on.bringCar))),
         section('Speed', row(sp, spv)),
-        section('Teleport', row(sel, btn('Go', () => on.teleport(sel.value)))),
-        section('Quick', row(btn('Bring a car', on.bringCar), btn('Heal', on.heal)), row(btn('Wanted +1', () => on.wanted(1)), btn('Clear wanted', () => on.wanted(-9))), row(btn('Reset my side quests', on.resetQuests), btn('Send me to jail', on.jailMe))),
+        section('Teleport', row(sel, btn('Go', () => on.teleport(sel.value))), row(cx, cz, btn('To X,Z', () => on.teleportTo(Number(cx.value) || 0, Number(cz.value) || 0)))),
+        section('Powers found', row(btn('Grant all powers', on.grantPowers))),
+        section('Quick', row(btn('Heal', on.heal), btn('Revive', on.revive)), row(btn('Reset my side quests', on.resetQuests), btn('Send me to jail', on.jailMe))),
       ];
     }
     if (t === 'world') {
@@ -135,12 +167,16 @@ export class AdminPanel {
       const tv = h('span', { class: 'admin__val' }, clock(197));
       tm.oninput = () => (tv.textContent = clock(Number(tm.value)));
       const rn = h('input', { type: 'range', min: '0', max: '1', step: '0.05', value: '0.7', 'aria-label': 'Rain' }) as HTMLInputElement;
+      const dz = h('input', { type: 'range', min: '0', max: '1', step: '0.1', value: '0.8', 'aria-label': 'How busy the city is' }) as HTMLInputElement;
+      const dzv = h('span', { class: 'admin__val' }, '80%');
+      dz.oninput = () => (dzv.textContent = `${Math.round(Number(dz.value) * 100)}%`);
       const msg = h('input', { type: 'text', maxlength: '140', placeholder: 'Say something to everyone…', 'aria-label': 'Announcement' }) as HTMLInputElement;
       return [
         scope(),
-        section('Time', row(tm, tv), row(btn('Set time', () => on.time(Number(tm.value))))),
+        section('Time', row(tm, tv), row(btn('Set time', () => on.time(Number(tm.value))), btn('Stop the clock', () => on.freeze(true)), btn('Start it', () => on.freeze(false)))),
         section('Rain', row(rn), row(btn('Set rain', () => on.rain(Number(rn.value))), btn('Let it come and go', () => on.rain(null)))),
         section('Events', row(btn('Blackout', () => on.event('blackout')), btn('Unease', () => on.event('unease')))),
+        section('The streets', row(dz, dzv), row(btn('Apply', () => on.density(Number(dz.value))), btn('Clear all cars', on.clearTraffic), btn('Put everyone down', on.knockDownAll))),
         section('Announce', msg, row(btn('Send', () => msg.value.trim() && (on.announce(msg.value.trim()), (msg.value = ''))))),
       ];
     }

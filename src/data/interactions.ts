@@ -4,11 +4,21 @@
  */
 export interface InteractionDef {
   name: string;
-  verb: 'Inspect' | 'Read' | 'Use' | 'Listen' | 'Sit' | 'Answer' | 'Enter' | 'Leave' | 'Ring' | 'Talk';
+  verb: 'Inspect' | 'Read' | 'Use' | 'Listen' | 'Sit' | 'Answer' | 'Enter' | 'Leave' | 'Ring' | 'Talk' | 'Open' | 'Search' | 'Sleep';
   lines: string[];
   again?: string[];
   unlock?: string;
-  action?: 'sit' | 'phone' | 'vend' | 'mark' | 'enter' | 'exit' | 'bell';
+  action?: 'sit' | 'phone' | 'vend' | 'mark' | 'enter' | 'exit' | 'bell' | 'rob' | 'search' | 'sleep' | 'buy' | 'stash';
+  /** costs this much first (a coffee, a meal, a motel room) */
+  price?: number;
+  /** buy: health it gives back */
+  heal?: number;
+  /** stash: what might be in it */
+  cash?: [number, number];
+  /** stash: taking it is a crime this big (a till under a camera) */
+  crime?: number;
+  /** stash: found once for good (kept in the save), not just once a night */
+  keep?: boolean;
 }
 
 export const INTERACTIONS: Record<string, InteractionDef> = {
@@ -99,6 +109,24 @@ export const INTERACTIONS: Record<string, InteractionDef> = {
     name: 'Post boxes',
     verb: 'Read',
     lines: ['Eighteen boxes. Seventeen are empty.', 'Flat 2D has a name label. It is yours.'],
+  },
+  'bank-vault': {
+    name: 'Vault door',
+    verb: 'Open',
+    lines: ['Six hundred kilos of steel, and a wheel nobody has needed to turn in a long time.', 'It gives. It was never the lock that mattered.'],
+    action: 'rob',
+  },
+  'bank-ledger': {
+    name: 'Manager\u2019s ledger',
+    verb: 'Read',
+    lines: ['Every account closed out at 03:17, on the same night.', 'The last withdrawal is signed for in your name.'],
+    again: ['The signature is yours. It has always been yours.'],
+  },
+  'bank-atm': {
+    name: 'Cash machine',
+    verb: 'Inspect',
+    lines: ['It welcomes you by name. It has done this before.', 'Balance: enough.'],
+    again: ['It welcomes you by name again.'],
   },
   newspaper: {
     name: 'Newspaper box',

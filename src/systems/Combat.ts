@@ -29,7 +29,7 @@ export class Combat {
   health = 100;
   /** admin: nothing hurts */
   god = false;
-  /** 0..5 (fractional: stars shown are ceil) */
+  /** 0..8 (fractional: stars shown are ceil). Six and up is the military. */
   heat = 0;
   weapon = 0;
   ammo = WEAPONS.map((w) => w.mag);
@@ -45,7 +45,7 @@ export class Combat {
   }
 
   get stars(): number {
-    return Math.min(5, Math.ceil(this.heat - 0.05));
+    return Math.min(8, Math.ceil(this.heat - 0.05));
   }
 
   get dead() {
@@ -87,7 +87,16 @@ export class Combat {
 
   /** Something you did that the police care about. */
   crime(amount: number) {
-    this.heat = Math.min(5, this.heat + amount);
+    // Shooting a cruiser or an armoured vehicle is a big deal on its own, so
+    // the ceiling has to absorb it. Past six stars the military are already
+    // looking for you and pushing it higher would only ever cap.
+    this.heat = Math.min(8, this.heat + amount);
+    this.sinceCrime = 0;
+  }
+
+  /** Set the wanted level outright (staff tooling): heat is the star count. */
+  setHeat(stars: number) {
+    this.heat = Math.max(0, Math.min(8, stars));
     this.sinceCrime = 0;
   }
 
@@ -118,8 +127,10 @@ export class Combat {
         this.ammo[this.weapon] = this.w.mag;
       }
     }
-    // lie low and it cools off (slower with police in sight)
-    if (this.sinceCrime > 12 && this.heat > 0) this.heat = Math.max(0, this.heat - dt * (copsNear ? 0.02 : 0.09));
+    // lie low and it cools off (slower with police in sight, slower still once
+    // the military are involved — they do not forget quickly)
+    const floor = this.heat >= 6 ? 0.008 : 0;
+    if (this.sinceCrime > 12 && this.heat > floor) this.heat = Math.max(floor, this.heat - dt * (copsNear ? 0.02 : 0.09));
     // you heal if nobody's hurting you
     if (!this.dead && this.sinceHurt > 6 && this.health < 100) this.health = Math.min(100, this.health + dt * 4);
   }

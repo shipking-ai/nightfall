@@ -20,8 +20,20 @@ const gap = Number(process.env.GAP ?? 500);
 for (const [id, title] of ALL.filter(([m]) => !only || only.includes(m))) {
   // the title: Enter (the first thing focused)
   await until(async () => (await focused()).includes('Enter'), 20);
-  await tap('A');
-  await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 20);
+  // after a reload the title can focus "Sound on": walk the focus to Enter first
+  for (let i = 0; i < 8 && !(await focused()).includes('Enter'); i++) {
+    await tap(['Up', 'Left', 'Up', 'Left', 'Up', 'Up', 'Left', 'Down'][i]);
+    await t.wait(700);
+  }
+  // the first press can be taken by the title (sound unlock): try again until the mode select opens
+  for (let k = 0; k < 4; k++) {
+    for (let i = 0; i < 8 && !(await focused()).includes('Enter'); i++) {
+      await tap(['Up', 'Left', 'Up', 'Left', 'Up', 'Up', 'Left', 'Down'][i]);
+      await t.wait(700);
+    }
+    await tap('A');
+    if (await until(() => page.evaluate(() => window.nf.modeSelect.isOpen), 12)) break;
+  }
   await t.wait(1500);
   // the list runs top to bottom: Warzone, Fight, City, After Hours
   const order = ['Warzone', 'Fight', 'City', 'After Hours'];

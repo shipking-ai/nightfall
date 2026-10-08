@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { SPECS } from '../../vehicles/specs';
+import { staticVehicleParts } from '../../vehicles/model';
 import type { WorldContext } from '../WorldContext';
 import type { Rng } from '../rng';
 
@@ -151,14 +153,17 @@ export function manhole(ctx: WorldContext, x: number, z: number) {
 export const CAR_COLORS = [0x1a1c1f, 0x2b2f33, 0x3a3027, 0x1c2430, 0x4a4843, 0x2e1b18, 0x5a5448, 0x121314];
 
 /** Adds a parked car to the static batch, returns its headlight positions (local). */
-export function parkedCar(ctx: WorldContext, x: number, z: number, ry: number, color: number, opts: { lights?: boolean; dome?: boolean; van?: boolean; drive?: boolean; screen?: boolean } = {}) {
+export function parkedCar(ctx: WorldContext, x: number, z: number, ry: number, color: number, opts: { lights?: boolean; dome?: boolean; van?: boolean; drive?: boolean; screen?: boolean; kind?: string } = {}) {
   if (opts.drive) {
     // the electric ones are pearl white, and have a screen on the dash
-    ctx.cars.push({ pos: new THREE.Vector3(x, 0, z), yaw: ry, color: opts.screen ? 0xcfd0cc : color, van: !!opts.van, screen: !!opts.screen });
+    ctx.cars.push({ pos: new THREE.Vector3(x, 0, z), yaw: ry, color: opts.screen ? 0xcfd0cc : color, van: !!opts.van, screen: !!opts.screen, kind: opts.kind });
     return;
   }
   const P = M(x, 0, z, 1, 1, 1, ry);
-  for (const part of carParts(color, opts.van)) ctx.batch.add(part.mat(ctx), part.geo, under(P, part.m), { color: part.color });
+  // the same car you could drive (vehicles/model.ts), baked into the street
+  const spec = SPECS[opts.van ? 'van' : opts.kind === 'truck' ? 'truck' : opts.kind === 'bus' ? 'bus' : opts.kind === 'motorcycle' ? 'motorcycle' : ((x * 7 + z * 3) & 3) === 0 ? 'hatch' : 'sedan'];
+  const mat = { paint: ctx.mats.paint, glass: ctx.mats.darkGlass, trim: ctx.mats.rubber, chrome: ctx.mats.metal, interior: ctx.mats.rubber, head: ctx.mats.lampCold, tail: ctx.mats.lampRed, rubber: ctx.mats.rubber, rim: ctx.mats.metal };
+  for (const part of staticVehicleParts(spec)) ctx.batch.add(mat[part.kind], part.geo, P, { color: part.kind === 'paint' ? color : undefined, cast: part.kind === 'paint' || part.kind === 'rubber' });
   ctx.collision.add(...footprint(x, z, ry, opts.van ? 2.1 : 1.9, opts.van ? 5.2 : 4.5, opts.van ? 2.4 : 1.5));
   if (opts.dome) {
     ctx.lamp(new THREE.Vector3(0, 1.3, 0.2).applyMatrix4(P), 'interior', { pooled: false, cone: false, halo: 0.35, streak: 0.2, ground: 0 });

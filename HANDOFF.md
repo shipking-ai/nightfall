@@ -1,10 +1,192 @@
 # HANDOFF — NIGHTFALL
 
-Last updated: 2026-09-28 (four modes, controllers, people and animation). Read this first, then [README.md](README.md) for architecture and controls.
+Last updated: 2026-10-05 (the "AAA quality upgrade" Q1–Q7: motion, interactions, vehicles, blood, cinematics, Warzone as a full shooter, controller settings). Earlier: RPG R1–R6. Read this first, then [README.md](README.md) for architecture and controls.
 
 ## State in one paragraph
 
 The browser game builds and runs: `npm run dev` serves it at http://localhost:5317, and `npm run build` typechecks and bundles it (no external assets). Production is https://nightfall-sand.vercel.app, deployed from the `claude/sharp-shannon-6ogxul` branch after every fix. The title leads to a **mode select**, and there are **four modes on one city**: City, After Hours, Warzone and Fight (see the next section). Everything can be played **with only a controller**; the four-mode run was playtested that way (tools/playtest/). The older sections below still describe the City systems accurately.
+
+## The AAA quality upgrade, Q1–Q7 (2026-09-30 → 2026-10-05)
+
+The owner's "MASTER AAA QUALITY UPGRADE" brief, built in stages; each was committed, deployed and playtested. Constraints that still stand: no invented SDKs, credentials or platform APIs in the web build; no pay-to-win or predatory monetisation; no claims about console publishing costs; nothing copied from other games (names, assets, UI).
+
+- **Q1, motion** (`anim/gait.ts`, `anim/face.ts`, `entities/Humanoid.ts`): planted-foot gait with IK in the pelvis frame (7 mm foot drift), per-person walk styles, spring arms, faces with emotions, gaze, blinks and visemes; MakeHuman faces export face weights and a jaw (`tools/mh/convert.py`). Test: `tools/playtest/gait.mjs`.
+- **Q2, every action has a body** (`anim/actions.ts`, ~40 clips): doors, phones, vending, eating, searching, first aid, carrying, reactions (horn, near miss, knockdown), horror wrongness. Wired into the RPG's `Life.ts`.
+- **Q3, vehicles** (`vehicles/specs.ts`, `dynamics.ts`, `model.ts`, `VehicleFx.ts`): 12 classes, sprung body with tyre slip, gears, traction control, wet/off-road; lofted bodies with cabins, doors, wipers; dents, dirt, glass cracks; spray, smoke, skids; six cameras; engine voice. Test: `drive.mjs`.
+- **Q4, blood** (`fx/Blood.ts`, wound shaders in `people/materials.ts`): droplets, splats by impact angle, wall spray, pools, prints, drips, soak on skin and clothes, cars. Test: `blood.mjs`.
+- **Q5, cinematics** (`cine/Cinematics.ts`, `cine/CineUi.ts`, depth of field in `render/Renderer.ts`): 16 shot kinds, letterbox, rack focus, occlusion pull-in, skippable; used for talks, story beats and Warzone's opening and ending. Test: `cine.mjs`.
+- **Q6, Warzone** — see the Warzone section below.
+- **Q7**: zoom-scaled aim sensitivity added to the controller settings (everything else the brief lists was already there); `docs/platforms.md` updated; full test pass.
+
+**City follow-ups (C1–C3), from the owner's list:**
+- **C1, real interiors** (`world/builders/homes.ts`, wired from `interiors.ts` `generateInterior`): each of the 87 generated buildings is a floor plan (a front room, two back rooms with doorways, a stair hall and an upper floor in tall buildings), with rooms by kind (home, shop, office, warehouse), a light and a night window in every room, and residents, clerks and workers as crowd NPC spots. There are 572 searchable drawers, tills and safes (`search:` points; money goes to `save.data.cash`; a burglary if someone on the same floor is within 9 m) and 124 beds (`sleep:` points: heal, and it's still 3:17). Standing NPCs more than 90 m from you are skipped entirely (`Crowd.update`), so indoor residents cost almost nothing. Test: `homes.mjs`.
+- **C2, traffic** (`layout.ts` `CAR_ROUTES`, `Traffic.ts`): a pool of 14 cars scaled by Population, new routes for the Avenue south of Linden and through-routes on Harbor and River, and new cars pick the emptiest road. Test: `city-traffic.mjs`.
+- **C3, conversations** (`systems/CityTalk.ts`, the RPG's `Talk` card): names, manner from persona, topics (time, somewhere open with directions, themselves, rumours leading to real places), give $20 (they warm up and tip you), threaten (wallet or a shove). Test: `city-talk.mjs`.
+
+Another session (commit 2e295b8) added cinematic rendering and adaptive quality (`render/Capability.ts`, `Governor.ts`), military APCs, every car drivable, procedural enterable interiors (`world/builders/interiors.ts`), a bank (`bank.ts`), powers on V / Z / X (`systems/Powers.ts`, city only), ragdolls (`anim/Ragdoll.ts`) and more admin tools. PR #2 (shipking-ai/nightfall) is open from this branch into `main`. It also committed a stray `.freebuff/project-id` file from some other tool; check before merging.
+
+## NIGHTFALL: RPG, the fifth mode (in progress, 2026-09-28)
+
+The user's brief is a very large "fifth game" addendum: an endless streamed world, many cities and biomes, full RPG systems, and console-ready architecture. It's being built in stages (R1–R6). **After every "R" stage: commit, deploy to Vercel production, tell the user so they can test.**
+
+### Done: R1, the world (commit 53487c3, deployed)
+- **Mode:** `rpg` in `src/modes/rules.ts` (listed 05 in the mode select). `App.enter()` calls `rpg.start()` behind the intermission card; `App.leave()` calls `rpg.stop()`, which restores District 03's night: fog, sky uniforms, key light, env map, water, skyline.
+- **`src/rpg/Rpg.ts`:** owns the generator, streamer, atmosphere, sea, precipitation, far cities and HUD. Hooks `Collision.base` (terrain and bridge decks) and `Player.waterAt` (open water anywhere; `undefined` inside District 03 keeps its river rules).
+- **`src/rpg/world/WorldGen.ts`:** deterministic plan.
+  - Climate, mountains and dunes.
+  - One node per 3.2 km macro cell: city, town, village, ruin, military base or crossroads.
+  - Graded roads with bridges, the home river continuing from District 03, noise rivers and lakes.
+  - Merrow is the home city at (0, 260). District 03 is the handcrafted footprint `DISTRICT_03`; the interiors are `INTERIOR_BLOCK`.
+- **`biomes.ts`:** ten biomes and ten city archetypes.
+- **`Towns.ts`:** street grid, blocks, buildings (`raise()`), houses, landmarks, parks, lamps, shop POIs.
+- **`Streamer.ts`:** 128 m chunks with a frame budget, 1 km far tiles, flora LOD.
+- **`FarCities.ts`:** horizon silhouettes.
+- **`Roads.ts`:** ribbons, bridges and decks.
+- **`src/rpg/env/Atmosphere.ts`:** 24 h day, sun and moon, stars, drifting weather fronts, thunder, temperature, grip and visibility.
+- **Shared engine changes:**
+  - Facade shader: 5 new styles (stucco, adobe, timber, panel, siding) and `aTop.z` = base height.
+  - `Collision.base` for terrain.
+  - `Lighting.setKeyDirection` and `setExtraLamps`.
+  - `Sky` gains `uDay`, `uSunDir`, `uStars`.
+  - `Outskirts.limit` and `Outskirts.follow`.
+- **Playtest:** `tools/playtest/rpg.mjs` selects RPG with the virtual pad, visits every biome and town type, drives out of District 03, and fails on errors.
+
+### Done: realistic RPG people (the user's priority), commit 4c85461
+- **MakeHuman (CC0 1.0, LICENSE.md section C):** `tools/mh/convert.py` packs the base mesh, macro and face targets, and the default skeleton's weights into `public/rpg/mh/mh.bin` plus `mh.json` (6.1 MB; credit in `public/rpg/mh/LICENSE.txt`). The source clone was `/home/user/makehumancommunity/makehuman`. The skins, hair and clothes packs weren't reachable (the host needs auth), so clothes and hair are grown from the body and its helper meshes in `mh.ts`.
+- **`src/rpg/people/mh.ts`:** morphs a person from a `HumanSpec`, retargets bone-frame by bone-frame onto the game rig's bind pose, and cuts and drapes top, coat skirt, trousers and scalp hair. Shoes and extras stay SDF (`anatomy.ts`). The eye proxy is fitted from mhclo.
+- **`RealHuman`:** a SkinnedMesh whose bones copy the shared rig's `J` after `solve()`. It's built in a worker. The far LOD is the SDF person.
+- **Hero:** `heroSpec()` in `kit.ts` (charcoal wool coat, scarf, stubble). `Player.real` draws it in place of the city figure. It sits lower in car seats (the MH trunk is longer).
+- **Viewer:** `dev/human.html?shot=full|face|walk&mh=0|1`.
+- **To polish:** brows, better hair styles, NPC variety.
+
+### Done: R2, the living world (commits d4e0937 and ba907d6)
+- **`src/rpg/sim/Populace.ts`:** each town's residents have a name, job, home, workplace and daily schedule. Where someone is is a function of the time: commute, lunch, errands, evenings out, bed. Up to 12 within 110 m are embodied as `RealHuman`s (a pool of 28). Press interact to talk; the lines depend on their job, the weather and a rumour.
+- **`src/rpg/sim/RoadTraffic.ts`:** vehicles on the road polylines, chosen by biome, in the right-hand lane. They slow for the car ahead and for you, and have headlights and brake lights. They spawn 160–520 m away along the road where it passes you (projected, by wall time, not capped dt) and drop past 700 m. `obstacles()` feeds App's collision circles.
+- **Parked cars:** the `chunk.cars` spots within 160 m become real `DrivableCar`s via `Vehicles.spawn(spec, streamed=true)` / `despawn()` (`Rpg.park()`).
+- **Playtest:** `tools/playtest/rpg-roads.mjs` covers highway traffic, a town's parked cars, and getting in and driving off. Note that `t.step()` switches the game to manual stepping, so after the first `step()`, advance time with `step()` rather than `wait()`.
+
+### Done: R3, a life (commit fdeee63)
+- **`src/rpg/game/`:** plain-data rules, no three.js.
+  - `character.ts`: 6 attributes, 12 skills that grow by use, levels (`xpFor`), 24 perks, 6 backgrounds. `chance()` is the odds shown on every check.
+  - `items.ts`: about 57 item definitions. Stacks can carry a one-off `name`, `desc` and `quest`.
+  - `factions.ts`: 7 factions with rivals; `standing()` gives the words.
+  - `Game.ts`: `GameState` (serialisable) and the `Game` rules: inventory, XP, practice/check, money, prices, reputation, memory (visited, met, pois, flags, bounty), needs `tick()` against the weather and your clothes, `sleep()`.
+  - `quests.ts`: `offerFrom(resident)` makes jobs deterministically per resident every two days: missing (search a spot), debt, delivery, fetch. The main story is `startMain`/`advanceMain` (stages 0–6) over `mainPlaces()` (first town, a ruin, a city bank, a cold town's church).
+  - `dialogue.ts`: node trees. `residentTalk`, `poiTalk` (services by door kind) and `staffOf(poi)`. A choice's `go()` returns a node, `null` (end) or `undefined` (handed off to the shop).
+  - `economy.ts`: stock per door kind and day, what each buys, opening hours.
+  - `saves.ts`: slots auto/1/2/3, a versioned envelope, `MIGRATIONS`, `repair()`, and the `SaveStore` interface (the platform layer swaps in console storage).
+- **`src/rpg/Life.ts`:** owns the Game and the screens.
+  - `resume()` loads the latest save before the world preloads, else sets `pendingCreator`.
+  - Also: interactions (search, talk, go in), sleep, trains, autosave (150 s, new town, sleeping, searching), and the compass goal.
+- **UI (`src/rpg/ui/`):**
+  - `Creator` (live MH rebuild via `Rpg.setHero`, debounced), `Talk`, `Casefile` (tabs, LB/RB), `Shop`.
+  - HUD: toasts, a goal marker and line, condition words.
+  - Signs: `world/Signs.ts` puts enamel signs and lit doors on every POI (their own group per chunk, disposed on drop).
+- **App:** overlay `'rpg'` (`host.panel(open, from)`). In RPG, map/archive open the Casefile. The creator uses the wardrobe's fitting camera and blocks back/Menu. The RPG clock pauses under any overlay. The controls strip has an `rpg` set.
+- **Playtest:** `tools/playtest/rpg-life.mjs`. After a page reload the title focuses "Sound on", so the test moves to Enter, and waits 2 s on the mode select before confirming.
+
+### Done: R4a, the wild (commit 4c69c5c)
+- **`src/rpg/sim/animals.ts` + `animal.worker.ts`:** 11 species sculpted as SDF parts (body; head and neck; tail; upper and lower legs; wings for birds), meshed in a worker and coloured per vertex (back, belly, legs, face, tail tip, hooves). Proportions come from withers height, body length and chest depth. `SPECIES` also holds behaviour: notice distance, speeds, predator or prey, yield.
+- **`sim/Wildlife.ts`:**
+  - Spawns herds by biome (from `BIOMES[].wildlife`), 130–230 m out and not in towns; drops them past 330 m.
+  - States: graze, walk, alert, flee, stalk, attack, dead, fly. Noticing you depends on speed, crouch (enabled in RPG), daylight, visibility and Stealth. Predators are bold at night or when hurt.
+  - `alarm()` is called on gunshots; `hitTest()` and `damage()` handle hits; `carcass()` finds bodies to butcher.
+  - Dev viewer: `/dev/animals.html?only=deer&walk=1`, captured by `tools/playtest/animals.mjs`.
+- **Hunting and combat hooks:**
+  - `Rpg.hitTest()` feeds App's `fire()` (fists and guns). The weapon in the RPG is `Life.weapon()`, the equipped item.
+  - Guns need rounds from your pockets (`spendRound`). Weapon buttons holster or unholster (`App.rpgHolstered`).
+  - `host.hurt` is where bites land. `App.die()` has an RPG branch, `Life.onDeath()`: you wake at the nearest clinic.
+- **Life:** butcher (needs a knife; Survival check), a campfire (lighter → Casefile → "Make a fire"; `sim/Camp.ts` is a pooled `Lamp` via `Rpg.extraLamps`, with a cook/craft/rest menu), and fishing (`ui/Fishing.ts`: wait, strike, reel; catches by biome).
+- **Playtest:** `tools/playtest/rpg-wild.mjs`.
+
+### Done: R4b, dread and the road (commit 557ca7a)
+- **`sim/Director.ts`:**
+  - Dread (0–1) builds from night, the hour, being out of town, ruins, biome and story stage. It drops by a fire, in a car, and with Nerve or the Cold Blooded perk. It drives the `.dread` vignette (with a pulse above 0.72).
+  - Scares:
+    - the watcher (a pale, very tall `Figures` person, faintly emissive, who vanishes when looked at or approached);
+    - lights (`director.dim` multiplies lamp gain);
+    - whisper, footsteps, silence, radio.
+  - First sightings go in the journal; four distinct ones reveal the "the-watcher" secret.
+  - Roadside events: breakdown (a static `vehicleMesh` with hazard lights), wounded (wolves spawn at dusk), lost hiker, and an ammo box with lore notes. `interaction()` is checked first in `Life.interaction`.
+- **`sim/Figures.ts`:** standalone RealHumans on the rig with looping clips, sitting and watching.
+- **Playtest:** `tools/playtest/rpg-dark.mjs`.
+
+### Done: R4c, violence (commit 25306e1)
+- **`Populace`:** residents have hp; they flee, die, or chase. `hitTest`, `damage`, `scatter`, `witnesses`, `standDown`, plus `gone`, `wanted` and `onCatch`.
+- **`Life`:** `violence()` (witnesses report once, via a `reported` set, costing Watch standing and adding a bounty), `gunfire()`, and `arrest()`.
+- **Playtest:** `tools/playtest/rpg-fight.mjs`.
+
+### Done: R4d, vehicles and cards (commit 7d92b73)
+- **`Vehicles.ts`:** a `Tune` per vehicle (accel, vmax, steer, offroad), seat, reach, surface grip. `spawn(spec)` takes a mesh, tail lights, kind, tune and seat.
+- **`Rpg`:** `parkCar`, `spawnCar`, and `carjack` (from `RoadTraffic.stoppedNear` and `take`), with a `TUNES` table. App's `carName()` and seat override.
+- **Blackjack** at bars (in `dialogue.ts`).
+- **Playtest:** `tools/playtest/rpg-drive.mjs`.
+
+### Done: realism passes (the user's priority: "as realistic and epic as possible")
+- **Faces (a1179d7):**
+  - `tools/mh/textures.py` builds `public/rpg/mh/eye.png` (MakeHuman's eye, CC0) and `regions.png` (lips, lids, nails and thickness masks, from MPFB2, CC0).
+  - Skin: pore normal map, regions, and thin-skin light transmission.
+  - Brows are drawn in the skin shader (`BROW_FN`).
+  - Eye: a real iris texture; the cornea is discarded.
+- **Cloth:** weave, knit and leather normal maps (`normalTex`, `FABRIC_NORMAL`).
+- **Sky light:** Poly Haven HDRIs via `@pmndrs/assets` (CC0), unpacked by `tools/assets/pmndrs.py` into `public/rpg/env/*.exr`. `Rpg.skyFor()` picks one by biome and hour, and `HDRI_GAIN` scales it every frame after the atmosphere.
+- **Terrain micro-normals:** grit, cracked and rock maps in `Terrain.ts`, near material only.
+- **Trees (bc6f694):** `world/RealTrees.ts` grows EZ-Tree trees (`@dgreenheck/ez-tree`, MIT) per kind within 75 m; the stand-ins take over beyond.
+- **Ground cover and rocks (ee289d0):**
+  - `world/GroundCover.ts` lays up to 46k grass blades on a ground-fixed grid within 28 m, with wildflowers. Its models come from the EZ-Tree demo, in `public/rpg/models`.
+  - Scanned rocks replace rocks and boulders within 75 m (`RealTrees.loadRocks`).
+  - `world/gltf.ts` is a shared Draco loader, with the decoder in `public/rpg/draco` (Apache-2.0).
+- **Hair cards (in progress):**
+  - `people/hairCards.ts` grows about 2,000 tapered cards per head from scalp roots, per cut. The ellipsoids are the neck and torso; the head itself uses its real surface via `onHead`. Short cuts hug the scalp; ponytail, bun and braids gather to ties.
+  - `hairCardMaterial` uses a canvas strand texture. The old scalp shell remains as a darker, matte `hairCap` under the cards (still the whole cut for `buzz`).
+  - Test with `SHOTS_LIST=face HAIR=long VIEW=front|side|back|top node tools/playtest/people.mjs`.
+- **Necklines:** tops are cut along a smooth collar curve round the neck (`collarY`/`nearNeck` in `mh.ts`), and the edge is snapped onto it.
+- **Credits:** everything is listed in `public/licenses/README.txt`.
+- **Not reachable from the build container:** api.polyhaven.com, ambientcg.com and MakeHuman's asset servers (hair and clothes packs), so hair and clothes are grown in code.
+
+### R5 (in progress)
+- **Atlas (the Casefile's Map tab, and the map key in the RPG):** `rpg/ui/Atlas.ts`.
+  - Land tiles are drawn in a worker (`atlas.worker.ts` + `atlasTile.ts`) straight from `WorldGen`: relief, water, forest, sand, rock, snow and towns. Cached per zoom, filled from the middle out.
+  - Roads are drawn as vector lines on top. Settlements show once you've seen them and are named once you've been there.
+  - Unexplored land is veiled. `mem.seen` holds the 400 m cells within one cell of wherever you've been (`Life.chart`).
+  - Markers: jobs (diamonds), the story (a star), you (an arrow), and a pin.
+  - The pin (`Life.waypoint`, saved in `mem.flags.wp`) takes over the compass until you're within 25 m.
+  - Controls: stick, d-pad, drag or arrows to pan; LT/RT, wheel or +/− to zoom; A, click or Enter to pin; X to clear; Y or C to recentre.
+  - The input arrives through the Nav scope's `pad` hook, which now runs for keys too.
+- **Platform layer:** `src/platform/Platform.ts` with a web implementation only.
+  - Save storage, milestones (`ACHIEVEMENTS`, toasts on the web), presence, suspend, and the account name.
+  - `docs/platforms.md` covers the port plan through the official programs (no invented SDKs or costs) and the free-to-play fairness rules.
+- **Playtest:** `tools/playtest/rpg-map.mjs`. Under SwiftShader the RPG draws about 1 fps, so the test holds buttons for seconds rather than tapping. `__stick` takes a stick number (0 or 1).
+- **Controller pass:** `tools/playtest/rpg-pad.mjs` drives every RPG screen with the virtual pad alone (creator, all Casefile tabs, pockets, a conversation, a shop, the pause menu and Archive). It checks for focus with the ring, that the d-pad moves, that A acts and that B gets out.
+  - **Found and fixed:** the Nav ignored a layer while it faded in (`checkVisibility` with opacity), so an A pressed during the fade was lost. That's why "Let's trade" did nothing on the pad. Screens now take the pad from their first frame.
+  - The Casefile's You and People rows are focusable. Places rows are buttons: A pins the place and the compass follows it.
+- **Freezes (see the "Fix freezes" commit):** `tools/playtest/rpg-perf.mjs` profiles travel (updates only, long tasks, CPU profile, mid-trip shader compiles). Set `RENDER_EVERY=45` to also catch compiles.
+  - Terrain fields are sampled in workers (`field.worker.ts`).
+  - Chunks are built a block at a time.
+  - GeoBatch appends into arrays.
+  - Grass is tiled and cached.
+  - Trees, rocks and grass are compiled with `compileAsync` and prepared behind the loading card.
+  - Journal plates use an async readback and are encoded in `plate.worker.ts`.
+- **Finding the way (the user couldn't find the ferryman):** `rpg/ui/GoalMarker.ts` is a world-space marker for the tracked job. It's a light column over a place or a diamond over a person, with a screen label clamped to the edge.
+  - `Life.goal()` follows a person by their hours even when they aren't embodied (`whereIs`).
+  - `Populace.pinned` keeps quest people out of doors.
+  - Main-story stage 1 names an informant (`quests.informant`).
+  - Test: `tools/playtest/rpg-ferry.mjs`.
+- **Roads:** dry dips get embankments (bridges only over water or valleys deeper than 30 m, and no short runs). The ground is sunk 0.55 m under the carriageway. The road surface is a deck you stand on.
+
+### R6: checklist and soak
+- `docs/rpg-checklist.md` maps every system to its test.
+- `tools/playtest/rpg-all.mjs` runs them all, one browser at a time. Running them together ran out of memory. Use `SKIP=rpg-soak` for a quick pass.
+- `tools/playtest/rpg-soak.mjs` simulates MINUTES (default 60) of play: a loop between the story's towns at driving speed, walks, and the Casefile and map. It samples heap, GPU objects, programs, chunks, collision, people and traffic every minute. It compares the 2nd and 3rd loops of the route for leaks.
+- `enterRpg(t)` in `tools/playtest/lib.mjs` enters the RPG and checks that it started. Use it in new tests.
+
+### Still to build (the addendum's list)
+- **R2 leftovers:** more landmark kinds.
+- **R3 leftovers:** combat-based jobs (bounties), owned vehicles in saves, the Places tab becomes the atlas in R5.
+- **R4 remaining:** boats outside District 03, parkour, more minigames (arcade), more secrets.
+- **Realism next:** looser clothes (the tops and trousers are still close to the body), far trees, town street detail.
+- **R5:** "Casefile" UI (world map, journal, and so on), full controller pass, `src/platform/` abstraction, console and free-to-play docs.
+- **R6:** the full playtest checklist and a 60-minute soak.
 
 ## Four modes, controllers, people (2026-09-24 → 2026-09-28)
 
@@ -21,12 +203,19 @@ The browser game builds and runs: `npm run dev` serves it at http://localhost:53
 - Rounds are best of three with a 60 s clock. A KO triggers slow motion; the deciding round offers "Finish it" and a three-hit finisher (the special near a dizzy opponent).
 - The CPU (`FightAI.ts`) has a reaction time, spacing, punishes, combos and three levels. For local versus, **hold A on a second pad**. Player one is keyboard plus *their* pad (`Input.controlsWith`), so the second player's presses never drive them.
 
-### WARZONE (`modes/Warzone.ts`, `modes/warzone/*`, `ui/WarzoneHud.ts`, `styles/warzone.css`)
-- Domination in Pier 9 Yard. The bounds (x 40–101.5, z −28–60.5) are invisible collision walls added on start and removed on stop. The points are A (92, −20), B (68.5, 9) in the middle gap, and C (46, 44). Blue spawns south-west and Red north-east. The first team to 150 wins (1 point per held point every 2 s), with a 6-minute clock.
-- The bots (`Soldier.ts`) move on a 0.5 m `NavGrid` (A* with string-pulling) built from the yard's collision. Each one leans towards a point, needs line of sight plus a reaction time before firing, strafes, crouches at range, bursts, reloads, falls back when hurt, and turns on whoever shot it. Accuracy against the player scales with the difficulty (Recruit / Regular / Veteran).
-- Guns (`weapons.ts`): carbine, SMG, marksman rifle, shotgun and pistol, in four loadouts. Each has damage falloff, headshots, hip and ADS spread, bloom and recoil (the camera kicks and mostly settles). Armor soaks 60 % until it's gone, health regenerates out of the fight, and there are ammo and armor stations plus drops from the dead.
-- **First person by default** (`Viewmodel.ts`): the gun and gloved forearms ride the camera with sway, bob, kick, reload dip and swap. Aiming lines the sight up just under a dot. D-pad ↑ / V switches to over the shoulder, and death always uses the third-person camera. The first-person pitch range is ±1.3 (`FollowCamera.pitchMin/Max`).
-- Aim assist is pad only: slowdown over a visible enemy, plus a settle onto one when the sights come up.
+### WARZONE (`modes/Warzone.ts`, `modes/warzone/*`, `ui/WarzoneHud.ts`, `ui/WarzoneMenu.ts`, `ui/Gunsmith.ts`, `ui/Minimap.ts`, `styles/warzone.css`)
+- **Front end:** Warzone opens on its own menu (`WarzoneMenu`): Play (mode cards, bots difficulty, Hardline, view, loadout, Deploy), Loadouts (into the gunsmith), Career, Controls. LB / RB tabs; it's a nav scope, so the pad works everywhere. The end screen's second button returns to it.
+- **The yard:** Pier 9 Yard, bounds x 40–101.5, z −28–60.5 (invisible walls added on start, removed on stop). Points A (92, −20), B (68.5, 9), C (46, 44). Blue spawns south-west, Red north-east.
+- **Modes** (`modes.ts`): Domination, Team Deathmatch, Free-for-all, Hotspot (a zone that moves every 60 s), Tagged (kill-confirm style), Capture the Flag, Gun Ladder (`LADDER`), Last Charge (rounds, plant at A or C, defuse; sides swap after three; first to four), and a firing range. Hardline: 60 health, no regeneration, no map/compass/markers/crosshair. Free-for-all works through `foe(a, b)` and `RULES.ffa` in `Soldier.ts`; everything that asks "is this an enemy" goes through it.
+- **Arsenal** (`arsenal.ts`, 39 original weapons in 12 classes; `attachments.ts`, 44 attachments in 9 slots, five per gun): `weapons.ts` compiles a weapon plus attachments into a `Gun`. Guns are modelled procedurally from their spec (`Guns.ts` `buildGun`, vertex colours, one draw each; the gunsmith draws the same model side on). Fire modes auto/semi/burst/bolt/pump/lever/single/swing; per-gun aim time, sprint-to-fire, climbing recoil with a lean and recovery; empty reloads; single-shell loading that firing interrupts; penetration through thin walls; limb damage; launchers fire projectiles that explode (`Blasts.ts`).
+- **Gear** (`Gear.ts`): frag (cooked), sticky charge, fire bottle, tripwire mine, throwing knife, remote charge; smoke (blocks `sees()`), flash, stun, decoy, sensor, stim. G / RB lethal, Z / LB tactical.
+- **Streaks** (`Streaks.ts`): recon, supply drop, counter-recon, sentry, precision strike, attack drone, at 3–9 kills in one life (5 / B / D-pad ↓). Bots earn recon and strikes.
+- **Bots** (`Soldier.ts`): NavGrid A*; reaction times; strafing; cover (`findCover`); flanking waypoints; hunting the last-seen position; investigating noise and squad callouts; grenades at where you were; fleeing grenades and fire; suppression; flash/stun; the mode's goals via `Battle.goal`; spoken callouts (`shout`) with radio lines.
+- **Career** (`career.ts`): XP from kills, headshots, objectives, matches and challenges; 40 levels; weapons and attachments unlock by level (the gunsmith shows what's locked); stats and 12 challenges, saved in localStorage. Nothing is for sale.
+- **HUD:** minimap that turns with you (enemies only when they give themselves away), compass with objective pips, fire-mode label, gear counts, streak ladder, plant/defuse bar, scope overlay, flash and stun overlays.
+- **Movement** (`Player.tactical`, Warzone only): tactical sprint, slide, mantle up to ~2 m.
+- **Tests:** `wz-menu`, `wz-arsenal`, `wz-gear`, `wz-modes` (MODES=…, SECS=…), `wz-map`, `wz-moves`, and the older `warzone.mjs`.
+- **Not done:** a second map, online play (bots only).
 
 ### CITY and AFTER HOURS
 - After Hours adds headphones (radio on foot, D-pad ←/→), plus pause-menu switches for the weather and for holding the hour (reset when you leave the mode), and photo mode. The City keeps everything it had.
@@ -339,6 +528,14 @@ Neither network stores anything.
   - B closes the tab: A gets "Tester B is gone." Clocks match.
 - **Limits:** Supabase bills 1 + N per broadcast, so a room costs about 5 × players² messages a second. Free is 100/s **project-wide** (about one room of 4), with 2M messages a month. See **docs/multiplayer-scaling.md** for the numbers and the plan: Pro now, Cloudflare Durable Objects beyond about 100 players online at once.
 - **Vercel Deployment Protection is OFF** (set 2026-09-23 at the owner's request). The site is public.
+
+## Pursuits and the outskirts (2026-10-08)
+
+- **Car chases** (`entities/pursuit.ts`, `entities/Police.ts`): police and military cars spawn 90–170 m off, on a road, out of view (behind you by preference), and drive the street grid to you (`waypoint`). Once close and in sight they go straight for you: lead prediction, PIT on the rear quarter, rams (`hooks.rammed` → crash, shake, damage), boxing in, deploying officers. Feelers steer round things; stuck cars back out; a lost unit gives up after 14 s or 220 m. Test: `tools/playtest/pursuit.mjs` (`STARS=7` for the military).
+- **Outskirts** (`world/Outskirts.ts`, `world/builders/outskirtsLots.ts`): road-facing block faces get places: gas station (coffee/snacks to buy, a till to rob: +heat), diner (a meal), motel (a room = `sleep`, paid), pocket park (benches, a statue), car park (an unlocked car), building site (crane, toolbox), night market (food stalls). There are also lit shopfronts with awnings and signs, rooftop billboards for made-up brands, a bus shelter per slice, trees, bins and hydrants, and a holdall stash in an alley gap. Stashes are kept in save flags (`osk<i>:<band><face>:bag|glovebox|toolbox`).
+- New interaction fields: `price`, `heal`, `cash`, `crime`, `keep`; actions `buy` and `stash` (App `interact()` charges first, then acts).
+- **People out there** are borrowed: `Crowd.lend(spots)` assigns up to 16 pooled extras to the nearest outskirts spots (`Outskirts.people`), called every 0.5 s from App.
+- **Traffic out there**: `Traffic.local()` makes ad-hoc runs along the long road near you when |x| > 165, and far-off district cars are retired so they come round your way. Test: `tools/playtest/outskirts.mjs`.
 
 ## Backend & deploy (2026-09-23)
 

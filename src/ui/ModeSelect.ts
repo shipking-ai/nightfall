@@ -93,6 +93,7 @@ const WHERE: Record<ModeId, string> = {
   fight: 'Harbor Lane crossing',
   city: 'All of District 03',
   afterhours: 'All of District 03',
+  rpg: 'District 03, Merrow, and everything past it',
 };
 
 /** A small moving mark per mode: the thing its world is made of. */
@@ -108,6 +109,9 @@ function motif(id: ModeId): SVGElement {
   } else if (id === 'city') {
     // a skyline with one window on
     s.append(svg('path', { d: 'M0 22 H10 V12 H18 V16 H26 V6 H34 V14 H44 V10 H52 V22 H62 V8 H70 V18 H80 V12 H90 V22 H120' }), svg('rect', { class: 'm-window', x: 28, y: 9, width: 3, height: 3 }));
+  } else if (id === 'rpg') {
+    // a road over hills to a sun on the horizon
+    s.append(svg('path', { d: 'M0 20 Q18 10 34 16 T66 12 T96 17 T120 13' }), svg('path', { class: 'm-road', d: 'M52 24 L60 14 L68 24' }), svg('circle', { class: 'm-sun', cx: 92, cy: 9, r: 3.2 }));
   } else {
     // rain on the river
     s.append(svg('path', { class: 'm-wave', d: 'M0 16 Q10 12 20 16 T40 16 T60 16 T80 16 T100 16 T120 16' }));

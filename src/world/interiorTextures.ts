@@ -18,6 +18,76 @@ function canvas(w: number, h: number, draw: (c: CanvasRenderingContext2D, w: num
 }
 
 export const itex = {
+  /** A window at night: the city through rain, lit windows across the street, streaks on the glass. */
+  nightWindow: () =>
+    canvas(256, 192, (c, w, h) => {
+      const g = c.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, '#0b1018');
+      g.addColorStop(1, '#151a22');
+      c.fillStyle = g;
+      c.fillRect(0, 0, w, h);
+      let s = 17;
+      const rnd = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+      // the building opposite: rows of windows, a few lit
+      c.fillStyle = '#0e1218';
+      c.fillRect(0, h * 0.25, w, h);
+      for (let y = h * 0.3; y < h; y += 22)
+        for (let x = 8; x < w; x += 26) {
+          const lit = rnd() < 0.3;
+          c.fillStyle = lit ? `rgba(${230 + rnd() * 25}, ${170 + rnd() * 50}, ${90 + rnd() * 50}, 0.9)` : 'rgba(30, 36, 46, 0.9)';
+          c.fillRect(x, y, 14, 12);
+        }
+      // rain on the glass
+      c.strokeStyle = 'rgba(180, 200, 230, 0.18)';
+      for (let i = 0; i < 60; i++) {
+        const x = rnd() * w, y = rnd() * h;
+        c.beginPath();
+        c.moveTo(x, y);
+        c.lineTo(x + rnd() * 2, y + 6 + rnd() * 18);
+        c.stroke();
+      }
+      // the frame and the cross bar
+      c.strokeStyle = '#2a2420';
+      c.lineWidth = 10;
+      c.strokeRect(0, 0, w, h);
+      c.lineWidth = 6;
+      c.beginPath();
+      c.moveTo(w / 2, 0);
+      c.lineTo(w / 2, h);
+      c.stroke();
+    }),
+
+  /** A framed picture: a few soft fields of colour (someone's taste, not anyone's art). */
+  painting: (seed: number) =>
+    canvas(160, 120, (c, w, h) => {
+      let s = seed * 131;
+      const rnd = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+      c.fillStyle = '#3a2a1e';
+      c.fillRect(0, 0, w, h);
+      const hue = Math.floor(rnd() * 360);
+      for (let i = 0; i < 4; i++) {
+        c.fillStyle = `hsl(${(hue + i * 40) % 360}, ${25 + rnd() * 30}%, ${30 + rnd() * 35}%)`;
+        c.fillRect(10, 10 + i * ((h - 20) / 4), w - 20, (h - 20) / 4 + 1);
+      }
+      c.strokeStyle = '#c8a064';
+      c.lineWidth = 4;
+      c.strokeRect(6, 6, w - 12, h - 12);
+    }),
+
+  /** A television left on: a pale blue glow and a ghost of a picture. */
+  tvGlow: () =>
+    canvas(160, 96, (c, w, h) => {
+      c.fillStyle = '#0a0c10';
+      c.fillRect(0, 0, w, h);
+      const g = c.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w * 0.6);
+      g.addColorStop(0, '#9ab8e0');
+      g.addColorStop(1, '#2a3a5a');
+      c.fillStyle = g;
+      c.fillRect(6, 6, w - 12, h - 12);
+      c.fillStyle = 'rgba(20, 30, 50, 0.5)';
+      c.fillRect(30, 40, 50, 40);
+    }),
+
   reception: () =>
     canvas(512, 128, (c, w, h) => {
       c.fillStyle = '#16100b';
@@ -188,6 +258,64 @@ export const itex = {
           // one name, on every box
           c.fillText(`${flat} · ${r === 1 && k === 3 ? 'you' : '—'}`, x + 12, y + 21);
         }
+    }),
+
+  /** a brass teller's name plate */
+  bankPlate: (label: string) =>
+    canvas(256, 88, (c, w, h) => {
+      c.fillStyle = '#7a6a3a';
+      c.fillRect(0, 0, w, h);
+      c.strokeStyle = '#c9b06a';
+      c.lineWidth = 3;
+      c.strokeRect(6, 6, w - 12, h - 12);
+      c.fillStyle = '#241d12';
+      c.font = `28px ${SERIF}`;
+      c.textAlign = 'center';
+      c.fillText(label, w / 2, h / 2 + 10);
+    }),
+
+  /** the ATM's screen */
+  /** the bank's shop window, seen from the pavement */
+  bankWindow: () =>
+    canvas(512, 256, (c, w, h) => {
+      c.fillStyle = '#141a1e';
+      c.fillRect(0, 0, w, h);
+      // a vault door, seen through the glass
+      c.fillStyle = '#3a3c3e';
+      c.fillRect(150, 30, 210, 200);
+      c.fillStyle = '#2a2c2e';
+      c.fillRect(168, 48, 174, 164);
+      c.strokeStyle = '#6a6a68';
+      c.lineWidth = 8;
+      c.beginPath();
+      c.arc(255, 130, 42, 0, Math.PI * 2);
+      c.stroke();
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2;
+        c.beginPath();
+        c.moveTo(255 + Math.cos(a) * 42, 130 + Math.sin(a) * 42);
+        c.lineTo(255 - Math.cos(a) * 42, 130 - Math.sin(a) * 42);
+        c.stroke();
+      }
+      // the queue, as bars at the bottom
+      c.fillStyle = '#2c3138';
+      for (let i = 0; i < 7; i++) c.fillRect(20 + i * 68, 210, 40, 46);
+    }),
+
+  bankSign: () =>
+    canvas(256, 256, (c, w, h) => {
+      c.fillStyle = '#0e1418';
+      c.fillRect(0, 0, w, h);
+      c.fillStyle = '#3f7f9f';
+      c.fillRect(16, 16, w - 32, h - 60);
+      c.fillStyle = '#c8d8e4';
+      c.font = `22px ${MONO}`;
+      c.fillText('MERROW', 34, 62);
+      c.fillText('SAVINGS', 34, 92);
+      c.fillStyle = '#e6b25c';
+      c.fillRect(34, 130, 150, 6);
+      c.fillStyle = '#7f9f6f';
+      c.fillRect(34, 160, 110, 6);
     }),
 
   floorNumber: (n: string) =>

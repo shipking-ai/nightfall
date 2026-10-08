@@ -1,0 +1,5 @@
+mh.bin / mh.json are converted (tools/mh/convert.py) from the assets bundled
+with MakeHuman 1.x — the base mesh, morph targets, the default skeleton's
+weights and the high-poly eye proxy — which the MakeHuman project released
+under CC0 1.0 Universal (see LICENSE.md, section C, in
+https://github.com/makehumancommunity/makehuman). http://www.makehumancommunity.org

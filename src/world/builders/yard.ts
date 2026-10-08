@@ -65,7 +65,9 @@ export function buildYard(ctx: WorldContext) {
   ctx.point('mark-yard', new THREE.Vector3(oc.x + 2, 0, oc.z - 2.3), 1.8);
 
   // gantry crane over the stacks
-  const cz0 = -22, cz1 = 50, cx0 = 44.5, cx1 = 99.5;
+  // The far leg has to stop short of Harbor Lane (z 48..60): at z = 50 it stood
+  // a 1.2 m column in the middle of the carriageway.
+  const cz0 = -22, cz1 = 44, cx0 = 44.5, cx1 = 99.5;
   for (const x of [cx0, cx1]) {
     for (const z of [cz0, cz1]) {
       batch.add(mats.paint, G.box, M(x, 0, z, 1.2, 24, 1.2), { color: 0x6b5a36 });

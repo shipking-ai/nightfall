@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { Settings, budget, distanceBudget, populationShare } from './Settings';
+import { Settings, budget, distanceBudget, populationShare, type Quality } from './Settings';
+import { detect, type Capability } from '../render/Capability';
+import { Governor, TUNING } from '../render/Governor';
+import { SPECS } from '../vehicles/specs';
 import { SaveState } from './SaveState';
 import { Cloud } from './Cloud';
 import { Input } from './Input';
@@ -17,6 +20,10 @@ import { LightFX } from '../fx/LightFX';
 import { Crowd } from '../entities/Crowd';
 import { Traffic, type Car as TrafficCar } from '../entities/Traffic';
 import { Vehicles, exitBeside, type DrivableCar } from '../entities/Vehicles';
+import { wrap } from '../entities/Player';
+import { Cinematics, subject, type Shot } from '../cine/Cinematics';
+import { CineUi } from '../cine/CineUi';
+import { bloody } from '../vehicles/model';
 import { Player } from '../entities/Player';
 import { FollowCamera } from '../camera/FollowCamera';
 import { CinematicCamera, SHOTS } from '../camera/CinematicCamera';
@@ -40,6 +47,8 @@ import { barkLine } from '../data/barks';
 import { Quests, type QuestEvent } from '../systems/Quests';
 import { QuestMarker } from '../fx/QuestMarker';
 import { Combat, WEAPONS } from '../systems/Combat';
+import { ESCAPE_R, VAULT, fmtMoney, newRob, robAlarmStage, robHeat, robWanted, stepRob } from '../systems/Robbery';
+import { POWERS, POWER_ORDER, corruption, cycle, grant, militaryGrade, newPowers, spend, tickPowers, type PowerId } from '../systems/Powers';
 import { Tracers } from '../fx/Tracers';
 import { Blood } from '../fx/Blood';
 import { AdminPanel } from '../ui/AdminPanel';
@@ -50,8 +59,10 @@ import { TouchControls, isTouch } from '../ui/TouchControls';
 import { Boats, WATER_Y, QUAY_Z, RIVER_Z0, type Boat } from '../entities/Boats';
 import { Police } from '../entities/Police';
 import { DISTRICTS } from '../world/layout';
-import { INTERIORS } from '../world/builders/interiors';
-import { INTERACTIONS } from '../data/interactions';
+import { INTERIORS, HOMES, SEARCHES } from '../world/builders/interiors';
+import { Talk } from '../rpg/ui/Talk';
+import { cityTalk, nameFor } from '../systems/CityTalk';
+import { INTERACTIONS, type InteractionDef } from '../data/interactions';
 import type { Npc } from '../entities/Crowd';
 import { cleanLook, type Look } from '../entities/Look';
 import { Multiplayer, type PeerState } from '../net/Multiplayer';
@@ -74,6 +85,7 @@ import type { ControlContext } from '../ui/Hud';
 import { Fight, ARENA } from '../modes/Fight';
 import { Warzone } from '../modes/Warzone';
 import { charFill } from '../entities/FigureBatch';
+import { Rpg, inD03 } from '../rpg/Rpg';
 
 type State = 'boot' | 'landing' | 'entering' | 'playing' | 'overlay' | 'leaving';
 interface NoteRow {
@@ -85,7 +97,7 @@ interface NoteRow {
   body: string;
 }
 
-type Overlay = 'pause' | 'map' | 'archive' | 'settings' | 'wardrobe' | null;
+type Overlay = 'pause' | 'map' | 'archive' | 'settings' | 'wardrobe' | 'rpg' | null;
 
 /**
  * NIGHTFALL — the application. Owns the loop and the state machine:
@@ -95,6 +107,12 @@ export class App {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 2500);
   private settings = new Settings();
+  /** what this machine is capable of, measured once at startup */
+  private capability!: Capability;
+  /** the tier actually in use right now (may differ from the setting under 'auto') */
+  private quality!: Quality;
+  /** moves the tier while you play, so quality tracks the machine */
+  private governor!: Governor;
   private save = new SaveState();
   private cloud = new Cloud();
   private renderer: Renderer;
@@ -113,6 +131,8 @@ export class App {
   /** what the player is sitting in, if anything */
   private vehicle: { kind: 'drive'; car: DrivableCar } | { kind: 'ride'; car: TrafficCar } | null = null;
   private driveVoice: { setPosition(p: THREE.Vector3, speed: number): void; mute(): void } | undefined;
+  /** the engine of the car you're driving (made from its specs) */
+  private engineVoice: ReturnType<AudioEngine['engineVoice']>;
   private horn: { on(p?: THREE.Vector3): void; off(): void } | undefined;
   private trafficHorns: { on(p?: THREE.Vector3): void; off(): void }[] = [];
   private honking = false;
@@ -162,6 +182,10 @@ export class App {
   private combat = new Combat();
   private tracers = new Tracers();
   private blood = new Blood();
+  /** a knife or a blade in hand (a cut, not a blow) */
+  private bladeInHand() {
+    return this.rpg.active && /knife|machete|axe|blade/i.test(this.rpg.life.weapon().name);
+  }
   private dying = false;
   /** seconds left inside (0: the gate is open) */
   private sentence = 0;
@@ -174,6 +198,7 @@ export class App {
   private chat!: Chat;
   private voice!: VoiceChat;
   private outskirts!: Outskirts;
+  private lendT = 0;
   private touch: TouchControls | null = null;
   private boats!: Boats;
   private police!: Police;
@@ -201,6 +226,8 @@ export class App {
   private fight!: Fight;
   /** WARZONE's match: bots, points, guns (modes/Warzone.ts) */
   private warzone!: Warzone;
+  /** RPG: the wider world past District 03 (rpg/Rpg.ts) */
+  private rpg!: Rpg;
   /** photo mode: a free camera and a shutter (After Hours, City) */
   private photo!: PhotoMode;
   /** your own photographs (IndexedDB), kept in step for the Archive */
@@ -215,8 +242,20 @@ export class App {
   private emoteNo = 0;
   private emoteSeq = 0;
   /** getting into or out of a vehicle: a short animation at the door first */
-  private boarding: { t: number; go: () => void } | null = null;
+  private boarding: { t: number; go: () => void; tick?: (dt: number) => void } | null = null;
+  /** in-engine scenes (cine/Cinematics.ts): the camera takes over from play and hands it back */
+  scenes!: Cinematics;
+  private sceneUi!: CineUi;
+  private skipHeld = 0;
+  /** a scene is playing (not handing back): play input waits */
+  get sceneBusy() {
+    return !!this.scenes?.active && !this.scenes.handingBack;
+  }
+  /** a car door to swing shut in a moment (after getting in or out) */
+  private doorClose: { car: DrivableCar; t: number } | null = null;
   private controlSeen = new Map<ControlContext, number>();
+  /** RPG: the gun in your pocket, not in your hand */
+  private rpgHolstered = true;
 
   /** dev: a fixed camera (character reviews) */
   debugCam: { pos: THREE.Vector3; look: THREE.Vector3 } | null = null;
@@ -261,8 +300,22 @@ export class App {
   private soundWanted = true;
   private phone = { ringing: false, until: 0, cooldown: 20, answered: false };
   private obstacles: { x: number; z: number; r: number }[] = [];
+  /** everyone in the street a car could hit, rebuilt each frame for Vehicles */
+  private peopleOnFoot: { pos: THREE.Vector3; dead: number; visible: boolean; hurt: (dmg: number, from: THREE.Vector3, force: boolean) => boolean; knockDown: (x: number, z: number) => void; toss: (vx: number, vz: number) => void }[] = [];
   private tmpV = new THREE.Vector3();
   private shelterT = 0;
+  /** staff: every car you get into has an endless boost */
+  private infiniteBoost = false;
+  /** the bank vault (systems/Robbery.ts) */
+  private rob = newRob();
+  private lastRobLine: string | null = null;
+  /** what the city did to you (systems/Powers.ts) */
+  private powers = newPowers();
+  /** staff: the clock stands still, the frame rate does not */
+  private frozen = false;
+  private lastGrade: string | null = null;
+  /** seconds of Still left: while it runs nothing in the city moves but you */
+  private held = 0;
   /** multiplayer city: when the host's last snapshot arrived, and when we (as host) next send one */
   private lastCity = 0;
   private cityT = 0;
@@ -280,6 +333,8 @@ export class App {
     };
     this.follow = new FollowCamera(this.camera);
     this.cine = new CinematicCamera(this.camera);
+    this.scenes = new Cinematics(this.camera);
+    this.scenes.occlude = (from, dir, max) => this.world.collision.raycast(from, dir, max);
     this.discovery = new Discovery(this.save);
 
     this.ui.append(this.boxTop, this.boxBottom);
@@ -299,6 +354,7 @@ export class App {
     });
     this.nav.scope(this.joinView.el, { back: () => this.joinView.close() });
     this.hud = new Hud(this.ui);
+    this.sceneUi = new CineUi(this.ui);
     this.modeSelect = new ModeSelect(this.ui, {
       preview: (id) => this.previewMode(id),
       choose: (id) => this.chooseMode(id),
@@ -370,7 +426,11 @@ export class App {
       magicLink: (e) => this.account.magicLink(e),
       google: () => this.account.google(),
       signOut: () => this.account.signOut(),
-    });
+    },
+    // so Settings can say what the machine was judged to be, and what it is
+    // actually running at right now
+    () => ({ tier: this.quality, fps: this.governor.fps, gpu: this.capability.gpu }),
+    );
     this.settingsView.input = this.input;
     this.account.onChange = () => this.onAccount();
     this.save.onFlush = (d) => {
@@ -447,13 +507,28 @@ export class App {
 
     this.world = await buildCity((k) => this.intermission.setProgress(k * 0.85));
     this.scene.add(this.world.root);
-    this.outskirts = new Outskirts(this.world.mats, this.world.collision, this.world.root);
+    this.outskirts = new Outskirts(this.world.mats, this.world.collision, this.world.root, this.world.interact);
     this.scene.add(this.outskirts.group);
     this.boats = new Boats(this.world.mats);
     this.scene.add(this.boats.group);
     this.police = new Police(this.world.mats, {
       deploy: (at) => this.crowd.deployCop(at),
       shoot: (from, hit) => this.copShot(from.clone().setY(from.y - 1.45), hit),
+      playerDriving: false,
+      say: (line) => this.hud.toast(line),
+      rammed: (k, at) => {
+        this.audio.crash(Math.min(1, k / 8));
+        this.follow.shake?.(Math.min(1, k / 7));
+        this.input.rumble('hurt', Math.min(1, k / 6));
+        const v = this.vehicle;
+        if (v?.kind === 'drive') this.vehicles.damage(v.car, at.x, at.z, k);
+      },
+      wrecked: (at, mil) => {
+        this.tracers.shot(at.clone().setY(at.y + 0.6), at.clone().setY(at.y + 2.4), true);
+        this.audio.crash(1);
+        this.crowd.shock(at.x, at.z);
+        this.hud.bark(mil ? 'Armoured vehicle destroyed.' : 'Cruiser destroyed.');
+      },
       downed: (at) => {
         this.tracers.shot(at, at.clone().setY(at.y + 3), true);
         this.audio.crash(1);
@@ -474,9 +549,20 @@ export class App {
     this.scene.environment = this.makeEnvironment();
     this.scene.environmentIntensity = 0.85;
 
-    const b = budget(this.settings.data.quality);
-    this.lighting = new Lighting(this.scene, this.world.lamps, 8, 2);
-    this.traffic = new Traffic(this.world, 4);
+    // What this machine can do, and the tier we resolved 'auto' to. The
+    // governor takes it from here and moves it while you play.
+    this.capability = detect();
+    this.quality = this.settings.data.quality === 'auto' ? this.capability.tier : this.settings.data.quality;
+    this.governor = new Governor(this.quality, {
+      ...TUNING,
+      ceiling: this.capability.software ? 'low' : 'cinematic',
+      floor: 'low',
+    });
+
+    const b = budget(this.quality);
+    this.lighting = new Lighting(this.scene, this.world.lamps, b.pointLights, 2);
+    // a pool of cars the Population setting scales (setDensity): every street has some
+    this.traffic = new Traffic(this.world, 14);
     this.vehicles = new Vehicles(this.world);
     this.remotes = new Remotes(this.world, this.ui);
     this.scene.add(this.remotes.group, this.fitLight);
@@ -531,6 +617,14 @@ export class App {
     this.time.minutes = this.save.data.clock;
     this.crowd = new Crowd(this.world.npcSpots, this.world.lamps);
     this.crowd.onSay = (n, k) => this.npcSay(n, k);
+    // so a car can knock people over, and their bodies land on the city's boxes
+    this.crowd.setCollision(this.world.collision);
+    this.vehicles.people = this.peopleOnFoot;
+    this.vehicles.onStrike = (car, x, z, speed, square) => {
+      this.audio.crash(0.4 + 0.5 * square);
+      this.crowd.shock(x, z);
+      this.blood.spray(this.tmpB.set(x, 0.5, z), this.tmpDir.set(x - car.pos.x, 0.4, z - car.pos.z).normalize(), 0.8 + square);
+    };
     this.scene.add(this.crowd.group, this.traffic.group, this.player.group);
     this.player.group.visible = false;
     this.fight = new Fight({
@@ -558,15 +652,78 @@ export class App {
       aimAssist: () => this.settings.data.aimAssist,
       hurtFlash: (k) => this.warzone.hud.hurt(k),
       onModes: () => this.fightToModes(),
+      scene: (s) => this.scenes.play(s),
+      cutscene: () => this.sceneBusy,
       onLeave: () => this.leave(),
     });
     this.scene.add(this.warzone.group);
     this.nav.scope(this.warzone.hud.end, { back: () => undefined });
+    this.nav.scope(this.warzone.menu.el, { back: () => (this.warzone.menu.tab !== 'play' ? this.warzone.menu.cycleTab(-1) : undefined), tab: (d) => this.warzone.menu.cycleTab(d) });
+    this.rpg = new Rpg({
+      scene: this.scene,
+      camera: this.camera,
+      collision: this.world.collision,
+      mats: this.world.mats,
+      sky: this.sky,
+      fog,
+      lighting: this.lighting,
+      weather: this.weather,
+      player: this.player,
+      follow: this.follow,
+      outskirts: this.outskirts,
+      cityRoot: this.world.root,
+      ui: this.ui,
+      environment: (zenith, horizon, ground) => this.makeEnvironment({ zenith, horizon, ground }),
+      warm: async (obj) => {
+        // for the target the scene is really drawn into (the composer's HDR buffer), as the warm-up does
+        const r = this.renderer.renderer;
+        const prev = r.getRenderTarget();
+        r.setRenderTarget(this.renderer.composer.renderTarget1);
+        const done = r.compileAsync(obj, this.camera, this.scene);
+        r.setRenderTarget(prev);
+        await done;
+      },
+      envFromEquirect: (tex) => {
+        const pmrem = new THREE.PMREMGenerator(this.renderer.renderer);
+        const rt = pmrem.fromEquirectangular(tex);
+        pmrem.dispose();
+        return rt.texture;
+      },
+      thunder: (delay, k) => setTimeout(() => this.audio.thunder(k), delay * 1000),
+      vehicles: this.vehicles,
+      say: (lines, who) => {
+        this.hud.say(lines, who);
+        this.sayingUntil = performance.now() + 1800;
+      },
+      panel: (open, from = 'playing') => {
+        if (open) {
+          if (this.overlay !== 'rpg') this.openOverlay('rpg', from);
+        } else if (this.overlay === 'rpg') this.closeOverlay();
+      },
+      curtain: (on) => this.fade(on, on ? 500 : 700),
+      inVehicle: () => !!this.vehicle || !!this.boat,
+      rumble: (k) => this.input.rumble('bump', k),
+      enterCar: (car) => this.enterVehicle({ kind: 'drive', car }),
+      talkScene: (who, cut) => this.talkScene(who, cut),
+      storyBeat: (caption) => this.storyBeat(caption),
+      hurt: (dmg, by) => {
+        if (this.dying || this.combat.god) return;
+        this.hud.hurt(Math.min(0.6, dmg / 30));
+        this.input.rumble('bump', Math.min(1, dmg / 20));
+        this.blood.spray(this.tmpB.set(this.player.pos.x, this.player.pos.y + 1, this.player.pos.z), this.tmpDir.set(Math.random() - 0.5, 0.4, Math.random() - 0.5).normalize(), 0.5, 'bite');
+        if (this.combat.hurt(dmg)) this.die(by);
+      },
+      spawn: SPAWN,
+    });
+    for (const el of this.rpg.life.panels) this.nav.scope(el, { back: () => this.back(), tab: (d) => this.rpg.life.panel === 'casefile' && this.rpg.life.cf.flip(d), pad: (dt) => this.rpg.life.mapInput(dt, this.input) });
     this.interaction = new Interaction(this.world.interact);
     this.quests = new Quests(this.save, new Map(this.world.interact.map((s) => [s.id, s.pos])));
     this.quests.onEvent = (e) => this.onQuest(e);
     this.scene.add(this.questMarker.group);
     this.scene.add(this.tracers.group, this.blood.group);
+    // blood lands on whatever ground is here, and on the walls behind a wound
+    this.blood.ground = (x, z, y) => this.world.collision.groundAt(x, z, y, 1.2, 0.02);
+    this.blood.wall = (o, d, max) => this.world.collision.raycast(o, d, max);
     this.crowd.onCopShot = (from, hit) => this.copShot(from, hit);
     this.crowd.spawnAt = (out) => this.policeSpawn(out);
     this.crowd.onCrookShot = (from, hit) => this.copShot(from, hit, 'Someone on the street');
@@ -627,7 +784,13 @@ export class App {
     this.discovery.on('district', (d) => {
       if (d && this.state === 'playing') this.hud.location(d.name, d.code);
     });
-    this.player.onStep = (k) => this.audio.footstep(k);
+    let leftFoot = false;
+    this.player.onStep = (k) => {
+      this.audio.footstep(k);
+      // step in blood and the next few prints show it
+      leftFoot = !leftFoot;
+      this.blood.step('me', this.player.pos.x, this.player.pos.y, this.player.pos.z, this.player.facing, leftFoot);
+    };
     this.player.onLand = (v) => this.audio.land(v);
 
     this.applySettings();
@@ -648,20 +811,29 @@ export class App {
     this.toLanding(true);
   }
 
-  private makeEnvironment() {
+  /** The reflections' world: District 03's night (a sodium glow low down), or the RPG's sky of the moment. */
+  private makeEnvironment(sky?: { zenith: THREE.Color; horizon: THREE.Color; ground: THREE.Color }) {
     const envScene = new THREE.Scene();
     const m = new THREE.ShaderMaterial({
       side: THREE.BackSide,
+      uniforms: {
+        uZ: { value: sky?.zenith ?? new THREE.Color(0.03, 0.038, 0.06) },
+        uH: { value: sky?.horizon ?? new THREE.Color(0.13, 0.09, 0.06) },
+        uG: { value: sky?.ground ?? new THREE.Color(0.045, 0.04, 0.036) },
+      },
       vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `varying vec3 vP; void main(){ vec3 d = normalize(vP); float h = d.y;
-        vec3 c = mix(vec3(0.13,0.09,0.06), vec3(0.03,0.038,0.06), smoothstep(-0.05, 0.5, h));
-        c = mix(c, vec3(0.045, 0.04, 0.036), step(h, -0.05));
+      fragmentShader: `uniform vec3 uZ; uniform vec3 uH; uniform vec3 uG; varying vec3 vP; void main(){ vec3 d = normalize(vP); float h = d.y;
+        vec3 c = mix(uH, uZ, smoothstep(-0.05, 0.5, h));
+        c = mix(c, uG, step(h, -0.05));
         gl_FragColor = vec4(c, 1.0); }`,
     });
-    envScene.add(new THREE.Mesh(new THREE.SphereGeometry(10, 32, 16), m));
+    const ball = new THREE.SphereGeometry(10, 32, 16);
+    envScene.add(new THREE.Mesh(ball, m));
     const pmrem = new THREE.PMREMGenerator(this.renderer.renderer);
     const rt = pmrem.fromScene(envScene, 0.02);
     pmrem.dispose();
+    ball.dispose(); // (the RPG makes a new one as the sky changes: the scratch sky mustn't pile up)
+    m.dispose();
     return rt.texture;
   }
 
@@ -669,8 +841,14 @@ export class App {
 
   private applySettings() {
     const d = this.settings.data;
-    const b = budget(d.quality);
-    this.renderer.configure({ pixelRatio: b.pixelRatio, msaa: b.msaa, postfx: d.postfx });
+    // If the player picked 'auto', follow the governor's tier, not the setting.
+    if (d.quality === 'auto') this.quality = this.governor.tier;
+    else {
+      this.quality = d.quality;
+      this.governor.tier = d.quality;
+    }
+    const b = budget(this.quality);
+    this.renderer.configure({ pixelRatio: b.pixelRatio, msaa: b.msaa, postfx: d.postfx, ao: b.ao, shafts: b.shafts });
     this.lighting.setShadows(d.shadows, b.shadowSize);
     this.lighting.setPoolLimit(b.pointLights);
     this.weather.setDensity(b.rain);
@@ -682,12 +860,14 @@ export class App {
     this.follow.invertY = d.invertY;
     this.follow.reducedMotion = d.reducedMotion;
     this.cine.reducedMotion = d.reducedMotion;
+    this.scenes.reducedMotion = d.reducedMotion;
     this.audio.setVolumes(d.master, d.ambience, d.music);
     this.radio.setVolume(d.radio);
     // controller
     const inp = this.input;
     inp.shape.deadzone = d.padDeadzone;
     inp.shape.curve = d.padCurve;
+    inp.zoomSens = d.zoomSens;
     Object.assign(inp.look, { sensX: d.padSensX, sensY: d.padSensY, aimSens: d.padAimSens, accel: d.padAccel, invertX: d.padInvertX, invertY: d.padInvertY, southpaw: d.southpaw });
     inp.modes.sprint = d.sprintMode;
     inp.modes.aim = d.aimMode;
@@ -701,7 +881,7 @@ export class App {
     this.crowd?.setDensity(pop.people);
     this.traffic?.setDensity(pop.traffic);
     const dist = distanceBudget(d.drawDistance);
-    this.camera.far = dist.far;
+    this.camera.far = this.rpg?.active ? Math.max(dist.far, 6000) : dist.far;
     this.camera.updateProjectionMatrix();
     this.crowd?.setLod(dist.lodNear, dist.lodMid);
   }
@@ -811,9 +991,10 @@ export class App {
     await this.fade(true, 700);
 
     // intermission card, set in the world's own terms
-    this.intermission.setFacts(this.save.data.lastPlace ?? 'District 03', this.time.rainLabel.toLowerCase(), this.time.label);
+    const rpgMode = this.mode === 'rpg';
+    this.intermission.setFacts(rpgMode ? 'Merrow' : this.save.data.lastPlace ?? 'District 03', rpgMode ? 'the night is ending' : this.time.rainLabel.toLowerCase(), rpgMode ? '05:29' : this.time.label);
     await this.intermission.show();
-    this.intermission.setProgress(1);
+    this.intermission.setProgress(rpgMode ? 0 : 1);
     this.fade(false, 700);
 
     const p = this.save.data.player;
@@ -827,12 +1008,19 @@ export class App {
       // WARZONE: Pier 9 Yard, in fatigues; the match puts you at your spawn
       this.setInside(null);
       this.warzone.start({ outfit: this.player.outfit, body: this.player.body });
+    } else if (rpgMode) {
+      // RPG: the pavement on River Road, as the night runs out
+      this.setInside(null);
+      this.player.place(SPAWN.x, 0.15, SPAWN.z, SPAWN.yaw);
+      await this.rpg.start(this.player.pos, (k) => this.intermission.setProgress(k));
+      this.rpg.hud.show(false);
     } else if (p) this.player.place(p.x, p.y, p.z, p.yaw);
     else this.player.place(SPAWN.x, 0.15, SPAWN.z, SPAWN.yaw);
     if (!fight && !this.warzone.active) this.setInside(interiorAt(this.player.pos.x, this.player.pos.z));
     // behind the intermission card: compile what a match will show later (tracers, blood, pickups), so the first shot doesn't hitch
     if (fight) this.warmUp([this.fight.group]);
     else if (this.warzone.active) this.warmUp([this.warzone.group, this.tracers.group, this.blood.group]);
+    else if (rpgMode) this.warmUp([this.rpg.group]);
     this.player.group.visible = !fight;
     this.cine.endPush();
     if (!this.warzone.active) this.follow.alignBehind(this.player);
@@ -850,6 +1038,11 @@ export class App {
     await this.fade(false, 1800);
     if (fight || this.warzone.active) return;
     this.hud.show(true);
+    if (rpgMode) {
+      this.rpg.hud.show(true);
+      // a first life: the mirror, before anything else
+      if (this.rpg.life.pendingCreator) this.rpg.life.openCreator();
+    }
     if (this.inside) this.hud.location(this.inside.name, this.inside.code);
     else this.discovery.update(this.player.pos.x, this.player.pos.z);
     if (!this.save.hasProgress) {
@@ -886,6 +1079,11 @@ export class App {
       this.warzone.stop();
       this.player.setLook(this.look);
       this.applyRulesFor('city');
+    }
+    if (this.rpg.active) {
+      this.rpg.stop();
+      this.applyRulesFor('city');
+      this.lighting.focusNow(this.camera.position);
     }
     await this.toLanding();
   }
@@ -970,6 +1168,11 @@ export class App {
   /* ─────────────────────────── overlays ─────────────────────── */
 
   private openOverlay(o: Exclude<Overlay, null>, from: 'pause' | 'landing' | 'playing') {
+    // out in the wider world, the map and the archive are the Casefile
+    if ((o === 'map' || o === 'archive') && this.rpg.active && from !== 'landing') {
+      if (this.rpg.life.game) this.rpg.life.openCasefile(o === 'map' ? 'map' : undefined, from === 'pause' ? 'pause' : 'playing');
+      return;
+    }
     this.audio.uiTick();
     if (this.state === 'playing') {
       this.intentionalUnlock = true;
@@ -982,6 +1185,7 @@ export class App {
     this.closeAllPanels();
     this.overlay = o;
     this.overlayReturn = from;
+    if (this.rpg.active) this.rpg.hud.show(o !== 'rpg' || this.rpg.life.panel === 'talk');
     this.audio.setMuffled(true);
     this.hud.show(false);
     if (o === 'pause') {
@@ -990,9 +1194,9 @@ export class App {
       this.persist();
       this.pause.setMode(this.fight.active || this.warzone.active, this.pauseSwitches());
       this.pause.open({
-        place: this.fight.active ? 'Harbor Lane crossing' : this.warzone.active ? 'Pier 9 Yard' : this.discovery.districtName,
-        time: this.time.label,
-        rain: this.time.rainLabel.charAt(0) + this.time.rainLabel.slice(1).toLowerCase(),
+        place: this.fight.active ? 'Harbor Lane crossing' : this.warzone.active ? 'Pier 9 Yard' : this.rpg.active ? this.rpg.place.name : this.discovery.districtName,
+        time: this.rpg.active ? this.rpg.atmos.label : this.time.label,
+        rain: this.rpg.active ? this.rpg.atmos.describe() : this.time.rainLabel.charAt(0) + this.time.rainLabel.slice(1).toLowerCase(),
         records: `${this.save.data.discovered.length} of ${ENTRIES.filter((e) => !e.hidden).length}`,
         together: this.mp.room ? (this.mp.peers.size ? [...this.mp.peers.values()].map((p) => p.name).join(', ') : 'Nobody else yet') : undefined,
       });
@@ -1005,7 +1209,9 @@ export class App {
     }
     if (o === 'archive') {
       // develop any plates that were never exposed (e.g. places found in an older build)
-      for (const e of ENTRIES) if (e.plate && this.save.has(e.id) && !this.photographer.has(e.plate)) this.photographer.capture(e.plate, this.time.label);
+      // (one at a time, a moment apart, so the archive opening doesn't hold the frame up)
+      const missing = ENTRIES.filter((e) => e.plate && this.save.has(e.id) && !this.photographer.has(e.plate));
+      missing.forEach((e, i) => setTimeout(() => this.photographer.capture(e.plate!, this.time.label), 300 + i * 450));
       this.archive.open({
         found: new Set(this.save.data.discovered),
         unread: new Set(this.save.data.unread),
@@ -1047,6 +1253,8 @@ export class App {
   }
 
   private closeAllPanels() {
+    // (an RPG screen closes itself only when the overlay it lives in is closing, not while it's opening)
+    if (this.overlay === 'rpg') this.rpg.life.closeAll();
     this.wardrobe.close();
     if (this.previewing) {
       this.previewing = false;
@@ -1061,6 +1269,7 @@ export class App {
   /** Esc / close: step back one level. */
   private back() {
     if (!this.overlay) return;
+    if (this.overlay === 'rpg' && this.rpg.life.back()) return;
     this.audio.uiTick();
     // leaving the Wardrobe without Done puts the old look back
     if (this.overlay === 'wardrobe') this.player.setLook(this.look);
@@ -1082,6 +1291,7 @@ export class App {
   private closeOverlay() {
     this.closeAllPanels();
     this.overlay = null;
+    if (this.rpg.active) this.rpg.hud.show(true);
     this.audio.setMuffled(false);
     if (this.state === 'overlay') {
       this.state = 'playing';
@@ -1148,7 +1358,7 @@ export class App {
           if (this.overlay === 'pause' && performance.now() - this.pausedAt < 300) return;
           e.preventDefault();
           this.back();
-        } else if ((is('map') && this.overlay === 'map') || (is('archive') && this.overlay === 'archive')) {
+        } else if ((is('map') && this.overlay === 'map') || (is('archive') && this.overlay === 'archive') || ((is('map') || is('archive')) && this.overlay === 'rpg' && this.rpg.life.panel === 'casefile')) {
           if (this.overlayReturn === 'playing') this.closeOverlay();
           else this.back();
         }
@@ -1179,7 +1389,7 @@ export class App {
   private padMenus(dt: number) {
     const pad = this.input.pad;
     if (!pad || !this.input.isPad) return;
-    if (this.overlay && this.overlayReturn !== 'landing' && pad.peek('Menu')) {
+    if (this.overlay && this.overlayReturn !== 'landing' && pad.peek('Menu') && !(this.overlay === 'rpg' && this.rpg.life.panel === 'creator')) {
       pad.pressed('Menu');
       this.closeOverlay();
       return;
@@ -1198,7 +1408,7 @@ export class App {
     else if (this.boat) ctx = 'boat';
     else if (this.player.swimming) ctx = 'swim';
     else if (this.rules.combat === 'street' && this.combat.w.id !== 'fists') ctx = 'armed';
-    else ctx = this.mode === 'afterhours' ? 'afterhours' : 'foot';
+    else ctx = this.mode === 'afterhours' ? 'afterhours' : this.rpg.active ? 'rpg' : 'foot';
     if (ctx === this.controlCtx) return;
     this.controlCtx = ctx;
     const seen = this.controlSeen.get(ctx) ?? 0;
@@ -1208,7 +1418,7 @@ export class App {
 
   /** The emote wheel (hold, point, release) and photo mode. */
   private emotesAndPhotos() {
-    const onFoot = !this.vehicle && !this.boat && !this.player.swimming && !this.dying && !this.boarding && !this.chat?.isOpen && !this.admin?.isOpen;
+    const onFoot = !this.vehicle && !this.boat && !this.player.swimming && !this.dying && !this.boarding && !this.chat?.isOpen && !this.admin?.isOpen && !this.sceneBusy;
     if (this.rules.emotes && onFoot && !this.photoOn) {
       if (!this.wheel.isOpen && this.input.pressed('emote')) this.wheel.open();
       if (this.wheel.isOpen) {
@@ -1233,6 +1443,14 @@ export class App {
     } else if (this.wheel.isOpen) this.wheel.close();
     this.emoteNo = this.player.emote ? WIRE_EMOTES.indexOf(this.player.emote) + 1 : 0;
     if (this.rules.photo && onFoot && !this.photoOn && !this.wheel.isOpen && this.input.pressed('photo')) this.photoMode(true);
+    // powers: they are not a menu, they are a thing you happen to have
+    if (this.rules.discovery && onFoot && !this.photoOn && !this.wheel.isOpen && this.powers.found.length) {
+      if (this.input.pressed('powerPrev') || this.input.pressed('powerNext')) {
+        const id = cycle(this.powers, this.input.pressed('powerNext') ? 1 : -1);
+        this.hud.toast(`${POWERS[id].name} — ${POWERS[id].line}`);
+      }
+      if (this.input.pressed('powerUse')) this.usePower();
+    }
     // After Hours: headphones on foot (no guns to switch, so the D-pad is free)
     if (this.mode === 'afterhours' && onFoot && !this.photoOn && !this.wheel.isOpen) {
       if (this.input.pressed('radioNext')) this.tuneRadio(1);
@@ -1295,7 +1513,7 @@ export class App {
   }
 
   private persist(leaving = false) {
-    const explore = this.rules.combat === 'street' || this.rules.combat === 'none';
+    const explore = (this.rules.combat === 'street' || this.rules.combat === 'none') && this.mode !== 'rpg';
     if (explore && (this.state === 'playing' || this.state === 'overlay' || this.state === 'leaving')) {
       this.save.data.player = { x: this.player.pos.x, y: this.player.pos.y, z: this.player.pos.z, yaw: this.player.facing };
     }
@@ -1338,16 +1556,70 @@ export class App {
     const taxi = this.traffic.waitingTaxi(this.player.pos);
     if (taxi) return { verb: 'Ride along', name: 'Taxi', d: 0, go: () => this.enterVehicle({ kind: 'ride', car: taxi }) };
     const near = this.vehicles.nearest(this.player.pos, 1.4);
-    if (near) return { verb: 'Get in', name: near.car.van ? 'Van' : near.car.screen ? 'Electric car' : 'Car', d: near.d, go: () => this.enterVehicle({ kind: 'drive', car: near.car }) };
+    if (near) return { verb: 'Get in', name: carName(near.car), d: near.d, go: () => this.enterVehicle({ kind: 'drive', car: near.car }) };
+    // somebody else's car, with somebody in it
+    const live = this.traffic.nearestDrivable(this.player.pos, 2.8);
+    if (live) return { verb: 'Pull them out', name: live.car.spec.name, d: live.d, go: () => this.takeLiveCar(live.car) };
     return null;
+  }
+
+  /**
+   * Take a car somebody is driving. They get out on the pavement and react to
+   * it; the car keeps its class, its paint and the speed it was doing, and
+   * from then on it's an ordinary drivable car.
+   */
+  private takeLiveCar(car: import('../entities/Traffic').Car) {
+    const got = this.traffic.takeOver(car);
+    if (!got) return;
+    // out onto the kerb, on the driver's side, facing away from the car
+    const side = new THREE.Vector3(Math.cos(got.yaw), 0, -Math.sin(got.yaw));
+    const out = got.pos.clone().addScaledVector(side, 1.5);
+    out.y = this.world.collision.groundAt(out.x, out.z, got.pos.y + 1.2, 1, 0.9);
+    this.crowd.dropBystander(out, got.yaw);
+    this.crowd.shock(got.pos.x, got.pos.z);
+    this.hud.bark('That is not your car.');
+    // and now it is: same class and colour, real dynamics, its own lamps
+    const dc = this.vehicles.spawn({ pos: got.pos, yaw: got.yaw, color: got.color, van: got.spec.cls === 'van', screen: false, kind: got.spec.cls, reach: Math.max(0.6, got.spec.shape.length / 2 - 0.95) });
+    dc.v = Math.min(6, car.v);
+    this.enterVehicle({ kind: 'drive', car: dc });
   }
 
   private enterVehicle(v: NonNullable<App['vehicle']>) {
     if (this.boarding) return;
-    // turn to the door, duck in; then the seat
-    const cp = v.kind === 'drive' ? v.car.pos : v.car.group.position;
-    this.player.facing = Math.atan2(cp.x - this.player.pos.x, cp.z - this.player.pos.z);
     this.player.stopEmote(0.1);
+    if (v.kind === 'drive') {
+      // step to the driver's door, look at the car, open it, duck in, sit, pull it shut
+      const car = v.car;
+      const spot = this.vehicles.doorSpot(car, new THREE.Vector3());
+      const from = this.player.pos.clone();
+      const face = Math.atan2(Math.cos(car.yaw), -Math.sin(car.yaw)); // towards the car's side
+      const walk = Math.min(0.6, from.distanceTo(spot) / 2.2);
+      let el = 0, opened = false, ducked = false;
+      const total = walk + 1.0;
+      this.boarding = {
+        t: total,
+        go: () => this.boardNow(v),
+        tick: (dt) => {
+          el += dt;
+          const k = Math.min(1, el / Math.max(0.01, walk));
+          this.player.pos.lerpVectors(from, spot, k * k * (3 - 2 * k));
+          this.player.facing += wrap(face - this.player.facing) * Math.min(1, dt * 8);
+          if (!opened && el > walk * 0.7) {
+            opened = true;
+            this.vehicles.door(car, 0, true);
+            this.audio.footstep(0.5, false);
+          }
+          if (!ducked && el > walk + 0.3) {
+            ducked = true;
+            this.player.act('act.enterCar', { hold: true });
+          }
+        },
+      };
+      return;
+    }
+    // a taxi's back seat: turn to it and get in
+    const cp = v.car.group.position;
+    this.player.facing = Math.atan2(cp.x - this.player.pos.x, cp.z - this.player.pos.z);
     this.player.act('act.enterCar', { hold: true });
     this.boarding = { t: 0.55, go: () => this.boardNow(v) };
   }
@@ -1358,12 +1630,59 @@ export class App {
     if (v.kind === 'drive') {
       v.car.occupied = true;
       v.car.leaving = false;
+      this.doorClose = { car: v.car, t: 0.45 };
     } else {
       this.traffic.board(v.car, this.mp.id);
       if (this.mp.shared && !this.mp.isHost) this.mp.taxi('board');
     }
     this.audio.footstep(0.9, false);
     this.input.rumble('bump', 0.6);
+  }
+
+  /* ─────────────────────────── scenes ─────────────────────────── */
+
+  private talkWho: { pos: THREE.Vector3; yaw: number; height: number } | null = null;
+
+  /**
+   * A conversation, filmed: a two-shot as it starts, then over your shoulder
+   * onto them while they talk (closer as it matters), a reverse onto you when
+   * you answer, and back to play when it's done. No bars: it's still play.
+   */
+  private talkScene(who: { pos: THREE.Vector3; yaw: number; height: number } | null, cut?: 'them' | 'me' | 'close') {
+    if (!who && !cut) {
+      if (this.talkWho) {
+        this.talkWho = null;
+        this.scenes.skip();
+      }
+      return;
+    }
+    if (who) this.talkWho = who;
+    const w = this.talkWho;
+    if (!w) return;
+    // face each other
+    this.player.facing = Math.atan2(w.pos.x - this.player.pos.x, w.pos.z - this.player.pos.z);
+    const them = subject(() => w.pos, () => w.yaw, 1.6 * w.height);
+    const me = subject(() => this.player.pos, () => this.player.facing, 1.6 * this.player.body.height);
+    const onThem: Shot = { kind: 'overShoulder', a: them, b: me, side: -1, dur: 9999 };
+    const shot: Shot = cut === 'me' ? { kind: 'overShoulder', a: me, b: them, side: 1, dur: 2.2 } : cut === 'close' ? { kind: 'closeUp', a: them, side: -1, dur: 9999 } : onThem;
+    if (!this.scenes.active || this.scenes.handingBack) {
+      this.scenes.play({ bars: false, skippable: false, blendIn: 0.9, blendOut: 0.8, shots: [{ kind: 'twoShot', a: them, b: me, side: -1, dur: 1.5 }, shot] });
+    } else this.scenes.cut(shot, cut === 'me' ? onThem : undefined);
+  }
+
+  /** The story moved: where you are, what's next, and a push in on you. */
+  private storyBeat(caption: string) {
+    if (this.scenes.active) return;
+    const me = subject(() => this.player.pos, () => this.player.facing, 1.6 * this.player.body.height);
+    this.scenes.play({
+      blendIn: 1.4,
+      blendOut: 1.2,
+      shots: [
+        { kind: 'establish', a: me, dur: 4, caption, dist: 26, height: 10 },
+        { kind: 'pushIn', a: me, dur: 3, side: -1, dist: 4.5 },
+      ],
+      beats: [{ at: 4.2, do: () => this.player.act('idle.lookAround') }],
+    });
   }
 
   /** Make (or reuse) a room and put its link on the clipboard. */
@@ -1485,20 +1804,43 @@ export class App {
       this.hud.combat(this.dying || this.vehicle ? { health: c.health, stars: c.stars, weapon: 'Fists', ammo: '', cross: false, hot: this.crowd.police > 0 } : null);
       return;
     }
-    if (inp.pressed('weapon1')) c.select(0);
-    if (inp.pressed('weapon2')) c.select(1);
-    if (inp.pressed('weapon3')) c.select(2);
-    if (inp.pressed('nextWeapon')) c.cycle(1);
-    if (inp.pressed('prevWeapon')) c.cycle(-1);
+    if (this.rpg.active) {
+      // the wider world: you fight with what you're holding (the Casefile), and a gun only if you have one out
+      const rw = this.rpg.life.weapon();
+      if (inp.pressed('nextWeapon') || inp.pressed('prevWeapon') || inp.pressed('weapon2')) this.rpgHolstered = !this.rpgHolstered;
+      if (inp.pressed('weapon1')) this.rpgHolstered = true;
+      const want = rw.gun && !this.rpgHolstered ? 1 : 0;
+      if (c.weapon !== want) c.select(want);
+    } else {
+      if (inp.pressed('weapon1')) c.select(0);
+      if (inp.pressed('weapon2')) c.select(1);
+      if (inp.pressed('weapon3')) c.select(2);
+      if (inp.pressed('nextWeapon')) c.cycle(1);
+      if (inp.pressed('prevWeapon')) c.cycle(-1);
+    }
     if (inp.pressed('reload')) {
       c.reload();
       if (c.reloading > 0) inp.rumble('reload');
     }
-    if (c.stars > 0 && !this.dying) {
+    // Pale reaches the police too: while it runs they cannot see you well enough
+    // to hold you, which is what makes it worth saving.
+    if (c.stars > 0 && !this.dying && this.powers.paleT <= 0) {
       const cop = this.crowd.npcs.slice(this.crowd.citizens, this.crowd.crooksFrom).some((n) => n.visible && n.dead < 0 && n.pos.distanceTo(p.pos) < 1.7);
       this.bustT = cop && p.speed < 2.2 ? this.bustT + dt : Math.max(0, this.bustT - dt);
       if (this.bustT > 1.1) this.arrest();
     } else this.bustT = 0;
+    // A burning wreck is a live hazard: you can use one as cover, but standing
+    // in it costs you, and the regen delay means it keeps costing you.
+    const wreck = this.police.wreckHeat(p.pos);
+    if (wreck > 0 && !this.dying) {
+      this.hud.hurt(dt * 0.6);
+      if (this.combat.hurt(dt * 7 * wreck)) this.die('Fire');
+    }
+    // and the fire has to actually look like a fire
+    for (const wr of this.police.burningWrecks()) {
+      const d2 = (wr.x - p.pos.x) ** 2 + (wr.z - p.pos.z) ** 2;
+      this.vehicles.fx.wreckFire(wr.x, wr.y, wr.z, wr.left, d2 < 240 * 240, dt);
+    }
     const w = c.w;
     const gun = w.id !== 'fists';
     // fire (the mouse only once the pointer is captured, so the capturing click isn't a shot)
@@ -1507,7 +1849,7 @@ export class App {
     const aimHeld = inp.state('aim');
     const aiming = aimHeld || c.sinceFire < 0.9;
     inp.aiming = aimHeld && gun;
-    if (c.trigger(held, pressed)) {
+    if (c.trigger(held, pressed) && (!this.rpg.active || !gun || this.rpg.life.spendRound())) {
       this.fire();
       inp.rumble(w.id === 'smg' ? 'smg' : w.id === 'fists' ? 'punch' : 'gunshot');
     }
@@ -1515,8 +1857,10 @@ export class App {
     p.armPose = gun ? (aiming ? 'aim' : null) : c.sinceFire < 0.2 ? 'punch' : aiming ? 'guard' : null;
     p.aimYaw = aiming ? this.follow.yaw : null;
     this.follow.aim = gun && aiming;
-    const ammo = c.reloading > 0 ? 'Reloading' : Number.isFinite(w.mag) ? `${c.ammo[c.weapon]} / ${w.mag}` : '';
-    this.hud.combat({ health: c.health, stars: c.stars, weapon: w.name, ammo, cross: gun || aiming, hot: this.crowd.police > 0 });
+    const rw = this.rpg.active ? this.rpg.life.weapon() : null;
+    const rounds = rw?.gun && rw.ammo ? String(this.rpg.life.game?.count(rw.ammo) ?? 0) : '';
+    const ammo = c.reloading > 0 ? 'Reloading' : rw ? rounds : Number.isFinite(w.mag) ? `${c.ammo[c.weapon]} / ${w.mag}` : '';
+    this.hud.combat({ health: c.health, stars: c.stars, weapon: rw ? (gun ? rw.name : rw.gun ? 'Fists' : rw.name) : w.name, ammo, cross: gun || aiming, hot: this.crowd.police > 0 });
   }
 
   /** Our shot (or punch): who it hits, what everyone sees and hears, and what the police make of it. */
@@ -1527,10 +1871,16 @@ export class App {
       const dir = this.tmpDir.set(Math.sin(p.facing), -0.1, Math.cos(p.facing)).normalize();
       const npc = this.crowd.hitTest(o, dir, w.range);
       const rem = this.remotes.hitTest(o, dir, npc ? npc.t : w.range);
-      this.audio.punch(!!(npc || rem));
+      const wild = this.rpg.active && !npc && !rem ? this.rpg.hitTest(o, dir, w.range + 0.4) : null;
+      this.audio.punch(!!(npc || rem || wild));
+      if (wild) {
+        wild.apply(this.rpg.life.weapon().dmg);
+        this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, wild.t), dir, 0.5, this.bladeInHand() ? 'cut' : 'blunt');
+        return;
+      }
       if (npc) {
         this.hitNpc(npc.i, w.dmg);
-        this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, npc.t), dir, 0.4);
+        this.blood.spray(this.tmpB.copy(o).addScaledVector(dir, npc.t), dir, 0.5, this.bladeInHand() ? 'cut' : 'blunt');
         this.mp.shot({ x: o.x, y: o.y, z: o.z, p: o.x, q: o.y, r: o.z, n: npc.i, a: '', m: w.dmg });
       } else if (rem) this.mp.shot({ x: o.x, y: o.y, z: o.z, p: o.x, q: o.y, r: o.z, n: -1, a: rem.id, m: w.dmg });
       return;
@@ -1550,11 +1900,24 @@ export class App {
     if (npc) t = npc.t;
     const rem = this.remotes.hitTest(o, dir, t);
     if (rem) t = rem.t;
-    const heli = !npc && !rem ? this.police.heliHit(o, dir, t) : null;
-    if (heli != null) {
-      t = heli;
-      this.police.damageHeli(w.dmg);
+    const wild = this.rpg.active && !npc && !rem ? this.rpg.hitTest(o, dir, t) : null;
+    if (wild) t = wild.t;
+    const heli = !npc && !rem && !wild ? this.police.heliHit(o, dir, t) : null;
+    if (heli) {
+      t = heli.t;
+      this.police.damageHeli(heli.heli, w.dmg);
       this.combat.crime(0.3);
+    }
+    // and the cars. checked after everything else so it never steals a hit on
+    // something standing in front of the cruiser.
+    if (!npc && !rem && !wild && heli == null) {
+      const cru = this.police.cruiserHit(o, dir, t);
+      if (cru) {
+        t = cru.t;
+        this.police.damageCruiser(cru.car, w.dmg);
+        // killing a cruiser is worth a star of heat on its own
+        this.combat.crime(cru.car.mil ? 0.9 : 0.5);
+      }
     }
     const end = this.tmpB.copy(o).addScaledVector(dir, t);
     const muzzle = new THREE.Vector3().setFromMatrixPosition(p.gun.matrix).addScaledVector(dir, 0.18);
@@ -1564,8 +1927,13 @@ export class App {
     this.crowd.scatter(end.x, end.z, 14, p.pos);
     // shooting in the street is a crime if anyone's around to see it
     if (this.witnesses(p.pos, 35)) this.combat.crime(w.id === 'smg' ? 0.05 : 0.15);
+    if (this.rpg.active) this.rpg.alarm(p.pos, 220);
+    if (wild) {
+      wild.apply(this.rpg.life.weapon().dmg);
+      this.blood.spray(end, dir, 0.8);
+    }
     if (npc) {
-      this.hitNpc(npc.i, w.dmg);
+      this.hitNpc(npc.i, w.dmg, end.y);
       this.blood.spray(end, dir);
     } else if (rem) this.blood.spray(end, dir);
     this.mp.shot({ x: muzzle.x, y: muzzle.y, z: muzzle.z, p: end.x, q: end.y, r: end.z, n: npc ? npc.i : -1, a: rem ? rem.id : '', m: npc || rem ? w.dmg : 0 });
@@ -1579,19 +1947,19 @@ export class App {
     return false;
   }
 
-  private hitNpc(i: number, dmg: number) {
+  private hitNpc(i: number, dmg: number, hitY?: number) {
     const n = this.crowd.npcs[i];
     if (this.crowd.isCrook(i)) {
       // criminals: fair game. Stopping one even takes a little heat off you.
       this.crowd.provokeCrook(i);
-      if (this.crowd.damage(i, dmg, this.player.pos)) {
+      if (this.crowd.damage(i, dmg, this.player.pos, hitY)) {
         this.combat.heat = Math.max(0, this.combat.heat - 1);
         this.hud.toast('Criminal stopped');
       }
       return;
     }
     const cop = i >= this.crowd.citizens;
-    const killed = this.crowd.damage(i, dmg, this.player.pos);
+    const killed = this.crowd.damage(i, dmg, this.player.pos, hitY);
     this.combat.crime(killed ? (cop ? 2 : 1.2) : cop ? 1 : 0.6);
     if (killed && n) this.hud.bark(cop ? 'Officer down!' : 'Oh my god\u2014', undefined);
   }
@@ -1601,11 +1969,61 @@ export class App {
     if (speed < 6) return;
     this.crowd.npcs.forEach((n, i) => {
       if (!n.visible || n.dead >= 0 || Math.hypot(n.pos.x - pos.x, n.pos.z - pos.z) > 1.4) return;
-      this.hitNpc(i, speed * 7);
+      const lethal = speed > 11;
+      if (!lethal && n.frozen > 0) return; // already down
+      if (lethal) this.hitNpc(i, speed * 7);
+      else {
+        // a knock, not a killing: down, then up again
+        this.crowd.npcs[i].hp -= speed * 4;
+        this.crowd.knockDown(i, pos.x, pos.z);
+      }
       this.audio.crash(0.5);
-      this.blood.spray(this.tmpB.set(n.pos.x, n.pos.y + 1, n.pos.z), this.tmpDir.set(n.pos.x - pos.x, 0.3, n.pos.z - pos.z).normalize(), 1.5);
+      this.blood.spray(this.tmpB.set(n.pos.x, n.pos.y + 1, n.pos.z), this.tmpDir.set(n.pos.x - pos.x, 0.3, n.pos.z - pos.z).normalize(), 1.5, 'vehicle');
+      // and on the car that did it
+      const drv = this.vehicle?.kind === 'drive' ? this.vehicle.car : null;
+      if (drv?.model) bloody(drv.model, n.pos.x - drv.pos.x, n.pos.z - drv.pos.z, drv.yaw, lethal ? 1 : 0.5);
       this.mp.shot({ x: pos.x, y: 0.5, z: pos.z, p: n.pos.x, q: 0.5, r: n.pos.z, n: i, a: '', m: 60 });
     });
+  }
+
+  /**
+ * A vehicle at speed, on foot: the one case where the world can hurt you.
+ * Traffic used to brake for anyone standing in the road, which meant you could
+ * not be hit by a car at all — the same machine that kills a pedestrian in one
+ * frame could not scratch the player.
+ */
+  private vehicleStrike(pos: THREE.Vector3, vx: number, vz: number, speed: number, by: string) {
+    if (speed < 3 || this.dying) return;
+    const p = this.player.pos;
+    // swept test: a fast car covers a metre or more per frame, so a point test
+    // would miss it clipping past
+    const t = Math.max(0, Math.min(1, ((p.x - pos.x) * vx + (p.z - pos.z) * vz) / (speed * speed)));
+    const cx = pos.x + vx * t, cz = pos.z + vz * t;
+    const d = Math.hypot(p.x - cx, p.z - cz);
+    if (d > 2.2) return;
+    // how squarely: a graze along the side throws you aside, a nose-on kills
+    const nx = vx / speed, nz = vz / speed;
+    const along = Math.abs((p.x - pos.x) * nx + (p.z - pos.z) * nz);
+    const square = 1 - Math.min(1, d / 2.2);
+    const dmg = speed * (2.4 + 2.6 * square) - (along > 1.4 ? 8 : 0);
+    this.audio.crash(0.4 + 0.4 * square);
+    this.audio.land(6 + speed * 0.3);
+    this.blood.spray(this.tmpB.set(p.x, p.y + 1.1, p.z), this.tmpDir.set(-nx, 0.4, -nz).normalize(), 0.7 + square);
+    this.hud.hurt(Math.min(0.9, 0.2 + square * 0.5));
+    this.follow.shake(0.4 + square * 0.6);
+    if (this.combat.god) return;
+    if (this.combat.hurt(Math.max(6, dmg))) {
+      this.die(by);
+      return;
+    }
+    // and thrown clear, so you're not left standing inside the car
+    const away = Math.max(1e-3, d);
+    const push = 2.5 + speed * 0.28 * square;
+    this.player.vel.x += ((p.x - cx) / away) * push;
+    this.player.vel.z += ((p.z - cz) / away) * push;
+    this.player.vel.y = Math.min(this.player.vel.y + 1.6 * square + speed * 0.06, 4.5);
+    this.player.grounded = false;
+    this.crowd.shock(p.x, p.z);
   }
 
   /** The police fire at you. */
@@ -1648,8 +2066,15 @@ export class App {
     await wait(1300);
     await this.fade(true, 900);
     if (this.inside) this.setInside(null);
-    this.player.place(-10.2, 0.15, 30, Math.PI / 2);
-    this.follow.yaw = Math.PI / 2;
+    const rpgWake = this.rpg.active && !inD03(this.player.pos.x, this.player.pos.z) ? this.rpg.life.onDeath() : null;
+    if (rpgWake) {
+      this.player.place(rpgWake.x, rpgWake.y, rpgWake.z, rpgWake.yaw);
+      this.follow.yaw = rpgWake.yaw;
+      await this.rpg.streamer.preload(this.player.pos, () => {});
+    } else {
+      this.player.place(-10.2, 0.15, 30, Math.PI / 2);
+      this.follow.yaw = Math.PI / 2;
+    }
     this.follow.snap(this.player, this.world.collision);
     this.lighting.focusNow(this.player.pos);
     this.combat.respawn();
@@ -1657,6 +2082,12 @@ export class App {
     this.discovery.forgetDistrict();
     await this.fade(false, 1200);
     this.dying = false;
+    if (rpgWake) {
+      this.combat.health = this.rpg.life.game ? Math.max(50, this.combat.health * 0.5) : this.combat.health;
+      this.hud.say(rpgWake.lines);
+      this.rpg.life.autosave();
+      return;
+    }
     this.hud.say(['You came to outside the pharmacy.', 'Somebody called an ambulance. Nobody stayed.']);
   }
 
@@ -1816,9 +2247,58 @@ export class App {
     this.admin = new AdminPanel(this.ui, {
       fly: (on) => (this.player.fly = on),
       god: (on) => (this.combat.god = on),
+      infiniteBoost: (on) => {
+        this.infiniteBoost = on;
+        this.vehicles.infiniteBoost = on;
+        // and the car you're already in, and any parked ones
+        for (const c of this.vehicles.cars) {
+          c.dyn.boostInfinite = on;
+          c.dyn.boostable = on || (c.spec.voice.turbo >= 0.2 && c.spec.mech.mass <= 3600 && !c.spec.mech.bike);
+        }
+        this.rpg?.setInfiniteBoost(on);
+      },
       speed: (k) => (this.player.speedMul = k),
       heal: () => (this.combat.health = 100),
       wanted: (d) => (d < 0 ? (this.combat.heat = 0) : this.combat.crime(d)),
+      wantedLevel: (stars) => {
+        // straight to a number of stars: heat is the star count, one per unit
+        this.combat.setHeat(Math.max(0, Math.min(8, stars)));
+        this.hud.toast(`Wanted: ${Math.round(this.combat.stars)} stars`);
+      },
+      spawnVehicle: (cls) => {
+        const vs = SPECS[cls as keyof typeof SPECS];
+        if (!vs) return this.hud.toast('No such vehicle.');
+        const p = this.player.pos, f = this.player.facing;
+        const car = this.vehicles.spawn({
+          pos: new THREE.Vector3(p.x + Math.sin(f) * 5, p.y, p.z + Math.cos(f) * 5),
+          yaw: f + Math.PI / 2,
+          color: vs.livery ? vs.paints[0] : vs.paints[Math.floor(Math.random() * vs.paints.length)],
+          van: cls === 'van',
+          screen: false,
+          kind: cls,
+        });
+        void car;
+        this.hud.toast(`${vs.name} behind you.`);
+      },
+      vehicleClasses: () => Object.keys(SPECS),
+      revive: () => {
+        this.dying = false;
+        this.bustT = 0;
+        this.combat.health = 100;
+        this.hud.toast('Back on your feet.');
+      },
+      grantPowers: () => {
+        for (const id of POWER_ORDER) if (!this.powers.found.includes(id)) this.foundPower(id);
+        this.hud.toast('All five powers, discovered.');
+      },
+      teleportTo: (x, z) => {
+        if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+        if (this.vehicle) this.leaveVehicle(true);
+        this.player.place(x, this.world.collision.groundAt(x, z, 40, 1, 0.9), z, this.player.facing);
+        this.follow.snap(this.player, this.world.collision);
+        this.lighting.focusNow(this.player.pos);
+        this.hud.toast(`Moved to ${Math.round(x)}, ${Math.round(z)}.`);
+      },
       bringCar: () => {
         const car = this.vehicles.cars.find((c) => !c.occupied && !c.taken);
         if (!car) return this.hud.toast('No free car.');
@@ -1844,6 +2324,29 @@ export class App {
       time: (m) => this.worldAct('time', { m }, () => (this.time.minutes = m)),
       rain: (v) => this.worldAct('rain', { v: v ?? -1 }, () => (this.time.rainOverride = v)),
       event: (k) => this.worldAct(k, {}, () => this.worldEvent(k)),
+      clearTraffic: () => {
+        for (const car of [...this.traffic.cars]) this.traffic.retire(car);
+        this.hud.toast('Streets cleared.');
+      },
+      knockDownAll: () => {
+        let n = 0;
+        this.crowd.npcs.forEach((npc, i) => {
+          if (!npc.visible || npc.dead >= 0 || npc.mode === 'cop') return;
+          this.crowd.damage(i, 9999, npc.pos.clone().setY(npc.pos.y + 1), undefined, true);
+          n++;
+        });
+        this.hud.toast(`${n} down.`);
+      },
+      density: (v) => {
+        const k = Math.max(0, Math.min(1, v));
+        this.crowd.setDensity(k);
+        this.traffic.setDensity(k);
+        this.hud.toast(`City at ${Math.round(k * 100)}%.`);
+      },
+      freeze: (on) => {
+        this.frozen = on;
+        this.hud.toast(on ? 'Clock stopped.' : 'Clock running.');
+      },
       announce: (text) => this.worldAct('announce', { text }, () => this.hud.say([text], 'Announcement')),
       players: () => [...this.mp.peers.values()].map((p) => ({ id: p.id, name: p.name, muted: this.muted.has(p.id) })),
       player: (act, id) => {
@@ -2033,7 +2536,7 @@ export class App {
   private whoIs(n: Npc) {
     if (n.mode === 'stare') return 'Night clerk';
     if (n.mode === 'watcher') return '—';
-    return n.talked ? 'Stranger' : 'Someone';
+    return n.talked ? nameFor(this.crowd.npcs.indexOf(n)) : 'Someone';
   }
 
   /** Someone in the crowd says something: their voice, from where they stand, and a subtitle if you're close. */
@@ -2116,7 +2619,10 @@ export class App {
       v.car.leaving = false;
       this.mp.park(this.vehicles.cars.indexOf(v.car), v.car.pos.x, v.car.pos.z, v.car.yaw);
       this.vehicles.exitPoint(v.car, this.world.collision, this.tmpV);
-      this.player.place(this.tmpV.x, this.tmpV.y, this.tmpV.z, v.car.yaw);
+      // the door opens, you swing out and stand; it shuts behind you
+      this.vehicles.door(v.car, 0, true);
+      this.doorClose = { car: v.car, t: 1.1 };
+      this.player.place(this.tmpV.x, this.tmpV.y, this.tmpV.z, Math.atan2(-Math.cos(v.car.yaw), Math.sin(v.car.yaw)));
     } else {
       const remote = this.mp.shared && !this.mp.isHost;
       if (!now && !v.car.taxi?.arrived) {
@@ -2132,6 +2638,7 @@ export class App {
     this.vehicle = null;
     this.player.hidden = false;
     this.player.seat = null;
+    this.follow.endCar();
     this.player.act('act.exitCar', { hold: true });
     this.driveVoice?.mute();
     this.horn?.off();
@@ -2147,6 +2654,12 @@ export class App {
     const { spot, def } = cur;
     let override: string[] | undefined;
     let unlock = def.unlock;
+    // the body does what the verb says: turn to it, then the hands
+    if (spot.pos) this.player.facing = Math.atan2(spot.pos.x - this.player.pos.x, spot.pos.z - this.player.pos.z);
+    const verbClip: Record<string, string> = { Inspect: 'act.inspect', Read: 'act.inspect', Use: 'act.press', Ring: 'act.press', Listen: 'react.whisper', Talk: 'emote.greet', Answer: 'act.payphone' };
+    if (def.action === 'vend') this.player.act('act.vend', { hold: true });
+    else if (def.action === 'enter' || def.action === 'exit') this.player.act('act.pushDoor');
+    else if (def.action !== 'sit' && verbClip[def.verb]) this.player.act(verbClip[def.verb]);
     if (def.action === 'phone') {
       if (this.phone.ringing) {
         this.phone.ringing = false;
@@ -2158,9 +2671,28 @@ export class App {
         unlock = undefined;
       }
     }
+    // somewhere that wants paying first
+    if (def.price) {
+      const have = this.save.data.cash ?? 0;
+      if (have < def.price) {
+        this.hud.say([`It's ${fmtMoney(def.price)}. You have ${fmtMoney(have)}.`], def.name);
+        this.sayingUntil = performance.now() + 1200;
+        return;
+      }
+      this.save.data.cash = have - def.price;
+      this.hud.toast(`−${fmtMoney(def.price)} · you have ${fmtMoney(this.save.data.cash)}`);
+    }
+    if (def.action === 'buy') {
+      this.combat.health = Math.min(100, this.combat.health + (def.heal ?? 0));
+      this.audio.footstep(0.6, false);
+    }
+    if (def.action === 'stash') return this.stash(spot.id, def);
     if (def.action === 'enter') return this.goInside(spot.id.slice('enter:'.length));
     if (def.action === 'exit') return this.goOutside();
     if (def.action === 'bell') this.audio.bell();
+    if (def.action === 'rob') return this.startRob();
+    if (def.action === 'search') return this.search(spot.id);
+    if (def.action === 'sleep') return this.sleep();
     // side quests may have something to say here instead
     this.questFromUse = true;
     const ql = this.rules.quests ? this.quests.use(spot.id) : null;
@@ -2185,22 +2717,351 @@ export class App {
     }
   }
 
+  /** a conversation with someone in the street (systems/CityTalk.ts) */
+  private cityTalkUi: Talk | null = null;
+  private talkingTo: Npc | null = null;
+
+  private converse(n: Npc) {
+    this.crowd.talk(n, this.player.pos);
+    if (n.mode === 'watcher') return;
+    if (!this.cityTalkUi) {
+      this.cityTalkUi = new Talk(this.ui);
+      this.cityTalkUi.onEnd = () => {
+        this.talkingTo = null;
+        this.player.busy = false;
+      };
+      this.nav.scope(this.cityTalkUi.el, { back: () => this.cityTalkUi!.show(null) });
+    }
+    this.talkingTo = n;
+    this.player.busy = true;
+    this.player.facing = Math.atan2(n.pos.x - this.player.pos.x, n.pos.z - this.player.pos.z);
+    const idx = this.crowd.npcs.indexOf(n);
+    this.cityTalkUi.show(
+      cityTalk(n, {
+        name: (m) => (m.mode === 'stare' ? 'Night clerk' : nameFor(this.crowd.npcs.indexOf(m))),
+        cash: () => this.save.data.cash ?? 0,
+        pay: (k) => {
+          this.save.data.cash = Math.max(0, (this.save.data.cash ?? 0) + k);
+          if (k !== 0) this.hud.toast(`${k > 0 ? '+' : '−'}${fmtMoney(Math.abs(k))} · you have ${fmtMoney(this.save.data.cash)}`);
+        },
+        crime: (k) => this.combat.crime(k),
+        voice: (m, text, mood) => this.audio.say(m.voice, text, mood, m.pos, 1),
+        somewhere: (m) => {
+          const near = INTERIORS.filter((d) => d.id !== 'jail').map((d) => ({ d, m: Math.hypot(d.door.x - m.pos.x, d.door.z - m.pos.z) })).sort((a, b) => a.m - b.m).slice(0, 5);
+          const pickd = near[(idx + m.talked) % near.length];
+          const ang = Math.atan2(pickd.d.door.x - m.pos.x, -(pickd.d.door.z - m.pos.z));
+          const dirs = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+          return { name: pickd.d.name, dir: `to the ${dirs[Math.round(((ang * 180) / Math.PI + 360) / 45) % 8]}`, m: pickd.m };
+        },
+        flee: (m) => {
+          m.panic = 6;
+          m.panicX = this.player.pos.x;
+          m.panicZ = this.player.pos.z;
+        },
+        shove: (m) => {
+          const dx = this.player.pos.x - m.pos.x, dz = this.player.pos.z - m.pos.z, d = Math.hypot(dx, dz) || 1;
+          this.player.vel.x += (dx / d) * 3.5;
+          this.player.vel.z += (dz / d) * 3.5;
+          m.anim.play('act.shove', { group: 'react', fadeIn: 0.05 });
+          this.audio.punch(true);
+          this.combat.health = Math.max(1, this.combat.health - 6);
+        },
+        heard: (id) => {
+          if (this.save.flag(id)) this.hud.toast('Noted in your head: worth a look.');
+        },
+      }),
+    );
+  }
+
+  /** drawers already gone through this session */
+  private searched = new Set<string>();
+
+  /**
+   * Going through someone's drawers. What's in there is mostly nothing, now
+   * and then money. If anyone's home and sees you, that's a burglary: they
+   * react, and the wanted level goes up.
+   */
+  private search(id: string) {
+    const s = SEARCHES.get(id);
+    if (!s) return;
+    this.player.act('act.search');
+    if (this.searched.has(id)) {
+      this.hud.say(['Already been through it.'], s.name);
+      return;
+    }
+    this.searched.add(id);
+    const home = HOMES.get(s.home);
+    // anyone in here, alive, who can see you?
+    this.crowd.bodies(this.peopleOnFoot);
+    const me = this.player.pos;
+    const witness = home && this.peopleOnFoot.some((b) => b.visible && b.dead < 0 && b.pos.x > home.bounds[0] && b.pos.x < home.bounds[2] && b.pos.z > home.bounds[1] && b.pos.z < home.bounds[3] && Math.abs(b.pos.y - me.y) < 1.5 && Math.hypot(b.pos.x - me.x, b.pos.z - me.z) < 9);
+    const r = Math.random();
+    const cash = r < 0.45 ? 0 : Math.round(s.cash[0] + Math.random() * (s.cash[1] - s.cash[0]));
+    const finds = ['Old receipts and a spare key.', 'Batteries, a torch, a birthday card nobody sent.', 'Paperwork. A photograph of the pier, years ago.', 'A watch that stopped at 3:17.', 'Nothing worth taking.'];
+    const lines = [cash > 0 ? `${fmtMoney(cash)}, folded small.` : finds[Math.floor(Math.random() * finds.length)]];
+    if (cash > 0) {
+      this.save.data.cash = (this.save.data.cash ?? 0) + cash;
+      this.hud.toast(`${fmtMoney(cash)} · you have ${fmtMoney(this.save.data.cash)}`);
+    }
+    if (witness) {
+      lines.push(home!.kind === 'shop' || home!.kind === 'office' ? '"Hey! Put that back!"' : '"Who are you? Get out of my house!"');
+      this.combat.crime(home!.kind === 'shop' ? 1.2 : 1);
+      this.crowd.shock(this.player.pos.x, this.player.pos.z);
+      this.audio.say({ pitch: 150, tract: 1, rate: 6, breath: 0.3 }, lines[1], 'scared', this.player.pos, 1);
+    }
+    this.hud.say(lines, s.name);
+    this.sayingUntil = performance.now() + 1800;
+  }
+
+  /**
+   * Something left somewhere in the outskirts: a holdall in an alley, a
+   * toolbox on a site, an unlocked car, a gas station till. Found once (for
+   * good, if it's a stash; for the night, if it's a till), and a till is
+   * theft in front of a camera.
+   */
+  private stash(id: string, def: InteractionDef) {
+    this.player.act('act.search');
+    const gone = def.keep ? this.save.hasFlag(id) : this.searched.has(id);
+    if (gone) {
+      this.hud.say([def.keep ? 'Empty. You were here before.' : 'Already cleared out.'], def.name);
+      this.sayingUntil = performance.now() + 1200;
+      return;
+    }
+    this.searched.add(id);
+    const [lo, hi] = def.cash ?? [10, 40];
+    const cash = Math.round(lo + Math.random() * (hi - lo));
+    this.save.data.cash = (this.save.data.cash ?? 0) + cash;
+    const lines = [`${fmtMoney(cash)}${def.crime ? ' from the drawer.' : ', and nobody to say it isn\u2019t yours.'}`];
+    if (def.keep) {
+      this.save.flag(id);
+      const found = this.save.data.flags.filter((f) => f.startsWith('osk') && /:(bag|glovebox|toolbox)$/.test(f)).length;
+      this.hud.toast(`${fmtMoney(cash)} · stashes found: ${found}`);
+    } else this.hud.toast(`${fmtMoney(cash)} · you have ${fmtMoney(this.save.data.cash)}`);
+    if (def.crime) {
+      lines.push('The camera over the till blinks red.');
+      this.combat.crime(def.crime);
+      this.crowd.shock(this.player.pos.x, this.player.pos.z);
+    }
+    this.hud.say(lines, def.name);
+    this.sayingUntil = performance.now() + 1800;
+  }
+
+  /** A bed: lie down, the screen goes dark, you wake rested. It's still 3:17. */
+  private async sleep() {
+    if (this.doorBusy) return;
+    this.doorBusy = true;
+    this.player.act('act.lieDown', { hold: true });
+    await this.fade(true, 900);
+    this.combat.health = 100;
+    await new Promise((r) => setTimeout(r, 1200));
+    this.player.act('act.stand');
+    this.fade(false, 900);
+    this.hud.say(['You sleep, properly, for the first time in a while.', 'When you wake it is still 3:17.'], 'Bed');
+    this.doorBusy = false;
+  }
+
+  /* ─────────────────────────── powers ─────────────────────────── */
+
+  /**
+   * The only way in is being somewhere it happens. These are the moments the
+   * city already generates on its own — a wrong figure, the watcher, something
+   * wrong on a street at 03:17 — and standing in one leaves you changed.
+   */
+  private tryDiscoverPower(dt: number) {
+    const p = this.powers;
+    if (!this.rules.discovery) return;
+    if (p.found.length >= POWER_ORDER.length) return;
+    tickPowers(p, dt);
+    const here = this.player.pos;
+
+    // Lift: the lamps that District records list as decommissioned. Stand under
+    // one while it comes on by itself and it hands you something.
+    for (const l of this.world.lamps) {
+      if (Math.hypot(l.pos.x - here.x, l.pos.z - here.z) > 9) continue;
+      if ((l.flicker ?? 0) > 0.6 && Math.random() < dt * 0.9) return this.foundPower('lift');
+    }
+    // Burn: the same lamps, but after the lights go out, on foot, alone.
+    if (this.blackoutT > 0 && !this.vehicle && Math.random() < dt * 0.8) return this.foundPower('burn');
+    // Still: whatever is being watched, if you are standing in the middle of it.
+    if (Math.random() < dt * 0.7 && this.crowd.watched) return this.foundPower('still');
+    // Pale: out past the last lamp, on your own.
+    if (!this.vehicle && here.y < 0.05 && here.z > 210 && Math.random() < dt * 0.5) return this.foundPower('pale');
+    // Hook: something came at you and you are still here.
+    if (this.combat.health < 40 && Math.random() < dt * 0.6) return this.foundPower('hook');
+  }
+
+  private foundPower(id: PowerId) {
+    if (!grant(this.powers, id)) return false;
+    const d = POWERS[id];
+    this.hud.toast(`${d.name} — ${d.epithet}`);
+    this.player.act(d.clip, { hold: true });
+    this.audio.sag();
+    this.follow.shake(0.5);
+    this.discovery.unlock('power-found');
+    return true;
+  }
+
+  /** Fire the selected power. */
+  private usePower() {
+    const p = this.powers;
+    if (!p.found.length) return;
+    const id = p.sel;
+    if (!spend(p, id)) {
+      this.hud.toast(POWERS[id].name + ': not ready.');
+      return;
+    }
+    const d = POWERS[id];
+    this.player.act(d.useClip, { hold: false });
+    this.audio.land(4);
+    switch (id) {
+      case 'lift':
+        // everything loose near you rises, and so do you
+        this.player.vel.y = 9.5;
+        this.player.grounded = false;
+        this.crowd.startle(this.player.pos, 18);
+        break;
+      case 'still':
+        p.stillT = 6;
+        this.crowd.still = p.stillT;
+        this.held = p.stillT;
+        this.hud.toast('The district holds its breath.');
+        break;
+case 'burn':
+      this.burnLight(this.player.pos);
+      break;
+      case 'pale':
+        p.paleT = 22;
+        this.crowd.pale = p.paleT;
+        this.hud.toast('Nobody looks at you.');
+        break;
+      case 'hook':
+        this.hookSomething(this.player.pos);
+        break;
+    }
+  }
+
+  /** Does a power use land on a person? Then it is a crime, not a tool. */
+  private misusePower(id: PowerId, pos: THREE.Vector3) {
+    const d = POWERS[id];
+    if (!d.crime) return;
+    this.combat.crime(d.crime);
+    this.powers.marked = true;
+    this.hud.toast('Somebody saw that.');
+  }
+
+  private burnLight(at: THREE.Vector3) {
+    this.crowd.shock(at.x, at.z);
+    this.audio.bell();
+    // it lights the district, and everyone within it knows
+    for (const l of this.world.lamps) if (Math.hypot(l.pos.x - at.x, l.pos.z - at.z) < 30) l.flicker = Math.max(l.flicker ?? 0, 2);
+  }
+
+  private hookSomething(from: THREE.Vector3) {
+    // it brings the nearest thing to you, whether or not you meant it
+    let best = -1, bd = 40;
+    this.crowd.npcs.forEach((n, i) => {
+      if (!n.visible || n.dead >= 0) return;
+      const d = Math.hypot(n.pos.x - from.x, n.pos.z - from.z);
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    });
+    if (best < 0) return;
+    this.crowd.knockDown(best, from.x, from.z);
+    this.crowd.shock(from.x, from.z);
+    this.misusePower('hook', this.crowd.npcs[best].pos);
+  }
+
+  /* ─────────────────────────── the robbery ─────────────────────────── */
+
+  /**
+   * Start turning the vault wheel. You have to stay at it; leaving it lets the
+   * progress slip, and past a certain point the alarm draws people.
+   */
+  private startRob() {
+    if (this.rob.stage === 'taken') return;
+    this.rob.stage = 'turning';
+    this.rob.coldT = 0;
+    this.player.act('act.inspect', { hold: true });
+    this.hud.toast('The wheel turns. It is very heavy.');
+  }
+
+  /** One frame of it: the hold, the alarm, and what the city does about it. */
+  private tickRobbery(dt: number) {
+    const s = this.rob;
+    if (s.stage === 'idle') {
+      this.audio.bankAlarm(false);
+      this.hud.rob(null);
+      return;
+    }
+    // standing at the wheel?
+    const atVault = !this.vehicle && !this.inside && this.player.pos.distanceTo(this.tmpB.set(VAULT.x, this.player.pos.y, VAULT.z)) < 2.2;
+    const r = stepRob(s, dt, atVault, this.player.pos);
+
+    if (r.alarmed) {
+      this.audio.bankAlarm(true);
+      this.hud.toast('The alarm goes.');
+      this.crowd.shock(VAULT.x, VAULT.z);
+    }
+    if (s.stage === 'turning' && atVault) this.audio.vaultWheel(s.progress);
+    if (r.took) {
+      this.audio.vaultOpen();
+      this.hud.toast(`${fmtMoney(s.haul)} taken. The heat lands now, not when you leave.`);
+      this.combat.crime(robHeat(s));
+      this.crowd.shock(VAULT.x, VAULT.z);
+    } else if (s.stage === 'turning') {
+      this.combat.heat = Math.max(this.combat.heat, robHeat(s));
+    }
+    // the siren follows the robbery, not just the heat
+    const alarm = s.alarmT > 0;
+    this.audio.bankAlarm(alarm && this.state === 'playing');
+
+    // and you have to actually get out of it
+    if (s.stage === 'taken' && s.distance > ESCAPE_R) {
+      s.stage = 'idle';
+      this.hud.toast('Clear. For now.');
+      this.discovery.unlock('bank-vault');
+    }
+    if (alarm && !this.lastRobLine) {
+      const line = robAlarmStage(s);
+      if (line && line !== this.lastRobLine) {
+        this.lastRobLine = line;
+        this.hud.toast(line);
+      }
+    } else if (!alarm) this.lastRobLine = null;
+
+    this.hud.rob({ progress: s.progress, stage: s.stage, distance: s.stage === 'taken' ? s.distance : 0, haul: s.haul });
+  }
+
+  /** The police response the robbery is asking for, over the normal heat. */
+  private get robWanted(): number {
+    return this.rules.police ? robWanted(this.rob, this.rob.distance) : 0;
+  }
+
   /* ─────────────────────────── loop ─────────────────────────── */
 
   private frame(now: number) {
     this.input.poll(now);
     this.clock.update(now);
     // clamp both ways: tab switches produce huge deltas, clock resets can produce negative ones
-    const dt = Math.max(0, Math.min(this.clock.getDelta(), 0.05));
+    // (a scene can run time slow: the last moment of a match)
+    const dt = Math.max(0, Math.min(this.clock.getDelta(), 0.05)) * (this.scenes?.active ? this.scenes.timeScale : 1) * (this.frozen ? 0 : 1);
     this.t += dt;
     if (dt > 0) this.fpsDt += (dt - this.fpsDt) * 0.05;
+    // Auto quality: watch the real frame time and move between tiers to hold
+    // the frame rate. Only ever runs when the player has left it on 'auto'.
+    if (this.settings.data.quality === 'auto' && this.governor.enabled && this.state === 'playing' && dt > 0) {
+      if (this.governor.step(dt)) this.applySettings();
+    }
     const t = this.t;
     worldUniforms.uTime.value = t;
     const playing = this.state === 'playing';
     const inWorld = playing || this.state === 'overlay' || this.state === 'leaving' || (this.state === 'entering' && this.player.group.visible);
 
     // camera
-    if (this.overlay === 'wardrobe' && this.player.group.visible) {
+    const creating = this.overlay === 'rpg' && this.rpg.life.fitting;
+    if ((this.overlay === 'wardrobe' && this.player.group.visible) || creating) {
       // a fitting: face the figure, framed left of centre so the panel (on the right) doesn't cover it.
       // (fz, -fx) is the camera's right when it looks back at the figure.
       const p = this.player.pos, f = this.player.facing;
@@ -2211,7 +3072,7 @@ export class App {
       this.camera.lookAt(p.x + fz * side * 1.25, p.y + 1.0 + lift, p.z - fx * side * 1.25);
       this.fitLight.position.set(p.x + fx * 2.2 - fz * 0.8, p.y + 2.2, p.z + fz * 2.2 + fx * 0.8);
       this.fitLight.intensity = 9;
-      if (this.previewing) this.player.update(dt, null, f, this.world.collision, []);
+      if (this.previewing || creating) this.player.update(dt, null, f, this.world.collision, []);
     } else if (this.state === 'landing' || (this.state === 'entering' && !this.player.group.visible) || this.state === 'boot') {
       this.fitLight.intensity = 0;
       this.cine.update(dt, t);
@@ -2219,7 +3080,8 @@ export class App {
     } else if (inWorld) {
       this.fitLight.intensity = 0;
       if (playing && this.input.enabled && !this.wheel.isOpen && !this.photoOn) {
-        this.follow.look(this.input.lookX, this.input.lookY);
+        const zs = this.input.zoomSens ? this.input.zoomScale : 1;
+        this.follow.look(this.input.lookX * zs, this.input.lookY * zs);
         this.follow.stick(this.input.stickYaw, this.input.stickPitch);
       }
       this.introT = Math.min(1, this.introT + dt / 3.2);
@@ -2232,7 +3094,13 @@ export class App {
       } else if (this.photoOn) {
         if (this.photo.update(dt, this.input, this.camera, this.player.pos, this.world.collision) === 'exit') this.photoMode(false);
       } else if (this.boat) this.follow.updateVehicle(dt, this.boat.group.position, this.boat.yaw, this.boat.v, null);
-      else if (v?.kind === 'drive') this.follow.updateVehicle(dt, v.car.pos, v.car.yaw, v.car.v, this.world.collision, this.vehicles.impact);
+      else if (v?.kind === 'drive') {
+        const c = v.car, d = c.dyn;
+        const slip = d.wheels.reduce((a, w) => Math.max(a, w.slip), 0);
+        this.follow.updateCar(dt, { pos: c.pos, yaw: c.yaw, speed: c.v, body: c.model?.body.matrixWorld ?? c.group.matrixWorld, length: c.spec.shape.length, height: c.spec.shape.height, seat: c.seat ?? c.spec.seat, ax: d.ax, ay: d.ay, slip }, this.world.collision, this.vehicles.impact);
+        // from the driver's seat, you don't see your own head
+        this.player.hidden = this.follow.carView === 3;
+      }
       else if (v?.kind === 'ride') this.follow.updateVehicle(dt, v.car.group.position, v.car.yaw, v.car.v, this.world.collision);
       else this.follow.update(dt, this.player, this.world.collision, t);
       if (this.introT < 1 && !v && !this.photoOn && !this.fight.active && !this.warzone.active) {
@@ -2252,7 +3120,7 @@ export class App {
 
     // menus: a controller (or the arrow keys) moves the focus in whatever's open
     const menuUp =
-      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen || this.warzone?.endOpen;
+      (this.state === 'landing' && !this.cutting) || this.state === 'overlay' || this.modeSelect.isOpen || !!this.admin?.isOpen || !!this.chat?.isOpen || this.carScreen.isOpen || this.nav.osk.isOpen || this.fight?.hud.endOpen || this.warzone?.endOpen || this.warzone?.menuOpen || !!this.cityTalkUi?.isOpen;
     this.nav.active = menuUp;
     if (menuUp) {
       if (this.overlay === 'settings') this.settingsView.update();
@@ -2263,11 +3131,14 @@ export class App {
     // world simulation keeps running under menus — the city doesn't pause for you
     this.obstacles.length = 0;
     this.crowd.obstacles(this.obstacles);
+    // and the bodies a car can hit
+    this.crowd.bodies(this.peopleOnFoot);
+    if (this.rpg?.active) this.rpg.traffic.obstacles(this.obstacles);
     const veh = this.vehicle;
     this.carScreen.show(veh?.kind === 'drive' && veh.car.screen && inWorld);
     this.carScreen.setVolume(this.settings.data.radio * this.settings.data.master * (this.overlay ? 0.3 : 1));
     if (inWorld) {
-      const move = playing && this.input.enabled && !this.carScreen.isOpen && !this.admin?.isOpen && !this.chat?.isOpen && !this.dying && !this.photoOn && !this.boarding;
+      const move = playing && this.input.enabled && !this.carScreen.isOpen && !this.admin?.isOpen && !this.chat?.isOpen && !this.dying && !this.photoOn && !this.boarding && !this.sceneBusy;
       if (this.boat) {
         const b = this.boat;
         const r = this.boats.drive(b, dt, move ? this.input : null);
@@ -2303,16 +3174,22 @@ export class App {
         this.player.pos.copy(veh.car.pos);
         this.player.facing = veh.car.yaw;
         veh.car.group.updateMatrixWorld();
-        this.seatM.copy(veh.car.group.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.driver.x, SEATS.driver.y, SEATS.driver.z));
-        this.player.seat = { m: this.seatM, drive: true, steer: veh.car.steer / 0.62 };
+        const sd = veh.car.seat ?? SEATS.driver;
+        // sat in the body, so you lean and bob with it on its springs
+        const body = veh.car.model?.body ?? veh.car.group;
+        body.updateMatrixWorld();
+        this.seatM.copy(body.matrixWorld).multiply(this.tmpM.makeTranslation(sd.x, sd.y, sd.z));
+        this.player.seat = { m: this.seatM, drive: true, steer: veh.car.steer / 0.62, car: body.matrixWorld, at: sd };
         this.player.update(dt, null, this.follow.yaw, this.world.collision, []);
         if (veh.car.leaving && Math.abs(veh.car.v) < 0.3) this.leaveVehicle(true);
       } else if (veh?.kind === 'ride') {
         this.player.pos.copy(veh.car.group.position);
         this.player.facing = veh.car.yaw;
         veh.car.group.updateMatrixWorld();
-        this.seatM.copy(veh.car.group.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.back.x, SEATS.back.y, SEATS.back.z));
-        this.player.seat = { m: this.seatM, drive: false, steer: 0 };
+        const backBody = veh.car.model?.body ?? veh.car.group;
+        backBody.updateMatrixWorld();
+        this.seatM.copy(backBody.matrixWorld).multiply(this.tmpM.makeTranslation(SEATS.back.x, SEATS.back.y, SEATS.back.z));
+        this.player.seat = { m: this.seatM, drive: false, steer: 0, car: backBody.matrixWorld, at: SEATS.back };
         this.player.update(dt, null, this.follow.yaw, this.world.collision, []);
         const tx = veh.car.taxi;
         // our stop (the host's taxi reports it), or the host gave the seat to someone else
@@ -2330,6 +3207,7 @@ export class App {
         if (this.player.seat) this.player.seat = null;
         if (!this.fight.active) this.player.update(dt, move && !this.wheel.isOpen && !(this.warzone.active && this.warzone.busy) ? this.input : null, this.follow.yaw, this.world.collision, this.obstacles);
         if (this.boarding) {
+          this.boarding.tick?.(dt);
           this.boarding.t -= dt;
           if (this.boarding.t <= 0) {
             const go = this.boarding.go;
@@ -2339,7 +3217,13 @@ export class App {
         }
       }
     }
+    if (this.doorClose && (this.doorClose.t -= dt) <= 0) {
+      this.vehicles.door(this.doorClose.car, 0, false);
+      this.audio.crash(0.08);
+      this.doorClose = null;
+    }
     this.vehicles.update(dt);
+    this.vehicles.fx.update(dt, this.camera, innerHeight);
     this.boats.update(dt, (b) => (b === this.boat ? this.boatSteer : 0));
     if (inWorld && !this.vehicle) {
       this.stairwell();
@@ -2371,17 +3255,47 @@ export class App {
     // in a shared room someone else may run the city: follow them while their snapshots keep coming
     const follower = this.mp.shared && !this.mp.isHost && performance.now() - this.lastCity < 3000;
     this.crowd.puppet = this.traffic.puppet = follower;
-    const stars = this.dying || !this.rules.police ? 0 : this.combat.stars;
+    const stars = this.dying || !this.rules.police ? 0 : Math.max(this.combat.stars, this.robWanted);
     this.crowd.wanted = stars;
     if (this.police) {
-      this.police.update(dt, t, inWorld && !this.dying ? this.player.pos : null, stars, !!this.inside, this.camera.getWorldDirection(this.tmpDir));
-      this.audio.heli(this.police.heli.present && !this.inside ? this.police.heli.pos : null);
+      // Still reaches the police too: they hold position rather than close in
+    if (this.held > 0) {
+      this.held -= dt;
+      this.police.update(dt, t, null, 0, true, this.tmpDir.set(0, 0, 1), 0, this.world.collision);
+    } else {
+      // The pursuit test needs the speed of whatever the player is moving in.
+      // Player.speed is the walking velocity, which is near zero in a car
+      // because the car is what has the speed — so this used to read as "on
+      // foot, standing still" and the police never came after you driving.
+      const chaseSpeed = this.vehicle ? this.vehicle.car.v : this.player.speed;
+      // the car you're in, so a pursuit car can actually hit it
+      const vd = this.vehicle?.kind === 'drive' ? this.vehicle.car : null;
+      this.police.chased = vd ? { dyn: vd.dyn, reach: vd.reach, mass: vd.spec.mech.mass } : null;
+      this.police.update(dt, t, inWorld && !this.dying ? this.player.pos : null, stars, !!this.inside, this.camera.getWorldDirection(this.tmpDir), chaseSpeed, this.world.collision);
+    }
+      // the rotor sound follows whichever helicopter is closest, so a second one is audible
+    const live = [this.police.heli, this.police.milHeli].filter((h) => h.present && h.falling < 0);
+    const pp = this.player.pos;
+    live.sort((a, b) => a.pos.distanceToSquared(pp) - b.pos.distanceToSquared(pp));
+    this.audio.heli(live.length && !this.inside ? live[0].pos : null);
     }
     if (this.warzone.active) this.warzone.update(dt, t, playing && !this.overlay);
     this.crowd.rain = this.weather.intensity;
+    // the city's roads: as wet as the rain, and always night (the RPG sets its own)
+    if (this.mode !== 'rpg') {
+      this.vehicles.wet = Math.min(1, this.weather.intensity * 1.3 + 0.2);
+      this.vehicles.dark = true;
+    }
     this.crowd.update(dt, t, playerPos, this.camera);
     this.tracers.update(dt, this.camera);
-    if (inWorld) this.outskirts.update(this.player.pos);
+    if (inWorld) {
+      this.outskirts.update(this.player.pos);
+      // the people standing about out there, borrowed from the crowd
+      if ((this.lendT -= dt) <= 0) {
+        this.lendT = 0.5;
+        this.crowd.lend(this.mode === 'rpg' ? [] : this.outskirts.people(this.player.pos, 16));
+      }
+    }
     this.touch?.update(
       this.state === 'playing' && !this.overlay && !this.chat?.isOpen && !this.admin?.isOpen && !this.carScreen.isOpen && !this.dying,
       this.vehicle ? 'car' : 'foot',
@@ -2389,7 +3303,12 @@ export class App {
     );
     this.voice?.update(dt, (id) => this.remotes.positionOf(id), this.muted, (id, on) => this.remotes.talking(id, on));
     this.blood.enabled = this.settings.data.blood !== false;
+    this.blood.eye.copy(this.camera.position);
+    this.blood.wet = this.mode === 'rpg' ? this.rpg.atmos.now.rain : Math.min(1, this.weather.intensity * 1.2);
+    if (this.rpg.active) this.rpg.populace.eachDead((w) => this.blood.pool(w.pos, w));
     for (const n of this.crowd.npcs) {
+      // the wounded who are still on their feet leave a trail
+      if (n.dead < 0 && n.visible && n.hp < 70 && n.v > 0.3) this.blood.drip(n, n.pos.x, n.pos.y, n.pos.z, (70 - n.hp) / 70, dt);
       if (n.dead >= 0 && n.visible) this.blood.pool(n.pos, n);
       else if (n.dead < 0) this.blood.clear(n);
     }
@@ -2410,7 +3329,9 @@ export class App {
         this.crowd.threat(d.x, d.z, d.vx, d.vz);
       }
     }
-    this.traffic.update(dt, this.vehicle?.kind === 'ride' ? null : playerPos, this.vehicle ? 99 : this.player.speed, leftInRoad, others);
+    // Still stops the traffic too: the cars freeze where they are, mid-lane
+    if (this.held > 0) this.traffic.update(dt, null, 0, [], []);
+    else this.traffic.update(dt, this.vehicle?.kind === 'ride' ? null : playerPos, this.vehicle ? 99 : this.player.speed, leftInRoad, others);
     this.traffic.drawDrivers(dt, t, this.camera.position);
     // host: tell everyone what the city is doing
     this.cityT -= dt;
@@ -2418,7 +3339,15 @@ export class App {
       this.cityT = 0.5;
       this.mp.city({ n: this.crowd.snapshot(), ...this.traffic.snapshot() });
     }
-    for (const c of this.traffic.cars) if (c.group.visible && c !== (this.vehicle?.car as unknown)) this.crowd.threat(c.group.position.x, c.group.position.z, Math.sin(c.yaw) * c.v * 0.6, Math.cos(c.yaw) * c.v * 0.6);
+    for (const c of this.traffic.cars) {
+      if (!c.group.visible || c === (this.vehicle?.car as unknown)) continue;
+      const cvx = Math.sin(c.yaw) * c.v, cvz = Math.cos(c.yaw) * c.v;
+      this.crowd.threat(c.group.position.x, c.group.position.z, cvx * 0.6, cvz * 0.6);
+      // and it can hit you. Traffic still brakes for anyone standing in the
+      // road, so this mostly catches a driver who didn't see you, or one who
+      // chose not to — which is exactly when it should matter.
+      if (!this.vehicle && !this.inside) this.vehicleStrike(c.group.position, cvx, cvz, Math.abs(c.v), 'A car');
+    }
     // the radio plays from its car; if that car has driven off out of the district, it's gone
     if (this.radioHost?.car && 'path' in this.radioHost.car && !this.radioHost.car.group.visible) {
       this.radio.off();
@@ -2427,10 +3356,39 @@ export class App {
     this.radio.update(dt, this.radioHost?.pos() ?? null, this.headphones || (!!this.vehicle && this.radioHost?.car === this.vehicle.car), this.camera.position, this.settings.data.master, !!this.overlay);
     this.radio.setAudible(this.audio.enabled);
     const dv = this.vehicle;
-    if (dv && this.driveVoice) this.driveVoice.setPosition(dv.kind === 'drive' ? dv.car.pos : dv.car.group.position, Math.abs(dv.car.v));
+    if (dv?.kind === 'drive') {
+      // your own car: its engine, tyres and wind (the generic voice is for everything else)
+      this.driveVoice?.mute();
+      if (!this.engineVoice && this.audio.enabled) this.engineVoice = this.audio.engineVoice();
+      const c = dv.car, d = c.dyn, vo = c.spec.voice, m = c.spec.mech;
+      this.engineVoice?.set(c.pos, { rpm: d.rpm, idle: m.idle, redline: m.redline, load: d.load, speed: Math.abs(c.v), slip: d.wheels.reduce((a, w) => Math.max(a, w.slip), 0), cyl: vo.cyl, rough: vo.rough, whine: vo.whine, turbo: vo.turbo, diesel: vo.diesel, inside: this.follow.carView >= 2 && this.follow.carView <= 3, damage: c.damage.engine, boost: d.boostNow });
+      // and the reservoir, so you can see what you've got left to spend
+      this.hud.boost(d.boostable ? d.boost : null, d.boostNow > 0.3);
+    } else {
+      this.engineVoice?.mute();
+      this.hud.boost(null, false);
+      if (dv && this.driveVoice) this.driveVoice.setPosition(dv.car.group.position, Math.abs(dv.car.v));
+    }
     for (const u of this.world.updaters) u(t, dt);
-    this.time.speed = this.clockHeld ? 0 : this.player.sitting ? 8 : 1;
-    this.time.update(dt, t, this.state !== 'boot');
+    this.tickRobbery(dt);
+    if (this.rules.discovery) {
+      this.tryDiscoverPower(dt);
+      // the military come when you've been using these on people
+      const g = militaryGrade(this.powers, this.combat.heat);
+      if (g && g !== this.lastGrade) {
+        this.lastGrade = g;
+        this.hud.toast(g);
+      }
+      if (!g) this.lastGrade = null;
+    }
+    if (this.rpg.active) {
+      // the wider world keeps its own day
+      this.rpg.atmos.speed = this.overlay ? 0 : this.player.sitting ? 8 : 1;
+      this.rpg.update(dt, playing && !this.overlay);
+    } else {
+      this.time.speed = this.clockHeld ? 0 : this.player.sitting ? 8 : 1;
+      this.time.update(dt, t, this.state !== 'boot');
+    }
     const focus = inWorld ? this.player.pos : this.camera.position;
     this.lighting.update(dt, t, focus);
     this.fx.uniforms.uRain.value = this.weather.intensity;
@@ -2455,10 +3413,14 @@ export class App {
       if (this.vehicle) {
         const v = this.vehicle;
         const stopping = v.kind === 'drive' ? v.car.leaving : !!v.car.taxi?.stopping;
-        this.hud.setPrompt(v.kind === 'drive' ? (v.car.van ? 'Van' : v.car.screen ? 'Electric car' : 'Car') : 'Taxi', stopping ? 'Stopping…' : v.kind === 'ride' ? 'Ask to stop' : 'Get out', 'exitVehicle');
+        this.hud.setPrompt(v.kind === 'drive' ? carName(v.car) : 'Taxi', stopping ? 'Stopping…' : v.kind === 'ride' ? 'Ask to stop' : 'Get out', 'exitVehicle');
         if (this.carScreen.isOpen) this.hud.setPrompt(null);
         if (this.input.pressed('exitVehicle')) this.leaveVehicle();
         if (v.kind === 'drive' && v.car.screen && this.input.pressed('screen')) this.carScreen.open();
+        if (v.kind === 'drive' && this.input.pressed('carCamera')) {
+          this.follow.carView = (this.follow.carView + 1) % FollowCamera.CAR_VIEWS.length;
+          this.hud.toast?.(`Camera: ${FollowCamera.CAR_VIEWS[this.follow.carView]}`);
+        }
         if (this.input.pressed('radioPrev')) this.tuneRadio(-1);
         else if (this.input.pressed('radioNext')) this.tuneRadio(1);
       } else if (this.boat) {
@@ -2476,15 +3438,27 @@ export class App {
         if (this.input.pressed('interact')) car.go();
       } else {
         // nothing to look at here, but someone to talk to
-        const who = !cur || busy ? this.crowd.nearestTalker(this.player.pos, fwd) : null;
-        if (who && !this.player.sitting) {
+        const rp = this.rpg.active && !this.player.sitting && !busy ? this.rpg.interaction(this.player.pos, fwd) : null;
+        const who = !rp && (!cur || busy) ? this.crowd.nearestTalker(this.player.pos, fwd) : null;
+        if (rp) {
+          this.hud.setPrompt(rp.name, rp.verb);
+          if (this.input.pressed('interact')) rp.go();
+        } else if (this.cityTalkUi?.isOpen) {
+          this.hud.setPrompt(null, verb);
+        } else if (who && !this.player.sitting) {
           this.hud.setPrompt(this.whoIs(who), 'Talk');
-          if (this.input.pressed('interact')) this.crowd.talk(who, this.player.pos);
+          if (this.input.pressed('interact')) this.converse(who);
         } else {
           this.hud.setPrompt(cur && !busy ? cur.def.name : null, verb);
           // only claim the button when there's something to use (on a pad it's also reload)
           if (cur && !busy && this.input.pressed('interact')) this.interact();
         }
+      }
+      // someone you're talking to keeps their eyes on you
+      if (this.talkingTo) {
+        this.talkingTo.alarm = Math.max(this.talkingTo.alarm, 1);
+        this.talkingTo.alarmX = this.player.pos.x;
+        this.talkingTo.alarmZ = this.player.pos.z;
       }
       if (this.rules.quests) this.updateQuests(dt);
       if (this.rules.combat === 'street') this.updateCombat(dt);
@@ -2496,7 +3470,7 @@ export class App {
       }
       this.serveTime(dt);
       // indoors the rooms sit far off the map; the HUD keeps the room's name
-      if (!this.inside && this.rules.discovery) this.discovery.update(this.player.pos.x, this.player.pos.z);
+      if (!this.inside && this.rules.discovery && (!this.rpg.active || inD03(this.player.pos.x, this.player.pos.z))) this.discovery.update(this.player.pos.x, this.player.pos.z);
       this.updatePhone(dt);
       this.saveTimer -= dt;
       if (this.saveTimer <= 0) {
@@ -2514,6 +3488,17 @@ export class App {
       const roof = this.world.collision.raycast(head, UP, 14) < 14;
       this.audio.setShelter(roof ? 1 : 0);
     }
+    // a scene in progress has the camera (it blends in from, and back out to, where play put it)
+    if (this.scenes.active && !this.scenes.handingBack && this.scenes.scene?.skippable !== false && (this.input.held('confirm') || this.input.held('cancel'))) {
+      this.skipHeld += dt / 0.8;
+      if (this.skipHeld >= 1) {
+        this.skipHeld = 0;
+        this.scenes.skip();
+      }
+    } else this.skipHeld = Math.max(0, this.skipHeld - dt * 3);
+    this.scenes.update(dt);
+    this.renderer.cinema(this.scenes.bars, this.scenes.dofFocus, this.scenes.dofAperture);
+    this.sceneUi.update(this.scenes, this.skipHeld);
     this.audio.update(dt, this.camera, this.weather.intensity);
     this.input.endFrame();
     if (this.noRender) return;
@@ -2575,4 +3560,10 @@ function easeOut(x: number) {
 function clockText(sec: number) {
   const s = Math.max(0, Math.ceil(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/** What to call a car in a prompt. */
+function carName(c: DrivableCar) {
+  const k: Record<string, string> = { pickup: 'Pickup', offroad: '4×4', truck: 'Truck', sports: 'Sports car', hatch: 'Hatchback', van: 'Van' };
+  return (c.kind && k[c.kind]) ?? (c.van ? 'Van' : c.screen ? 'Electric car' : 'Car');
 }

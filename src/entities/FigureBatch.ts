@@ -207,6 +207,24 @@ export class FigureBatch {
 
   private dressed = new Set<number>();
 
+  /**
+   * Blood soaking into what someone's wearing (or into their skin) where they
+   * were hit: that part darkens toward a deep red, more with each wound.
+   * `at` is how high up the body (0 feet … 1 top of the head).
+   */
+  stain(slot: number, at: number, amount: number) {
+    const parts = at > 0.86 ? ['head', 'neck'] : at > 0.56 ? ['torso', 'collar', 'crew', 'shirt', 'lapels', 'scarf', 'vest'] : at > 0.44 ? ['pelvis', 'hem', 'jacketHem', 'skirt', 'belt'] : ['thigh'];
+    const c = new THREE.Color(), red = new THREE.Color(0x3a0606);
+    for (const g of parts) {
+      const m = this.meshes.get(g);
+      if (!m?.instanceColor) continue;
+      const idx = PAIRED.has(g) ? slot * 2 + (Math.random() < 0.5 ? 0 : 1) : slot;
+      m.getColorAt(idx, c);
+      m.setColorAt(idx, c.lerp(red, Math.min(0.55, amount * (g === 'head' || g === 'neck' ? 0.35 : 0.5))));
+      m.instanceColor.needsUpdate = true;
+    }
+  }
+
   /** Paint a figure's clothes, skin, hair and face into its slot. */
   dress(slot: number, o: Outfit, glowColor = 0x9fc4ff, b?: Body) {
     const c = new THREE.Color();
