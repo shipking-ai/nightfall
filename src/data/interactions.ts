@@ -8,7 +8,17 @@ export interface InteractionDef {
   lines: string[];
   again?: string[];
   unlock?: string;
-  action?: 'sit' | 'phone' | 'vend' | 'mark' | 'enter' | 'exit' | 'bell' | 'rob' | 'search' | 'sleep';
+  action?: 'sit' | 'phone' | 'vend' | 'mark' | 'enter' | 'exit' | 'bell' | 'rob' | 'search' | 'sleep' | 'buy' | 'stash';
+  /** costs this much first (a coffee, a meal, a motel room) */
+  price?: number;
+  /** buy: health it gives back */
+  heal?: number;
+  /** stash: what might be in it */
+  cash?: [number, number];
+  /** stash: taking it is a crime this big (a till under a camera) */
+  crime?: number;
+  /** stash: found once for good (kept in the save), not just once a night */
+  keep?: boolean;
 }
 
 export const INTERACTIONS: Record<string, InteractionDef> = {

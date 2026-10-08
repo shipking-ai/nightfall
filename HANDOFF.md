@@ -529,6 +529,14 @@ Neither network stores anything.
 - **Limits:** Supabase bills 1 + N per broadcast, so a room costs about 5 × players² messages a second. Free is 100/s **project-wide** (about one room of 4), with 2M messages a month. See **docs/multiplayer-scaling.md** for the numbers and the plan: Pro now, Cloudflare Durable Objects beyond about 100 players online at once.
 - **Vercel Deployment Protection is OFF** (set 2026-09-23 at the owner's request). The site is public.
 
+## Pursuits and the outskirts (2026-10-08)
+
+- **Car chases** (`entities/pursuit.ts`, `entities/Police.ts`): police and military cars spawn 90–170 m off, on a road, out of view (behind you by preference), and drive the street grid to you (`waypoint`). Once close and in sight they go straight for you: lead prediction, PIT on the rear quarter, rams (`hooks.rammed` → crash, shake, damage), boxing in, deploying officers. Feelers steer round things; stuck cars back out; a lost unit gives up after 14 s or 220 m. Test: `tools/playtest/pursuit.mjs` (`STARS=7` for the military).
+- **Outskirts** (`world/Outskirts.ts`, `world/builders/outskirtsLots.ts`): road-facing block faces get places: gas station (coffee/snacks to buy, a till to rob: +heat), diner (a meal), motel (a room = `sleep`, paid), pocket park (benches, a statue), car park (an unlocked car), building site (crane, toolbox), night market (food stalls). There are also lit shopfronts with awnings and signs, rooftop billboards for made-up brands, a bus shelter per slice, trees, bins and hydrants, and a holdall stash in an alley gap. Stashes are kept in save flags (`osk<i>:<band><face>:bag|glovebox|toolbox`).
+- New interaction fields: `price`, `heal`, `cash`, `crime`, `keep`; actions `buy` and `stash` (App `interact()` charges first, then acts).
+- **People out there** are borrowed: `Crowd.lend(spots)` assigns up to 16 pooled extras to the nearest outskirts spots (`Outskirts.people`), called every 0.5 s from App.
+- **Traffic out there**: `Traffic.local()` makes ad-hoc runs along the long road near you when |x| > 165, and far-off district cars are retired so they come round your way. Test: `tools/playtest/outskirts.mjs`.
+
 ## Backend & deploy (2026-09-23)
 
 **Supabase:** project `nightfall`, ref `ueypttzxedsbnbrsmena`, org "Other Projects", us-east-1, free tier.

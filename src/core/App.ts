@@ -62,7 +62,7 @@ import { DISTRICTS } from '../world/layout';
 import { INTERIORS, HOMES, SEARCHES } from '../world/builders/interiors';
 import { Talk } from '../rpg/ui/Talk';
 import { cityTalk, nameFor } from '../systems/CityTalk';
-import { INTERACTIONS } from '../data/interactions';
+import { INTERACTIONS, type InteractionDef } from '../data/interactions';
 import type { Npc } from '../entities/Crowd';
 import { cleanLook, type Look } from '../entities/Look';
 import { Multiplayer, type PeerState } from '../net/Multiplayer';
@@ -198,6 +198,7 @@ export class App {
   private chat!: Chat;
   private voice!: VoiceChat;
   private outskirts!: Outskirts;
+  private lendT = 0;
   private touch: TouchControls | null = null;
   private boats!: Boats;
   private police!: Police;
@@ -506,7 +507,7 @@ export class App {
 
     this.world = await buildCity((k) => this.intermission.setProgress(k * 0.85));
     this.scene.add(this.world.root);
-    this.outskirts = new Outskirts(this.world.mats, this.world.collision, this.world.root);
+    this.outskirts = new Outskirts(this.world.mats, this.world.collision, this.world.root, this.world.interact);
     this.scene.add(this.outskirts.group);
     this.boats = new Boats(this.world.mats);
     this.scene.add(this.boats.group);
@@ -2670,6 +2671,22 @@ export class App {
         unlock = undefined;
       }
     }
+    // somewhere that wants paying first
+    if (def.price) {
+      const have = this.save.data.cash ?? 0;
+      if (have < def.price) {
+        this.hud.say([`It's ${fmtMoney(def.price)}. You have ${fmtMoney(have)}.`], def.name);
+        this.sayingUntil = performance.now() + 1200;
+        return;
+      }
+      this.save.data.cash = have - def.price;
+      this.hud.toast(`−${fmtMoney(def.price)} · you have ${fmtMoney(this.save.data.cash)}`);
+    }
+    if (def.action === 'buy') {
+      this.combat.health = Math.min(100, this.combat.health + (def.heal ?? 0));
+      this.audio.footstep(0.6, false);
+    }
+    if (def.action === 'stash') return this.stash(spot.id, def);
     if (def.action === 'enter') return this.goInside(spot.id.slice('enter:'.length));
     if (def.action === 'exit') return this.goOutside();
     if (def.action === 'bell') this.audio.bell();
@@ -2793,6 +2810,39 @@ export class App {
       this.audio.say({ pitch: 150, tract: 1, rate: 6, breath: 0.3 }, lines[1], 'scared', this.player.pos, 1);
     }
     this.hud.say(lines, s.name);
+    this.sayingUntil = performance.now() + 1800;
+  }
+
+  /**
+   * Something left somewhere in the outskirts: a holdall in an alley, a
+   * toolbox on a site, an unlocked car, a gas station till. Found once (for
+   * good, if it's a stash; for the night, if it's a till), and a till is
+   * theft in front of a camera.
+   */
+  private stash(id: string, def: InteractionDef) {
+    this.player.act('act.search');
+    const gone = def.keep ? this.save.hasFlag(id) : this.searched.has(id);
+    if (gone) {
+      this.hud.say([def.keep ? 'Empty. You were here before.' : 'Already cleared out.'], def.name);
+      this.sayingUntil = performance.now() + 1200;
+      return;
+    }
+    this.searched.add(id);
+    const [lo, hi] = def.cash ?? [10, 40];
+    const cash = Math.round(lo + Math.random() * (hi - lo));
+    this.save.data.cash = (this.save.data.cash ?? 0) + cash;
+    const lines = [`${fmtMoney(cash)}${def.crime ? ' from the drawer.' : ', and nobody to say it isn\u2019t yours.'}`];
+    if (def.keep) {
+      this.save.flag(id);
+      const found = this.save.data.flags.filter((f) => f.startsWith('osk') && /:(bag|glovebox|toolbox)$/.test(f)).length;
+      this.hud.toast(`${fmtMoney(cash)} · stashes found: ${found}`);
+    } else this.hud.toast(`${fmtMoney(cash)} · you have ${fmtMoney(this.save.data.cash)}`);
+    if (def.crime) {
+      lines.push('The camera over the till blinks red.');
+      this.combat.crime(def.crime);
+      this.crowd.shock(this.player.pos.x, this.player.pos.z);
+    }
+    this.hud.say(lines, def.name);
     this.sayingUntil = performance.now() + 1800;
   }
 
@@ -3238,7 +3288,14 @@ case 'burn':
     }
     this.crowd.update(dt, t, playerPos, this.camera);
     this.tracers.update(dt, this.camera);
-    if (inWorld) this.outskirts.update(this.player.pos);
+    if (inWorld) {
+      this.outskirts.update(this.player.pos);
+      // the people standing about out there, borrowed from the crowd
+      if ((this.lendT -= dt) <= 0) {
+        this.lendT = 0.5;
+        this.crowd.lend(this.mode === 'rpg' ? [] : this.outskirts.people(this.player.pos, 16));
+      }
+    }
     this.touch?.update(
       this.state === 'playing' && !this.overlay && !this.chat?.isOpen && !this.admin?.isOpen && !this.carScreen.isOpen && !this.dying,
       this.vehicle ? 'car' : 'foot',

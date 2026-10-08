@@ -20,6 +20,8 @@ type Mode = NpcSpot['mode'] | 'walk' | 'watcher' | 'cop' | 'crook';
 
 /** police on foot, kept at the end of the list (never in city snapshots: wanted levels are yours alone) */
 const COPS = 6;
+/** people the outskirts can borrow (Crowd.lend) */
+const EXTRAS = 16;
 /** criminals, kept after the police (also never in snapshots) */
 const CROOKS = 4;
 type CrookState = 'idle' | 'approach' | 'flee' | 'hostile' | 'loiter';
@@ -129,6 +131,11 @@ export class Crowd {
   private rng = mulberry32(77);
   /** everyone but the police and the criminals */
   citizens = 0;
+  /** the ones the outskirts borrow: [extrasFrom, extrasTo) */
+  private extrasFrom = 0;
+  private extrasTo = 0;
+  /** which outskirts spot each borrowed person is standing at */
+  private lent = new Map<string, number>();
   /** index of the first criminal */
   crooksFrom = 0;
   /** a criminal shoots at you */
@@ -206,6 +213,15 @@ export class Crowd {
     this.watcher = this.make('watcher', new THREE.Vector3(), 0, 'watcher');
     this.watcher.visible = false;
     this.npcs.push(this.watcher);
+    // people lent to the outskirts (lend): put away until somewhere out there wants them
+    this.extrasFrom = this.npcs.length;
+    for (let i = 0; i < EXTRAS; i++) {
+      const n = this.make('look', new THREE.Vector3(0, -50, 0), 0, archetypeFor(rng, rng.pick(['smoke', 'wait', 'talk', 'look'] as const)));
+      n.visible = false;
+      n.culled = true;
+      this.npcs.push(n);
+    }
+    this.extrasTo = this.npcs.length;
     this.citizens = this.npcs.length;
     // the police, off duty until someone gives them a reason
     for (let i = 0; i < COPS; i++) {
@@ -1050,6 +1066,7 @@ export class Crowd {
   /** Keep a share of ordinary people in the streets (population setting). */
   setDensity(k: number) {
     for (let i = 0; i < this.citizens; i++) {
+      if (i >= this.extrasFrom && i < this.extrasTo) continue;
       const n = this.npcs[i];
       if (n === this.watcher || n.mode === 'stare') continue;
       // a fixed shuffle, so the same people stay home each time
@@ -1059,6 +1076,72 @@ export class Crowd {
       if (n.culled && !was) n.visible = false;
       if (!n.culled && was && n.mode !== 'walk') n.visible = true;
       if (!n.culled && was && n.mode === 'walk') (n.hidden = 0), (n.visible = true);
+    }
+  }
+
+  /**
+   * The outskirts have nobody of their own: they borrow from a small pool.
+   * Each wanted spot (nearest first) gets someone standing there in its pose;
+   * spots no longer wanted give their person back. Pairs talking face each
+   * other.
+   */
+  lend(spots: (NpcSpot & { key: string })[]) {
+    const want = new Set(spots.map((s) => s.key));
+    for (const [key, i] of this.lent) {
+      if (want.has(key)) continue;
+      const n = this.npcs[i];
+      if (n.friend) n.friend.friend = null;
+      n.friend = null;
+      n.culled = true;
+      n.visible = false;
+      this.lent.delete(key);
+    }
+    const busy = new Set(this.lent.values());
+    const free: number[] = [];
+    for (let i = this.extrasFrom; i < this.extrasTo; i++) if (!busy.has(i)) free.push(i);
+    const fresh: Npc[] = [];
+    for (const s of spots) {
+      if (this.lent.has(s.key)) continue;
+      const i = free.pop();
+      if (i === undefined) break;
+      const n = this.npcs[i];
+      this.lent.set(s.key, i);
+      n.mode = s.mode;
+      n.pos.copy(s.pos);
+      n.yaw = s.yaw;
+      n.dead = -1;
+      n.hp = 100;
+      n.panic = 0;
+      n.horror = null;
+      this.rag[i] = null;
+      n.motion.armL = n.motion.armR = 'free';
+      if (s.mode === 'phone') n.motion.armR = 'phone';
+      if (s.mode === 'smoke') n.motion.armR = 'smoke';
+      if (s.mode === 'sit') n.motion.armL = n.motion.armR = 'rest';
+      if (s.mode === 'wait' || s.mode === 'look') n.motion.armL = n.motion.armR = 'pockets';
+      this.batch.dress(i, n.outfit, n.motion.armR === 'smoke' ? 0xff7a30 : 0xbfd4ff, n.body);
+      n.culled = false;
+      n.visible = true;
+      n.away = false;
+      n.lod = -1;
+      fresh.push(n);
+    }
+    for (const n of fresh) {
+      if (n.mode !== 'talk' || n.friend) continue;
+      let best: Npc | null = null, bd = 3;
+      for (const i of this.lent.values()) {
+        const o = this.npcs[i];
+        if (o === n || o.mode !== 'talk' || o.friend) continue;
+        const d = o.pos.distanceTo(n.pos);
+        if (d < bd) (best = o), (bd = d);
+      }
+      if (best) {
+        n.friend = best;
+        best.friend = n;
+        n.speaking = true;
+        n.talkT = 2 + Math.random() * 3;
+        best.talkT = n.talkT;
+      }
     }
   }
 

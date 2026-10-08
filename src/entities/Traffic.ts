@@ -440,6 +440,22 @@ export class Traffic {
     }
   }
 
+  /**
+   * The outskirts' traffic: a made-up run along whichever of the long roads
+   * is near you, starting well out of sight behind or ahead and ending as far
+   * past you. Right-hand lanes, as in the district.
+   */
+  private local(p: THREE.Vector3): Path | null {
+    const lanes: [number, number][] = [[-38.5, 1], [-41.5, -1], [55.5, 1], [52.5, -1], [142.6, 1], [139.8, -1]];
+    const near = lanes.filter(([z]) => Math.abs(z - p.z) < 130);
+    if (!near.length) return null;
+    const [z, dir] = this.rng.pick(near);
+    const x0 = p.x - dir * this.rng.range(140, 180), x1 = p.x + dir * 200;
+    // not on top of someone already setting off there
+    if (this.cars.some((o) => o.path && Math.hypot(o.group.position.x - x0, o.group.position.z - z) < 30)) return null;
+    return roundPath([new THREE.Vector3(x0, 0, z), new THREE.Vector3(x1, 0, z)], 6);
+  }
+
   update(dt: number, player: THREE.Vector3 | null, playerSpeed = 0, blockers: THREE.Vector3[] = [], others: { pos: THREE.Vector3; speed: number }[] = []) {
     if (!this.group.visible || this.held) return;
     if (this.puppet) return this.follow(dt);
@@ -453,6 +469,16 @@ export class Traffic {
         for (const l of car.lamps) l.gain = 0;
         if (this.cars.indexOf(car) >= this.limit) car.wait = Math.max(car.wait, 1);
         if (car.wait <= 0) {
+          // out past the district's edges: a run along your road, through where you are
+          const out = player && Math.abs(player.x) > 165 && this.rng.chance(0.7) ? this.local(player) : null;
+          if (out) {
+            car.path = out;
+            car.s = 0;
+            car.v = 10;
+            car.vmax = this.rng.range(10, 15);
+            car.group.visible = true;
+            continue;
+          }
           // the emptiest of a few roads, so the traffic spreads over the whole district
           let path = this.rng.pick(this.paths), fewest = Infinity;
           for (let k = 0; k < 3; k++) {
@@ -474,6 +500,13 @@ export class Traffic {
         continue;
       }
       sample(car.path, car.s, tmp, fwd);
+      // you're out past the edge and this one is nowhere near: let it go, so it can come round your way
+      if (player && Math.abs(player.x) > 165 && !tx?.rider && !tx?.hailed && Math.hypot(tmp.x - player.x, tmp.z - player.z) > 260) {
+        car.path = null;
+        car.group.visible = false;
+        car.wait = this.rng.range(0.3, 2.5);
+        continue;
+      }
       // brake for the player and for the car in front
       let limit = car.vmax;
       if (tx?.rider) {
