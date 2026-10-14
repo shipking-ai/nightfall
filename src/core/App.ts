@@ -198,6 +198,7 @@ export class App {
   private chat!: Chat;
   private voice!: VoiceChat;
   private outskirts!: Outskirts;
+  private stats: { update(): void } | null = null;
   private lendT = 0;
   private touch: TouchControls | null = null;
   private boats!: Boats;
@@ -323,6 +324,15 @@ export class App {
   constructor() {
     const stage = document.getElementById('stage')!;
     this.renderer = new Renderer(stage, this.scene, this.camera);
+    // ?stats: a frame-time overlay (stats-gl, MIT): FPS, CPU and GPU ms, for tuning on real hardware
+    if (new URLSearchParams(location.search).has('stats'))
+      import('stats-gl').then(({ default: Stats }) => {
+        const st = new Stats({ trackGPU: true, horizontal: false });
+        st.init(this.renderer.renderer);
+        st.dom.style.cssText += ';position:fixed;left:0;top:0;z-index:9999';
+        document.body.appendChild(st.dom);
+        this.stats = st;
+      });
     this.input = new Input(this.renderer.canvas);
     bindGlyphs(this.input);
     this.nav = new Nav(this.ui, this.input);
@@ -2675,11 +2685,13 @@ export class App {
     if (def.price) {
       const have = this.save.data.cash ?? 0;
       if (have < def.price) {
+        this.audio.blip('deny');
         this.hud.say([`It's ${fmtMoney(def.price)}. You have ${fmtMoney(have)}.`], def.name);
         this.sayingUntil = performance.now() + 1200;
         return;
       }
       this.save.data.cash = have - def.price;
+      this.audio.blip('buy');
       this.hud.toast(`−${fmtMoney(def.price)} · you have ${fmtMoney(this.save.data.cash)}`);
     }
     if (def.action === 'buy') {
@@ -2828,13 +2840,14 @@ export class App {
       return;
     }
     this.searched.add(id);
+    this.audio.blip(def.keep ? 'stash' : 'cash');
     const [lo, hi] = def.cash ?? [10, 40];
     const cash = Math.round(lo + Math.random() * (hi - lo));
     this.save.data.cash = (this.save.data.cash ?? 0) + cash;
     const lines = [`${fmtMoney(cash)}${def.crime ? ' from the drawer.' : ', and nobody to say it isn\u2019t yours.'}`];
     if (def.keep) {
       this.save.flag(id);
-      const found = this.save.data.flags.filter((f) => f.startsWith('osk') && /:(bag|glovebox|toolbox)$/.test(f)).length;
+      const found = this.save.data.flags.filter((f) => f.startsWith('osk') && /:(bag|glovebox|toolbox|locker)$/.test(f)).length;
       this.hud.toast(`${fmtMoney(cash)} · stashes found: ${found}`);
     } else this.hud.toast(`${fmtMoney(cash)} · you have ${fmtMoney(this.save.data.cash)}`);
     if (def.crime) {
@@ -3042,6 +3055,7 @@ case 'burn':
   /* ─────────────────────────── loop ─────────────────────────── */
 
   private frame(now: number) {
+    this.stats?.update();
     this.input.poll(now);
     this.clock.update(now);
     // clamp both ways: tab switches produce huge deltas, clock resets can produce negative ones

@@ -585,6 +585,37 @@ export class AudioEngine {
     this.footstep(Math.min(1.6, v / 5));
   }
 
+  /**
+   * Small game sounds (paying, finding money, being refused) made by ZzFX
+   * (Frank Force, MIT): its sample builder only, played through our own
+   * effects bus so the volume and mute settings hold. Loaded on first use.
+   */
+  private zz: { buildSamples: (...p: number[]) => number[]; sampleRate: number } | null = null;
+  private zzCache = new Map<string, AudioBuffer>();
+  async blip(kind: 'buy' | 'cash' | 'deny' | 'stash' | 'tick') {
+    if (!this.ctx || !this.enabled) return;
+    if (!this.zz) this.zz = (await import('zzfx')).ZZFX as unknown as { buildSamples: (...p: number[]) => number[]; sampleRate: number };
+    const PRESETS: Record<string, number[]> = {
+      // volume, randomness, frequency, attack, sustain, release, shape, shapeCurve, slide, deltaSlide, pitchJump, pitchJumpTime, repeat, noise, mod, crush, delay, sustainVol, decay, tremolo
+      buy: [0.6, 0.02, 880, 0, 0.02, 0.12, 1, 1.6, 0, 0, 440, 0.04],
+      cash: [0.7, 0.02, 1240, 0, 0.03, 0.18, 0, 1.8, 0, 0, 620, 0.05, 0, 0, 0, 0, 0.04, 0.6],
+      deny: [0.5, 0.02, 180, 0, 0.06, 0.16, 2, 1, -12, 0, 0, 0, 0, 0.1],
+      stash: [0.7, 0.03, 520, 0.01, 0.06, 0.3, 0, 1.4, 0, 0, 260, 0.07, 0.09, 0, 0, 0, 0.05, 0.5],
+      tick: [0.3, 0.02, 1600, 0, 0, 0.03, 0, 2],
+    };
+    let buf = this.zzCache.get(kind);
+    if (!buf) {
+      const data = this.zz.buildSamples(...PRESETS[kind]);
+      buf = this.ctx.createBuffer(1, data.length, this.zz.sampleRate);
+      buf.getChannelData(0).set(data);
+      this.zzCache.set(kind, buf);
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.sfx);
+    src.start();
+  }
+
   /** Where outside audio (the car radio) joins the mix: after the volume, before the pause muffle. */
   get output(): AudioNode | null {
     return this.ctx ? this.master : null;

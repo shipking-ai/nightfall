@@ -1,3 +1,12 @@
+// the type, self-hosted (OFL 1.1, via Fontsource): no third-party request, and it's there offline
+import '@fontsource/ibm-plex-sans/300.css';
+import '@fontsource/ibm-plex-sans/300-italic.css';
+import '@fontsource/ibm-plex-sans/400.css';
+import '@fontsource/ibm-plex-sans/500.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import '@fontsource/instrument-serif/400.css';
+import '@fontsource/instrument-serif/400-italic.css';
 import './styles/main.css';
 import './styles/controller.css';
 import './styles/fight.css';

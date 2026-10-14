@@ -529,6 +529,26 @@ Neither network stores anything.
 - **Limits:** Supabase bills 1 + N per broadcast, so a room costs about 5 × players² messages a second. Free is 100/s **project-wide** (about one room of 4), with 2M messages a month. See **docs/multiplayer-scaling.md** for the numbers and the plan: Pro now, Cloudflare Durable Objects beyond about 100 players online at once.
 - **Vercel Deployment Protection is OFF** (set 2026-09-23 at the owner's request). The site is public.
 
+## Vehicles and free resources (2026-10-14)
+
+- **Better-looking vehicles** (`vehicles/model.ts`), still procedural:
+  - Detail sits on the body's real surface. `halfWidthAt` follows the cross-section's superellipse; `surfZ` and `onCurve` place parts and turn them with the nose and tail.
+  - Lights: real clusters, each a housing, a chrome reflector, twin projectors, a daytime strip and an indicator. Taillights have a lens, an indicator and a reverse lamp, with a light bar on saloons, coupés, estates, SUVs and limos.
+  - Body: wrap-around body-colour bumpers with a black lip, an intake and a diffuser; grilles with chrome surrounds and bars; mirrors on stalks.
+  - Panels and wheels: shut lines, a chrome belt strip, black sills, dark arch liners, number plates (`plateMaterial`) and twin exhausts on quick cars.
+  - Wheels: sidewalls, a dished rim with twin spokes and nuts, a brake disc, and a caliper on the steer group that doesn't spin.
+  - The police push bar is now an open frame.
+- **New classes** (`vehicles/specs.ts`):
+  - The new classes are `suv`, `estate`, `muscle`, `roadster` (`shape.open`: windscreen only, hoops behind the seats), `limo`, `city`, `firetruck` (livery `fire`: beacons, roof ladder, lockers) and `refuse` (hopper, arms). That makes 21 classes.
+  - Traffic mixes them in (`TRAFFIC_CLASSES`). Parked cars pick from an everyday mix (`props.parkedCar`), and outskirts lots park varied classes.
+  - A new lot, `depot`, puts a fire engine and a refuse truck in lit bays, with a crew locker stash.
+- **Free resources:** `docs/free-resources.md` surveys libraries, assets, tools and programmes, with licence and status. Added this round:
+  - fonts self-hosted through Fontsource, so there's no Google Fonts request;
+  - ZzFX sounds via `AudioEngine.blip()`, built from samples and played through our own sfx bus;
+  - the stats-gl overlay, behind `?stats`.
+  - Credits are in `public/licenses/README.txt`.
+- **Looking at vehicles:** use `/dev/vehicles.html?only=suv,sedan&view=three|front|rear|side|top&lights=1`. SwiftShader is slow with more than four big vehicles in one view, so shoot them a few at a time.
+
 ## Pursuits and the outskirts (2026-10-08)
 
 - **Car chases** (`entities/pursuit.ts`, `entities/Police.ts`): police and military cars spawn 90–170 m off, on a road, out of view (behind you by preference), and drive the street grid to you (`waypoint`). Once close and in sight they go straight for you: lead prediction, PIT on the rear quarter, rams (`hooks.rammed` → crash, shake, damage), boxing in, deploying officers. Feelers steer round things; stuck cars back out; a lost unit gives up after 14 s or 220 m. Test: `tools/playtest/pursuit.mjs` (`STARS=7` for the military).

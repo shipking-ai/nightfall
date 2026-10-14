@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { VehicleSpec } from './specs';
 
@@ -50,6 +51,7 @@ export interface VehicleMats {
   beacon: THREE.MeshStandardMaterial[];
   rubber: THREE.MeshStandardMaterial;
   rim: THREE.MeshStandardMaterial;
+  caliper: THREE.MeshStandardMaterial;
 }
 
 /** Up to 8 dents (car-local position, depth) plus dirt and wet, fed to the shaders. */
@@ -251,6 +253,16 @@ function caps(rings: number[][][]): THREE.BufferGeometry {
   return g;
 }
 
+/** how wide a section really is at height y (the superellipse of lowerRing, not its bounding box) */
+function halfWidthAt(q: Section, y: number) {
+  const mid = (q.bot + q.deck) / 2, hh = (q.deck - q.bot) / 2;
+  if (hh <= 0 || y > q.deck || y < q.bot) return -1;
+  const v = (y - mid) / hh;
+  const e = v > 0 ? 0.32 : 0.18;
+  const sn = Math.pow(Math.min(1, Math.abs(v)), 1 / e);
+  return q.hw * Math.pow(Math.sqrt(Math.max(0, 1 - sn * sn)), e) * (1 + 0.015 * (1 - sn));
+}
+
 const RING = 28;
 /** lower body ring: a rounded box (superellipse), squarer at the bottom than the shoulders */
 function lowerRing(s: Section, floor = -1): number[][] {
@@ -304,12 +316,17 @@ interface ClassGeo {
   door: { geo: THREE.BufferGeometry; hinge: THREE.Vector3; side: 1 | -1 }[];
   tire: THREE.BufferGeometry;
   rim: THREE.BufferGeometry;
+  /** the brake caliper: on the hub, not spinning (in the wheel's frame, outer side +x) */
+  caliper: THREE.BufferGeometry;
+  /** number plates, with uvs */
+  plates: THREE.BufferGeometry | null;
   wheelGeo: THREE.BufferGeometry;
   wiper: THREE.BufferGeometry;
   lamps: { head: THREE.BufferGeometry; tail: THREE.BufferGeometry; indL: THREE.BufferGeometry; indR: THREE.BufferGeometry; reverse: THREE.BufferGeometry; beacons: THREE.BufferGeometry[] };
   lampAt: { head: THREE.Vector3[]; tail: THREE.Vector3[] };
 }
 const CACHE = new Map<string, ClassGeo>();
+const big0 = (spec: VehicleSpec) => spec.cls === 'truck' || spec.cls === 'bus' || spec.cls === 'firetruck' || spec.cls === 'refuse';
 
 const box = (x: number, y: number, z: number, w: number, h: number, d: number, rx = 0, ry = 0, rz = 0) => {
   const g = new THREE.BoxGeometry(w, h, d);
@@ -324,6 +341,80 @@ const cyl = (x: number, y: number, z: number, r: number, len: number, axis: 'x' 
   g.translate(x, y, z);
   return g;
 };
+/** a box with rounded edges (bumpers, housings, lenses) */
+const rbox = (x: number, y: number, z: number, w: number, h: number, d: number, r: number, rx = 0, ry = 0, rz = 0) => {
+  const g = new RoundedBoxGeometry(w, h, d, 2, Math.max(0.001, Math.min(r, w / 2 - 1e-4, h / 2 - 1e-4, d / 2 - 1e-4)));
+  g.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz)));
+  g.translate(x, y, z);
+  return g;
+};
+/** the dark inside of a wheel arch: the upper half of a drum, seen from either side */
+const archLiner = (x: number, y: number, z: number, r: number, w: number) => {
+  const g = new THREE.CylinderGeometry(r, r, w, 18, 1, true, Math.PI * 0.5, Math.PI);
+  g.rotateZ(Math.PI / 2);
+  g.translate(x, y, z);
+  const back = g.clone();
+  const idx = back.index!;
+  for (let i = 0; i < idx.count; i += 3) {
+    const a = idx.getX(i);
+    idx.setX(i, idx.getX(i + 2));
+    idx.setX(i + 2, a);
+  }
+  const n = back.getAttribute('normal') as THREE.BufferAttribute;
+  for (let i = 0; i < n.count; i++) n.setXYZ(i, -n.getX(i), -n.getY(i), -n.getZ(i));
+  return mergeGeometries([g.toNonIndexed(), back.toNonIndexed()].map((q) => (q.deleteAttribute('uv'), q)))!;
+};
+/** a number plate (keeps its uvs: it carries a texture) */
+const plate = (x: number, y: number, z: number, dir: 1 | -1) => {
+  const g = new THREE.PlaneGeometry(0.52, 0.12);
+  if (dir < 0) g.rotateY(Math.PI);
+  g.translate(x, y, z);
+  return g;
+};
+/** reverse a geometry's winding (after mirroring it) */
+const flipWinding = (g: THREE.BufferGeometry) => {
+  const q = g.index ? g.toNonIndexed() : g;
+  const p = q.getAttribute('position') as THREE.BufferAttribute, n = q.getAttribute('normal') as THREE.BufferAttribute | undefined;
+  for (let i = 0; i < p.count; i += 3) {
+    for (const a of [p, n]) {
+      if (!a) continue;
+      const x = a.getX(i), y = a.getY(i), zz = a.getZ(i);
+      a.setXYZ(i, a.getX(i + 2), a.getY(i + 2), a.getZ(i + 2));
+      a.setXYZ(i + 2, x, y, zz);
+    }
+  }
+  return q;
+};
+
+/** The plate everyone in District 03 seems to have. Shared, made once. */
+let PLATE: THREE.MeshStandardMaterial | null = null;
+export function plateMaterial() {
+  if (PLATE) return PLATE;
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 60;
+  const x = c.getContext('2d')!;
+  x.fillStyle = '#e9e6dc';
+  x.fillRect(0, 0, 256, 60);
+  x.strokeStyle = '#1a1a1a';
+  x.lineWidth = 4;
+  x.strokeRect(3, 3, 250, 54);
+  x.fillStyle = '#2a4a8a';
+  x.fillRect(5, 5, 26, 50);
+  x.fillStyle = '#e9e6dc';
+  x.font = '600 14px "IBM Plex Sans", sans-serif';
+  x.textAlign = 'center';
+  x.fillText('03', 18, 36);
+  x.fillStyle = '#141414';
+  x.font = '700 38px "IBM Plex Mono", ui-monospace, monospace';
+  x.fillText('NF 3·17', 142, 44);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  PLATE = new THREE.MeshStandardMaterial({ map: t, roughness: 0.4, metalness: 0.2, polygonOffset: true, polygonOffsetFactor: -2 });
+  return PLATE;
+}
+
 const merge = (gs: THREE.BufferGeometry[]) => {
   // smooth normals from the shared vertices first (a loft's surface is one surface), then flatten
   for (const g of gs) if (!g.getAttribute('normal')) g.computeVertexNormals();
@@ -344,6 +435,7 @@ function classGeo(spec: VehicleSpec): ClassGeo {
   const paint: THREE.BufferGeometry[] = [], glass: THREE.BufferGeometry[] = [], trim: THREE.BufferGeometry[] = [], chrome: THREE.BufferGeometry[] = [], interior: THREE.BufferGeometry[] = [];
   const head: THREE.BufferGeometry[] = [], tail: THREE.BufferGeometry[] = [], indL: THREE.BufferGeometry[] = [], indR: THREE.BufferGeometry[] = [], rev: THREE.BufferGeometry[] = [], beacons: THREE.BufferGeometry[] = [];
   const doors: ClassGeo['door'] = [];
+  const plates: THREE.BufferGeometry[] = [];
   const lampAt = { head: [] as THREE.Vector3[], tail: [] as THREE.Vector3[] };
 
   if (m.bike) {
@@ -396,6 +488,8 @@ function classGeo(spec: VehicleSpec): ClassGeo {
             isPaint ||= Math.abs(zc - s.aTop) < 0.08 || (spec.cls !== 'bus' && Math.abs(zc - s.cTop) < 0.12);
             for (const bp of bPillars) if (Math.abs(zc - bp) < 0.06) isPaint = true;
           }
+          // an open car keeps only its windscreen and the frame round it
+          if (s.open && (zc <= s.aTop + 0.02 || edge > 0.45)) continue;
           const a = i * nR + j, b = i * nR + j + 1, c = (i + 1) * nR + j, d = (i + 1) * nR + j + 1;
           const dst = isPaint ? pt : gl, dn = isPaint ? ptn : gln;
           for (const v of [a, b, c, b, d, c]) {
@@ -426,51 +520,163 @@ function classGeo(spec: VehicleSpec): ClassGeo {
       trim.push(box(0, s.box.height / 2 + 0.2, -hL - 0.005, s.width * 0.02, s.box.height - 0.5, 0.01));
       trim.push(box(0, s.clearance + 0.05, -hL - 0.1, s.width * 0.8, 0.05, 0.25));
     }
-    // ── front: grille, bumpers, plate
-    const nose = secs[secs.length - 1];
-    const fz = hL;
-    const gy = Math.max(s.clearance + 0.2, s.noseY - 0.25);
-    trim.push(box(0, gy, fz - 0.02 - 0.05 * s.noseRound, s.width * (spec.cls === 'truck' || spec.cls === 'bus' ? 0.7 : 0.45), spec.cls === 'truck' ? 0.6 : 0.2, 0.06));
-    trim.push(box(0, s.clearance + 0.16, fz - 0.04 - 0.08 * s.noseRound, s.width * 0.92, 0.14, 0.12));
-    trim.push(box(0, s.clearance + 0.16, -hL + 0.04 + 0.06 * s.tailRound, s.width * 0.92, 0.14, 0.12));
-    chrome.push(box(0, s.clearance + 0.3, fz - 0.02 - 0.08 * s.noseRound, 0.52, 0.12, 0.02));
-    chrome.push(box(0, Math.min(s.tailY - 0.2, s.belt - 0.15), -hL - 0.005 + 0.07 * s.tailRound, 0.52, 0.12, 0.02));
-    // ── lights: head, tail, indicators, reverse
+    // ── the details that make it a car rather than a shape. Each piece sits on
+    // the body's actual surface (surfZ), so nothing floats off a rounded nose.
+    const secAt = (z: number) => secs.reduce((a, q) => (Math.abs(q.z - z) < Math.abs(a.z - z) ? q : a), secs[0]);
+    /** the frontmost (dir 1) or rearmost (dir −1) z where the body is at least this wide at this height */
+    const surfZ = (x: number, y: number, dir: 1 | -1) => {
+      const list = dir > 0 ? [...secs].reverse() : secs;
+      for (const q of list) if (halfWidthAt(q, y) >= Math.abs(x)) return q.z;
+      return dir * (hL - 0.2);
+    };
+    const big = spec.cls === 'truck' || spec.cls === 'bus' || spec.cls === 'firetruck' || spec.cls === 'refuse';
+    const sporty = spec.cls === 'sports' || spec.cls === 'muscle' || spec.cls === 'roadster';
+    // bumpers: body-coloured, wrapped round the corners, a black lip under them
+    for (const dir of [1, -1] as const) {
+      const by = s.clearance + 0.2, bh = big ? 0.42 : 0.3;
+      const zEnd = dir > 0 ? hL : -hL;
+      const zFace = surfZ(0, by, dir);
+      const bw = secAt(zFace - dir * 0.16).hw * 2 - 0.04;
+      paint.push(rbox(0, by, zFace - dir * 0.12, bw, bh, 0.26, 0.13));
+      trim.push(rbox(0, s.clearance + 0.07, zFace - dir * 0.16, bw * 0.8, 0.07, 0.22, 0.03));
+      void zEnd;
+      if (dir > 0) {
+        // the lower intake, and the plate on it
+        trim.push(rbox(0, by - 0.02, zFace + 0.02, bw * (sporty ? 0.72 : 0.5), bh * 0.42, 0.04, 0.02));
+        plates.push(plate(0, by + bh * 0.28, zFace + 0.04, 1));
+      } else {
+        // a diffuser (or a step), the plate up on the boot or the box
+        trim.push(rbox(0, by - 0.04, zFace - 0.02, bw * 0.6, bh * 0.36, 0.04, 0.02));
+        const py = Math.min(s.tailY - 0.25, s.belt - 0.2);
+        plates.push(plate(0, Math.max(by + 0.22, py), surfZ(0, Math.max(by + 0.22, py), -1) - 0.01, -1));
+      }
+    }
+    // the grille: a dark mesh in a chrome surround, with bars across it
+    {
+      const gy = big ? s.clearance + 0.75 : Math.max(s.clearance + 0.42, s.noseY - 0.2);
+      const gw = big ? s.width * 0.72 : s.width * (spec.cls === 'suv' || spec.cls === 'pickup' || spec.cls === 'offroad' ? 0.5 : sporty ? 0.36 : 0.42);
+      const gh = big ? 0.75 : spec.cls === 'pickup' || spec.cls === 'suv' || spec.cls === 'offroad' ? 0.32 : 0.16;
+      const gz = surfZ(gw / 2, gy, 1);
+      chrome.push(rbox(0, gy, gz - 0.015, gw + 0.05, gh + 0.05, 0.05, 0.02));
+      trim.push(rbox(0, gy, gz, gw, gh, 0.05, 0.015));
+      const bars = big ? 5 : gh > 0.2 ? 3 : 2;
+      for (let i = 1; i <= bars; i++) chrome.push(box(0, gy - gh / 2 + (gh * i) / (bars + 1), gz + 0.022, gw * 0.96, 0.012, 0.012));
+    }
+    // ── lights: clusters, not cubes. A black housing, a lens that lights,
+    // a projector disc in it and a daytime strip along the top edge.
     // Car faces +z with +y up, so local −x is its RIGHT and +x its LEFT. The
     // indicator lamps are named by the side they are on, not by the sign used
     // to place them.
-    const hx = s.width / 2 - 0.22 - 0.05 * s.noseRound, hy = Math.max(s.clearance + 0.3, s.noseY - 0.12);
-    const hz = fz - 0.03 - 0.16 * s.noseRound;
+    const hw0 = secAt(hL - 0.25).hw;
+    const hlW0 = big ? 0.34 : sporty ? 0.4 : 0.38, hlH = big ? 0.22 : sporty ? 0.12 : 0.16;
+    const gHalf = (big ? s.width * 0.72 : s.width * (spec.cls === 'suv' || spec.cls === 'pickup' || spec.cls === 'offroad' ? 0.5 : sporty ? 0.36 : 0.42)) / 2 + 0.03;
+    void hw0;
+    const hy0 = big ? s.clearance + 0.62 : Math.max(s.clearance + 0.42, s.noseY - 0.12);
+    const hy = hy0;
+    /** a cluster between `inner` and the body's real edge at that height, no wider than it wants to be */
+    const fit = (want: number, inner: number, y: number, z: number) => {
+      const room = halfWidthAt(secAt(z), y) - 0.04 - inner;
+      const w = Math.max(0.12, Math.min(want, room));
+      return { w, x: inner + w / 2 };
+    };
+    const HF = fit(hlW0, gHalf + 0.02, hy, hL - 0.12);
+    const hlW = HF.w, hx = HF.x;
+    const ty = Math.min(s.tailY - 0.14, s.belt - 0.06);
+    const tlH = big ? 0.32 : 0.17;
+    const TF = fit(big ? 0.24 : 0.38, big ? s.width / 2 - 0.4 : 0.32, ty, -hL + 0.12);
+    const tlW = TF.w, tx = TF.x;
+    /** where a cluster `w` wide sits on the curve: its centre z and the yaw that lays it along the surface */
+    const onCurve = (sx: number, x: number, y: number, w: number, dir: 1 | -1) => {
+      // the centre sits on the surface; the cluster turns with the surface's slope there, but only so far
+      const zi = surfZ(sx * (x - w / 2), y, dir), zc = surfZ(sx * x, y, dir);
+      const k = Math.max(0, Math.min(0.5, (dir * (zi - zc)) / (w / 2)));
+      return { z: zc + dir * 0.012, ry: dir * sx * Math.asin(k) };
+    };
+    /** parts built round the origin, then set into the body at (x, y, z) turned by ry */
+    const at = (g: THREE.BufferGeometry, x: number, y: number, z: number, ry: number) => g.applyMatrix4(new THREE.Matrix4().makeRotationY(ry).setPosition(x, y, z));
     for (const sx of [-1, 1]) {
-      head.push(box(sx * hx, hy, hz, 0.32, 0.1, 0.06, -0.25 * s.noseRound, sx * 0.25 * s.noseRound));
-      (sx < 0 ? indR : indL).push(box(sx * (hx + 0.2), hy - 0.02, hz - 0.06 * s.noseRound, 0.08, 0.06, 0.05, 0, sx * 0.5 * s.noseRound));
-      lampAt.head.push(new THREE.Vector3(sx * hx, hy, hz + 0.05));
-      const ty = Math.min(s.tailY - 0.12, s.belt - 0.05), tz = -hL + 0.02 + 0.12 * s.tailRound;
-      tail.push(box(sx * (s.width / 2 - 0.2), ty, tz, 0.3, 0.12, 0.05, 0.2 * s.tailRound, -sx * 0.25 * s.tailRound));
-      (sx < 0 ? indR : indL).push(box(sx * (s.width / 2 - 0.2), ty - 0.1, tz + 0.01, 0.2, 0.05, 0.05));
-      rev.push(box(sx * (s.width / 2 - 0.44), ty - 0.02, tz, 0.1, 0.06, 0.05));
-      lampAt.tail.push(new THREE.Vector3(sx * (s.width / 2 - 0.2), ty, tz - 0.05));
+      const H = onCurve(sx, hx, hy, hlW, 1);
+      const hz = H.z;
+      const put = (g: THREE.BufferGeometry) => at(g, sx * hx, hy, hz, H.ry);
+      trim.push(put(rbox(0, 0, -0.025, hlW + 0.03, hlH + 0.03, 0.09, 0.025)));
+      // the reflector fills the housing (it reads as a lamp by day, whatever the paint)
+      chrome.push(put(rbox(0, 0, 0.012, hlW * 0.94, hlH * 0.82, 0.04, 0.02)));
+      head.push(put(cyl(-sx * hlW * 0.2, -hlH * 0.04, 0.03, hlH * 0.3, 0.03, 'z', 18)));
+      head.push(put(cyl(sx * hlW * 0.12, -hlH * 0.04, 0.03, hlH * 0.24, 0.03, 'z', 16)));
+      head.push(put(rbox(0, hlH * 0.36, 0.03, hlW * 0.9, hlH * 0.12, 0.03, 0.005)));
+      (sx < 0 ? indR : indL).push(put(rbox(sx * (hlW / 2 - 0.04), -hlH * 0.3, 0.03, 0.07, hlH * 0.22, 0.03, 0.006)));
+      lampAt.head.push(new THREE.Vector3(sx * hx, hy, hz + 0.08));
+      // the tail: a housing, a lens, the indicator and the reverse lamp set into it
+      const T = onCurve(sx, tx, ty, tlW, -1);
+      const tz = T.z;
+      const putT = (g: THREE.BufferGeometry) => at(g, sx * tx, ty, tz, T.ry);
+      trim.push(putT(rbox(0, 0, 0.025, tlW + 0.03, tlH + 0.03, 0.08, 0.02)));
+      tail.push(putT(rbox(0, tlH * 0.14, -0.02, tlW * 0.96, tlH * 0.62, 0.04, 0.012)));
+      (sx < 0 ? indR : indL).push(putT(rbox(sx * tlW * 0.25, -tlH * 0.36, -0.018, tlW * 0.42, tlH * 0.2, 0.04, 0.006)));
+      rev.push(putT(rbox(-sx * tlW * 0.25, -tlH * 0.36, -0.018, tlW * 0.42, tlH * 0.2, 0.04, 0.006)));
+      lampAt.tail.push(new THREE.Vector3(sx * tx, ty, tz - 0.06));
       if (s.box) {
         // marker lights high on the box
-        tail.push(box(sx * (s.width / 2 - 0.1), s.box.height - 0.1, -hL - 0.01, 0.12, 0.06, 0.03));
+        tail.push(rbox(sx * (s.width / 2 - 0.1), s.box.height - 0.1, -hL - 0.01, 0.12, 0.06, 0.03, 0.01));
+        tail.push(rbox(sx * (s.width / 2 - 0.1), s.box.height - 0.1, s.box.from + 0.01, 0.12, 0.06, 0.03, 0.01));
       }
     }
-    void nose;
-    // ── mirrors and door handles
+    // a light bar joining the tails across the boot (saloons, coupés, the newer ones)
+    if (spec.cls === 'sedan' || sporty || spec.cls === 'estate' || spec.cls === 'suv' || spec.cls === 'limo') tail.push(rbox(0, ty + tlH * 0.3, surfZ(0, ty, -1) - 0.004, (tx - tlW / 2) * 2 + 0.02, 0.025, 0.03, 0.008));
+    // ── mirrors: a body-coloured housing on a stalk, the glass facing back
     const mz = s.aBase - 0.28;
     for (const sx of [-1, 1]) {
-      const secM = secs.reduce((a, q) => (Math.abs(q.z - mz) < Math.abs(a.z - mz) ? q : a), secs[0]);
-      trim.push(box(sx * (secM.hw + 0.1), s.belt + 0.1, mz, 0.18, 0.11, 0.06));
-      glass.push(box(sx * (secM.hw + 0.1), s.belt + 0.1, mz - 0.035, 0.15, 0.085, 0.01));
-      trim.push(box(sx * (secM.hw * 0.99 + 0.03), s.belt + 0.03, mz - 0.1, 0.03, 0.04, 0.12));
+      const secM = secAt(mz);
+      const mx = sx * (secM.hw + 0.13), my = s.belt + 0.1;
+      trim.push(box(sx * (secM.hw + 0.04), s.belt + 0.04, mz + 0.02, 0.1, 0.04, 0.08));
+      paint.push(rbox(mx, my, mz, big ? 0.14 : 0.2, big ? 0.3 : 0.12, 0.1, 0.035));
+      glass.push(rbox(mx, my, mz - 0.052, big ? 0.11 : 0.17, big ? 0.26 : 0.095, 0.005, 0.002));
+      (sx < 0 ? indR : indL).push(box(mx + sx * 0.06, my - 0.03, mz + 0.03, 0.06, 0.015, 0.03));
     }
+    // ── door handles, flush and chrome; shut lines; a chrome strip under the windows; black sills
     const handleZ = s.doors === 2 ? [s.aTop - 0.25, (s.aTop + s.cTop) / 2 - 0.2] : [s.aTop - 0.35];
     for (const z of handleZ) for (const sx of [-1, 1]) {
-      const sec = secs.reduce((a, q) => (Math.abs(q.z - z) < Math.abs(a.z - z) ? q : a), secs[0]);
-      chrome.push(box(sx * (sec.hw + 0.012), s.belt - 0.1, z, 0.02, 0.03, 0.14));
+      const sec = secAt(z);
+      chrome.push(rbox(sx * (sec.hw + 0.01), s.belt - 0.12, z, 0.025, 0.035, 0.16, 0.01));
     }
-    // ── exhaust
-    chrome.push(cyl(-s.width / 2 + 0.4, s.clearance + 0.05, -hL + 0.02, 0.04, 0.2, 'z', 10));
+    const dFront0 = s.aTop + 0.02, dBack0 = s.doors === 2 ? (s.aTop + s.cTop) / 2 + 0.02 : Math.max(s.cTop, s.aTop - 1.15);
+    const seams = s.doors === 2 ? [dFront0, dBack0, s.cTop - 0.02] : [dFront0, dBack0];
+    for (const z of seams) for (const sx of [-1, 1]) {
+      const sec = secAt(z);
+      if (sec.deck - sec.bot < 0.2) continue;
+      trim.push(box(sx * (sec.hw + 0.002), (sec.deck + sec.bot) / 2 + 0.02, z, 0.006, (sec.deck - sec.bot) * 0.82, 0.008));
+    }
+    if (!big) {
+      const zA = s.aBase - 0.05, zC = s.cBase + 0.05;
+      for (const sx of [-1, 1]) {
+        const segs = 10;
+        for (let i = 0; i < segs; i++) {
+          const z0 = zC + ((zA - zC) * i) / segs, z1 = zC + ((zA - zC) * (i + 1)) / segs, zc = (z0 + z1) / 2;
+          const q = secAt(zc);
+          if (q.top < 0) continue;
+          (spec.cls === 'offroad' || spec.cls === 'pickup' ? trim : chrome).push(box(sx * (q.hw * 0.985 + 0.004), q.deck + 0.005, zc, 0.012, 0.02, z1 - z0 + 0.01));
+        }
+      }
+    }
+    // sills between the arches, and the arch liners (dark, so the wheels sit in wells, not on a flat side)
+    const axlesAll = [m.axleF, m.axleR, ...(m.extraAxles ?? [])].sort((a, b) => b - a);
+    for (const sx of [-1, 1]) {
+      for (let i = 0; i < axlesAll.length - 1; i++) {
+        const z0 = axlesAll[i + 1] + m.wheelR + 0.12, z1 = axlesAll[i] - m.wheelR - 0.12;
+        if (z1 - z0 < 0.3) continue;
+        const q = secAt((z0 + z1) / 2);
+        trim.push(rbox(sx * (q.hw - 0.01), q.bot + 0.05, (z0 + z1) / 2, 0.05, 0.1, z1 - z0, 0.02));
+      }
+      for (const az of axlesAll) {
+        const q = secAt(az);
+        trim.push(archLiner(sx * (q.hw - m.wheelW / 2 - 0.04), m.wheelR, az, m.wheelR + 0.07, m.wheelW + 0.12));
+      }
+    }
+    // ── exhaust: one pipe, or two for the quick ones
+    for (const ex of sporty ? [-s.width / 2 + 0.35, s.width / 2 - 0.35] : [-s.width / 2 + 0.4]) {
+      chrome.push(cyl(ex, s.clearance + 0.08, surfZ(ex, s.clearance + 0.2, -1) - 0.02, sporty ? 0.05 : 0.035, 0.22, 'z', 14));
+      trim.push(cyl(ex, s.clearance + 0.08, surfZ(ex, s.clearance + 0.2, -1) - 0.08, sporty ? 0.04 : 0.028, 0.2, 'z', 12));
+    }
     // ── interior: dash, seats, a console (seen through the glass)
     // the dash sits under the screen, below the sightline (the driver's eyes are ~0.25 m above it)
     const dz = Math.min(s.aBase - 0.08, spec.wheel.z + 0.4);
@@ -513,8 +719,33 @@ function classGeo(spec: VehicleSpec): ClassGeo {
     if (spec.livery === 'police') {
       trim.push(box(0, s.height + 0.05, (s.aTop + s.cTop) / 2, 1.2, 0.06, 0.26));
       beacons.push(box(-0.32, s.height + 0.12, (s.aTop + s.cTop) / 2, 0.5, 0.1, 0.24), box(0.32, s.height + 0.12, (s.aTop + s.cTop) / 2, 0.5, 0.1, 0.24));
-      // push bar
-      trim.push(box(0, s.clearance + 0.4, hL + 0.1, s.width * 0.55, 0.36, 0.06));
+      // push bar: a frame, so the grille and plate show through
+      for (const x of [-s.width * 0.25, s.width * 0.25]) trim.push(rbox(x, s.clearance + 0.36, hL + 0.1, 0.06, 0.5, 0.06, 0.02));
+      for (const y of [s.clearance + 0.2, s.clearance + 0.56]) trim.push(rbox(0, y, hL + 0.12, s.width * 0.56, 0.06, 0.06, 0.02));
+    }
+    if (s.open) {
+      // a hoop behind each seat, and the hood folded down behind them
+      for (const st of [spec.seat, ...spec.seats]) trim.push(rbox(st.x, s.belt + 0.25, st.z - 0.45, 0.32, 0.36, 0.06, 0.05));
+      trim.push(rbox(0, s.belt + 0.04, s.cTop - 0.15, s.width * 0.8, 0.12, 0.5, 0.05));
+    }
+    if (spec.livery === 'fire' && s.box) {
+      // a light bar over the cab, a ladder along the roof, lockers down the sides
+      trim.push(rbox(0, s.height + 0.04, s.aTop - 0.4, 1.6, 0.08, 0.3, 0.03));
+      beacons.push(rbox(-0.45, s.height + 0.13, s.aTop - 0.4, 0.6, 0.12, 0.26, 0.04), rbox(0.45, s.height + 0.13, s.aTop - 0.4, 0.6, 0.12, 0.26, 0.04));
+      const lz0 = -hL + 0.4, lz1 = s.box.from - 0.2;
+      for (const sx of [-0.45, 0.45]) chrome.push(box(sx, s.box.height + 0.16, (lz0 + lz1) / 2, 0.06, 0.08, lz1 - lz0));
+      for (let z = lz0; z <= lz1; z += 0.35) chrome.push(box(0, s.box.height + 0.16, z, 0.9, 0.035, 0.035));
+      for (const sx of [-1, 1]) {
+        for (let z = -hL + 0.9; z < s.box.from - 0.6; z += 1.25) chrome.push(rbox(sx * (s.width / 2 + 0.005), s.box.height * 0.5, z, 0.012, s.box.height * 0.55, 1.1, 0.004));
+        paint.push(box(sx * (s.width / 2 + 0.008), s.box.height * 0.22, (s.box.from - hL) / 2, 0.008, 0.1, s.box.from + hL - 0.2));
+      }
+      beacons.push(rbox(-0.9, s.box.height + 0.06, -hL + 0.3, 0.2, 0.12, 0.14, 0.03), rbox(0.9, s.box.height + 0.06, -hL + 0.3, 0.2, 0.12, 0.14, 0.03));
+    }
+    if (spec.cls === 'refuse' && s.box) {
+      // the hopper at the back, its hinge, and the arm that lifts the bins
+      trim.push(rbox(0, s.clearance + 1.2, -hL + 0.45, s.width - 0.1, 1.6, 0.9, 0.08));
+      chrome.push(cyl(0, s.box.height - 0.2, -hL + 0.9, 0.08, s.width - 0.2, 'x', 12));
+      for (const sx of [-1, 1]) trim.push(box(sx * (s.width / 2 - 0.25), s.clearance + 0.6, -hL - 0.05, 0.12, 1.0, 0.12));
     }
     if (spec.livery === 'ambulance' && s.box) {
       beacons.push(box(-0.7, s.box.height + 0.08, s.box.from - 0.2, 0.3, 0.12, 0.14), box(0.7, s.box.height + 0.08, s.box.from - 0.2, 0.3, 0.12, 0.14));
@@ -523,30 +754,52 @@ function classGeo(spec: VehicleSpec): ClassGeo {
     }
   }
 
-  // ── wheels: a rounded tyre and a spoked rim, axis along x
+  // ── wheels: a tyre with a sidewall and a tread shoulder; a dished rim
+  // (a lip, twin spokes, a centre cap and nuts), a disc behind the spokes,
+  // and a caliper that stays put while the wheel turns. Axis along x, outer face +x.
   const R = m.wheelR, Wd = m.wheelW;
   const prof: THREE.Vector2[] = [];
-  const ri = R * 0.66;
-  for (let i = 0; i <= 10; i++) {
-    const a = -Math.PI / 2 + (i / 10) * Math.PI;
-    prof.push(new THREE.Vector2(R - 0.035 + 0.035 * Math.cos(a) - (1 - Math.cos(a)) * 0.01, (Wd / 2) * Math.sin(a)));
+  const ri = R * (m.bike ? 0.72 : big0(spec) ? 0.6 : spec.cls === 'sports' || spec.cls === 'muscle' ? 0.74 : 0.68);
+  for (let i = 0; i <= 14; i++) {
+    const a = -Math.PI / 2 + (i / 14) * Math.PI;
+    // a squarer shoulder than a semicircle, and a slight bulge in the sidewall
+    const c = Math.sign(Math.cos(a)) * Math.pow(Math.abs(Math.cos(a)), 0.55);
+    prof.push(new THREE.Vector2(R - 0.04 + 0.04 * c, (Wd / 2) * Math.sin(a) * (1 + 0.04 * Math.cos(a))));
   }
-  prof.unshift(new THREE.Vector2(ri, -Wd / 2 + 0.01));
-  prof.push(new THREE.Vector2(ri, Wd / 2 - 0.01));
-  const tire = new THREE.LatheGeometry(prof, 24);
+  prof.unshift(new THREE.Vector2(ri, -Wd / 2 + 0.01), new THREE.Vector2(ri + 0.02, -Wd / 2));
+  prof.push(new THREE.Vector2(ri + 0.02, Wd / 2), new THREE.Vector2(ri, Wd / 2 - 0.01));
+  const tire = new THREE.LatheGeometry(prof, 32);
   tire.rotateZ(Math.PI / 2);
-  const spokes = m.bike ? 5 : spec.cls === 'truck' || spec.cls === 'bus' ? 8 : 6;
-  const rimParts: THREE.BufferGeometry[] = [cyl(0, 0, 0, ri, Wd * 0.7, 'x', 20), cyl(Wd * 0.2, 0, 0, ri * 0.25, Wd * 0.5, 'x', 10)];
+  const spokes = m.bike ? 5 : big0(spec) ? 8 : spec.cls === 'offroad' || spec.cls === 'pickup' ? 6 : 5;
+  const face = Wd * 0.32;
+  const rimParts: THREE.BufferGeometry[] = [
+    // the barrel and the lip
+    new THREE.CylinderGeometry(ri, ri, Wd * 0.86, 28, 1, true).rotateZ(Math.PI / 2),
+    new THREE.TorusGeometry(ri - 0.008, 0.014, 6, 32).rotateY(Math.PI / 2).translate(Wd * 0.43, 0, 0),
+    // the disc and the hub
+    cyl(Wd * 0.02, 0, 0, ri * 0.74, 0.025, 'x', 24),
+    cyl(face - 0.01, 0, 0, ri * 0.22, 0.04, 'x', 16),
+    cyl(face + 0.02, 0, 0, ri * 0.13, 0.03, 'x', 14),
+  ];
   for (let i = 0; i < spokes; i++) {
     const a = (i / spokes) * Math.PI * 2;
-    rimParts.push(box(Wd * 0.28, Math.cos(a) * ri * 0.5, Math.sin(a) * ri * 0.5, 0.03, ri * 0.95, 0.05, a));
+    for (const off of big0(spec) || m.bike ? [0] : [-0.09, 0.09]) {
+      const aa = a + off;
+      // each spoke runs from the hub out to the lip, set back toward the rim at its end (the dish)
+      rimParts.push(box(face - 0.012, Math.cos(aa) * ri * 0.58, Math.sin(aa) * ri * 0.58, 0.028, ri * 0.8, big0(spec) ? 0.05 : 0.032, aa));
+    }
+    // a wheel nut between each pair
+    const an = a + Math.PI / spokes;
+    rimParts.push(cyl(face + 0.012, Math.cos(an) * ri * 0.16, Math.sin(an) * ri * 0.16, 0.012, 0.025, 'x', 6));
   }
   const rim = merge(rimParts);
+  const caliper = merge([rbox(Wd * 0.06, ri * 0.5, -ri * 0.45, 0.07, ri * 0.42, ri * 0.32, 0.02, -0.6)]);
   const wiper = box(0.27, 0, 0, 0.54, 0.018, 0.012);
 
   const cg: ClassGeo = {
     paint: merge(paint), glass: merge(glass.length ? glass : [box(0, -9, 0, 0.01, 0.01, 0.01)]), trim: merge(trim), chrome: merge(chrome.length ? chrome : [box(0, -9, 0, 0.01, 0.01, 0.01)]),
-    interior: merge(interior.length ? interior : [box(0, -9, 0, 0.01, 0.01, 0.01)]), door: doors, tire, rim, wheelGeo: tire, wiper,
+    interior: merge(interior.length ? interior : [box(0, -9, 0, 0.01, 0.01, 0.01)]), door: doors, tire, rim, caliper, wheelGeo: tire, wiper,
+    plates: plates.length ? mergeGeometries(plates, false) : null,
     lamps: {
       head: merge(head), tail: merge(tail), indL: merge(indL), indR: merge(indR), reverse: merge(rev), beacons: beacons.map((b) => merge([b])),
     },
@@ -569,10 +822,11 @@ export function buildVehicle(spec: VehicleSpec, color: number): VehicleModel {
   const lamp = (c: number, e: number) => new THREE.MeshStandardMaterial({ color: c, emissive: e, emissiveIntensity: 0, roughness: 0.2 });
   const mats: VehicleMats = {
     paint, glass, trim, chrome, interior,
-    head: lamp(0xdad8d0, 0xfff2d8), tail: lamp(0x5a0c0a, 0xff1a0a), indL: lamp(0x8a5a10, 0xffa020), indR: lamp(0x8a5a10, 0xffa020), reverse: lamp(0xc8c8c8, 0xffffff),
-    beacon: spec.livery === 'police' ? [lamp(0x3a0a0a, 0xff2010), lamp(0x0a0a3a, 0x2050ff)] : spec.livery === 'ambulance' ? [lamp(0x3a0a0a, 0xff2010), lamp(0x3a0a0a, 0xff2010)] : [],
+    head: lamp(0xdad8d0, 0xfff2d8), tail: lamp(0xa0140e, 0xff1a0a), indL: lamp(0x8a5a10, 0xffa020), indR: lamp(0x8a5a10, 0xffa020), reverse: lamp(0xc8c8c8, 0xffffff),
+    beacon: spec.livery === 'police' ? [lamp(0x3a0a0a, 0xff2010), lamp(0x0a0a3a, 0x2050ff)] : spec.livery === 'ambulance' || spec.livery === 'fire' ? [lamp(0x3a0a0a, 0xff2010), lamp(0x3a0a0a, 0xff2010)] : [],
     rubber: new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.92 }),
-    rim: new THREE.MeshStandardMaterial({ color: spec.cls === 'sports' ? 0x2a2a2c : 0x9a9a9e, roughness: 0.3, metalness: 0.9 }),
+    rim: new THREE.MeshStandardMaterial({ color: spec.cls === 'sports' || spec.cls === 'muscle' ? 0x2a2a2c : spec.cls === 'offroad' || spec.cls === 'armoured' ? 0x3a3a36 : 0xa8a8ac, roughness: 0.28, metalness: 0.9 }),
+    caliper: new THREE.MeshStandardMaterial({ color: spec.cls === 'sports' || spec.cls === 'roadster' ? 0xb01a14 : spec.cls === 'muscle' ? 0xc8a020 : 0x3a3a3c, roughness: 0.45, metalness: 0.3 }),
   };
   patchVehicle(paint, wear, 'paint');
   patchVehicle(glass, wear, 'glass');
@@ -599,6 +853,7 @@ export function buildVehicle(spec: VehicleSpec, color: number): VehicleModel {
   mesh(cg.lamps.indR, mats.indR, false);
   mesh(cg.lamps.reverse, mats.reverse, false);
   cg.lamps.beacons.forEach((g, i) => mesh(g, mats.beacon[i % Math.max(1, mats.beacon.length)] ?? mats.tail, false));
+  if (cg.plates) mesh(cg.plates, plateMaterial(), false);
 
   // doors: hidden in the body until they open (the body's own skin is under them)
   const doors: VehicleModel['doors'] = [];
@@ -664,6 +919,12 @@ export function buildVehicle(spec: VehicleSpec, color: number): VehicleModel {
       if (lx < 0) r.scale.x = -1;
       spin.add(t, r);
       steer.add(spin);
+      // the caliper rides with the steering, not the spin
+      if (!m.bike) {
+        const cal = new THREE.Mesh(cg.caliper, mats.caliper);
+        if (lx < 0) cal.scale.x = -1;
+        steer.add(cal);
+      }
       root.add(steer);
       wheels.push({ lx, lz: z, r: m.wheelR, steer, spin, front });
     }
@@ -674,7 +935,7 @@ export function buildVehicle(spec: VehicleSpec, color: number): VehicleModel {
     lampAt: { head: cg.lampAt.head.map((v) => v.clone()), tail: cg.lampAt.tail.map((v) => v.clone()) },
     dispose() {
       // geometry is shared per class; materials are this car's own
-      for (const mm of [paint, glass, trim, chrome, interior, mats.head, mats.tail, mats.indL, mats.indR, mats.reverse, mats.rubber, mats.rim, ...mats.beacon]) mm.dispose();
+      for (const mm of [paint, glass, trim, chrome, interior, mats.head, mats.tail, mats.indL, mats.indR, mats.reverse, mats.rubber, mats.rim, mats.caliper, ...mats.beacon]) mm.dispose();
       rimT.geometry.dispose();
       hub.geometry.dispose();
       spoke.geometry.dispose();
@@ -741,14 +1002,17 @@ export function staticVehicleParts(spec: VehicleSpec) {
   ];
   const m = spec.mech;
   const axles = [m.axleF, m.axleR, ...(m.extraAxles ?? [])];
-  const tires: THREE.BufferGeometry[] = [], rims: THREE.BufferGeometry[] = [];
+  const tires: THREE.BufferGeometry[] = [], rims: THREE.BufferGeometry[] = [], cals: THREE.BufferGeometry[] = [];
   for (const z of axles) for (const lx of m.bike ? [0] : [-m.track / 2, m.track / 2]) {
     tires.push(cg.tire.clone().translate(lx, m.wheelR, z));
+    // mirrored for the left-hand side, with the winding put back so it isn't inside out
     const r = cg.rim.clone();
-    if (lx < 0) r.scale(-1, 1, 1);
-    rims.push(r.translate(lx, m.wheelR, z));
+    const c = cg.caliper.clone();
+    rims.push((lx < 0 ? flipWinding(r.scale(-1, 1, 1)) : r).translate(lx, m.wheelR, z));
+    if (!m.bike) cals.push((lx < 0 ? flipWinding(c.scale(-1, 1, 1)) : c).translate(lx, m.wheelR, z));
   }
   out.push({ kind: 'rubber', geo: merge(tires) }, { kind: 'rim', geo: merge(rims) });
+  if (cals.length) out.push({ kind: 'trim', geo: merge(cals) });
   STATIC.set(spec.cls, out);
   return out;
 }

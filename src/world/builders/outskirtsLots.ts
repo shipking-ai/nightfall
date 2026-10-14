@@ -18,8 +18,11 @@ import type { Rng } from '../rng';
  * people in them.
  */
 
-export type LotKind = 'gas' | 'diner' | 'motel' | 'park' | 'carpark' | 'site' | 'market';
-export const LOT_WIDTH: Record<LotKind, number> = { gas: 36, diner: 30, motel: 40, park: 34, carpark: 34, site: 38, market: 32 };
+export type LotKind = 'gas' | 'diner' | 'motel' | 'park' | 'carpark' | 'site' | 'market' | 'depot';
+export const LOT_WIDTH: Record<LotKind, number> = { gas: 36, diner: 30, motel: 40, park: 34, carpark: 34, site: 38, market: 32, depot: 30 };
+
+/** what's parked out here: the everyday mix */
+const EVERYDAY = ['sedan', 'suv', 'hatch', 'estate', 'city', 'sedan', 'suv', 'muscle', 'pickup', 'roadster', 'offroad'];
 
 /** What a slice's lots hand back: things to press, and people to stand there. */
 export interface LotOut {
@@ -196,7 +199,7 @@ const y0 = PAD_H;
 
 export function buildLot(kind: LotKind, f: LotFrame) {
   const L = new Frame(f);
-  ({ gas, diner, motel, park, carpark, site, market } as const)[kind](L);
+  ({ gas, diner, motel, park, carpark, site, market, depot } as const)[kind](L);
 }
 
 /** All-night gas station: a canopy lit cold, pumps, a kiosk with a window you can buy through, and a till. */
@@ -219,8 +222,8 @@ function gas(L: Frame) {
     }
   }
   // someone filling up, someone just left
-  parkedCar(ctx, L.x(14), L.z(8), Math.PI / 2, L.rng.pick(CAR_COLORS));
-  if (L.rng.chance(0.5)) parkedCar(ctx, L.x(6.5), L.z(14.5), Math.PI / 2, L.rng.pick(CAR_COLORS));
+  parkedCar(ctx, L.x(14), L.z(8), Math.PI / 2, L.rng.pick(CAR_COLORS), { kind: L.rng.pick(EVERYDAY) });
+  if (L.rng.chance(0.5)) parkedCar(ctx, L.x(6.5), L.z(14.5), Math.PI / 2, L.rng.pick(CAR_COLORS), { kind: L.rng.pick(EVERYDAY) });
   // the kiosk
   L.solid(m.concrete, 30.5, 13, y0, 9, 3.6, 12, 0xbab4a8, true);
   L.box(glowWin, 30.5, 6.97, y0 + 0.5, 7.6, 2.3, 0.06, undefined, false);
@@ -291,7 +294,7 @@ function motel(L: Frame) {
   L.decal(wordSign('VACANCY', '#ff3b2f'), 1.5, y0 + 6.9, 1.25, 3.2, 0.8, 2.4);
   L.box(m.iron, 1.5, 1.5, y0 + 7, 5.2, 2.6, 0.4);
   // cars nosed in
-  for (let u = 6; u < 36; u += 6.5) if (rng.chance(0.55)) parkedCar(ctx, L.x(u), L.z(8.5), L.toRoad, rng.pick(CAR_COLORS), { van: rng.chance(0.15) });
+  for (let u = 6; u < 36; u += 6.5) if (rng.chance(0.55)) parkedCar(ctx, L.x(u), L.z(8.5), L.toRoad, rng.pick(CAR_COLORS), rng.chance(0.15) ? { van: true } : { kind: rng.pick(EVERYDAY) });
   L.box(m.paint, 31, 12.4, y0, 0.8, 1.7, 0.7, 0x9fb4c0);
   L.point('room', 36, 11.6, { name: 'Motel office', verb: 'Use', lines: [], action: 'sleep', price: 15 }, 1.8);
   L.point('ice', 31, 11.4, { name: 'Ice machine', verb: 'Use', lines: ['It hums and gives you nothing.', 'Then, much later, one cube.'] }, 1.6);
@@ -354,7 +357,7 @@ function carpark(L: Frame) {
   for (const [u, w] of bays) {
     if (!rng.chance(0.5)) continue;
     const back = w > 10;
-    parkedCar(ctx, L.x(u), L.z(w), back ? L.toRoad : L.toRoad + Math.PI, rng.pick(CAR_COLORS), { van: rng.chance(0.12) });
+    parkedCar(ctx, L.x(u), L.z(w), back ? L.toRoad : L.toRoad + Math.PI, rng.pick(CAR_COLORS), rng.chance(0.12) ? { van: true } : { kind: rng.pick(EVERYDAY) });
     if (!stash && rng.chance(0.4)) stash = [u + 1.4, w];
   }
   // the booth and its barrier
@@ -435,6 +438,34 @@ function market(L: Frame) {
   for (const u of [12.4, 19.6]) L.cyl(m.wood, u, 0.8, y0, 0.1, 4.2);
   L.person('talk', 15, 8, Math.PI / 2, 'mkt');
   L.person('talk', 16.2, 8, -Math.PI / 2, 'mkt');
+}
+
+/** The council depot: two bays with their doors up, a fire engine and a refuse truck nosed out, a lit office. */
+function depot(L: Frame) {
+  const { ctx, rng } = L;
+  const m = ctx.mats;
+  // the shed: back wall, sides, roof, a pier between the bays
+  L.solid(m.concrete, 15, 20.5, y0, 28, 7, 1, 0x8a8478, true);
+  for (const u of [1.5, 15, 28.5]) L.solid(m.concrete, u, 13.5, y0, u === 15 ? 1.2 : 1, 7, 14, 0x8a8478, true);
+  L.box(m.concrete, 15, 13.5, y0 + 7, 28.5, 0.5, 14.5, 0x6a665e);
+  // the bays inside, lit; the doors rolled up into their boxes
+  for (const u of [8.2, 21.8]) {
+    L.box(glowWin, u, 19.9, y0 + 0.3, 11, 5.6, 0.05, undefined, false);
+    L.box(m.metal, u, 6.6, y0 + 6.2, 12, 0.8, 0.6);
+    L.box(m.paint, u, 6.4, y0 + 5.8, 12, 0.08, 0.05, 0xd8a020, false);
+  }
+  L.decal(wordSign('DISTRICT 03 · FIRE & STREETS', '#ffffff', '#7a140e'), 15, y0 + 7.8, 6.3, 12, 1.5, 1.2);
+  // the vehicles, nosed out toward the road
+  parkedCar(ctx, L.x(8.2), L.z(12.5), L.toRoad, 0xa8140e, { kind: 'firetruck' });
+  parkedCar(ctx, L.x(21.8), L.z(12.5), L.toRoad, rng.pick([0x2e5a32, 0xd8d4cc]), { kind: 'refuse' });
+  // the apron, striped where you mustn't park
+  L.box(m.asphalt, 15, 3.5, y0, 28, 0.03, 6, undefined, false);
+  for (let u = 3; u < 28; u += 1.6) L.box(m.paint, u, 1.6, y0 + 0.035, 0.6, 0.01, 2.6, 0xd8a020, false);
+  L.point('notice', 15, 1, { name: 'Depot notice', verb: 'Read', lines: ['KEEP CLEAR · APPLIANCES TURN OUT AT ANY TIME', 'Someone has added in marker: \u201cthey turn out at 3:17. every time.\u201d'] }, 1.8);
+  L.point('locker', 2.6, 8, { name: 'Crew locker', verb: 'Search', lines: [], action: 'stash', cash: [30, 120], keep: true }, 1.6);
+  L.person('smoke', 1, 6.5, L.toRoad + 0.5);
+  L.person('talk', 14.4, 5, Math.PI / 2, 'depot');
+  L.person('talk', 15.6, 5, -Math.PI / 2, 'depot');
 }
 
 /* ── the street itself ─────────────────────────────────────── */

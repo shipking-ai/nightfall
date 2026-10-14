@@ -161,7 +161,9 @@ export function parkedCar(ctx: WorldContext, x: number, z: number, ry: number, c
   }
   const P = M(x, 0, z, 1, 1, 1, ry);
   // the same car you could drive (vehicles/model.ts), baked into the street
-  const spec = SPECS[opts.van ? 'van' : opts.kind === 'truck' ? 'truck' : opts.kind === 'bus' ? 'bus' : opts.kind === 'motorcycle' ? 'motorcycle' : ((x * 7 + z * 3) & 3) === 0 ? 'hatch' : 'sedan'];
+  // any class by name; otherwise a mix of the everyday ones, the same for the same spot every time
+  const everyday = ['sedan', 'hatch', 'suv', 'estate', 'sedan', 'city', 'hatch', 'suv'] as const;
+  const spec = SPECS[opts.van ? 'van' : opts.kind && opts.kind in SPECS ? (opts.kind as keyof typeof SPECS) : everyday[Math.abs(Math.floor(x * 7 + z * 3)) % everyday.length]];
   const mat = { paint: ctx.mats.paint, glass: ctx.mats.darkGlass, trim: ctx.mats.rubber, chrome: ctx.mats.metal, interior: ctx.mats.rubber, head: ctx.mats.lampCold, tail: ctx.mats.lampRed, rubber: ctx.mats.rubber, rim: ctx.mats.metal };
   for (const part of staticVehicleParts(spec)) ctx.batch.add(mat[part.kind], part.geo, P, { color: part.kind === 'paint' ? color : undefined, cast: part.kind === 'paint' || part.kind === 'rubber' });
   ctx.collision.add(...footprint(x, z, ry, opts.van ? 2.1 : 1.9, opts.van ? 5.2 : 4.5, opts.van ? 2.4 : 1.5));

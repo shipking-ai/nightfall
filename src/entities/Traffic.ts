@@ -71,11 +71,17 @@ export const TAXI_COLOR = 0xa8842c;
 const TRAFFIC_CLASSES: [VehicleClass, number][] = [
   ['sedan', 5],
   ['hatch', 4],
+  ['suv', 3],
+  ['estate', 2],
+  ['city', 2],
   ['sports', 1.2],
+  ['muscle', 0.8],
+  ['roadster', 0.6],
   ['pickup', 1.5],
   ['offroad', 1],
   ['van', 1.5],
   ['motorcycle', 1.5],
+  ['limo', 0.3],
 ];
 
 /**

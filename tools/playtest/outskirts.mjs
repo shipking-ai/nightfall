@@ -36,7 +36,7 @@ for (const [x, z, yaw] of views) {
 const places = await ev(() => {
   const seen = new Set(), out = [];
   for (const s of window.nf.world.interact) {
-    const m = /^osk-?\d+:(\d)(\d):(coffee|meal|room|statue|glovebox|toolbox|noodles)$/.exec(s.id);
+    const m = /^osk-?\d+:(\d)(\d):(coffee|meal|room|statue|glovebox|toolbox|noodles|notice)$/.exec(s.id);
     if (!m || seen.has(m[3])) continue;
     seen.add(m[3]);
     const band = [[-118, -48], [-32, 46], [62, 134]][+m[1]];
@@ -64,7 +64,9 @@ const used = await ev(async () => {
   return res;
 });
 for (const u of used) {
-  await ev((id) => { const nf = window.nf; const s = nf.world.interact.find((x) => x.id === id); nf.player.place(s.pos.x, 0.15, s.pos.z, 0); }, u.id);
+  // the slice it was in may have been dropped since (we've moved): skip it then
+  const there = await ev((id) => { const nf = window.nf; const s = nf.world.interact.find((x) => x.id === id); if (!s) return false; nf.player.place(s.pos.x, 0.15, s.pos.z, 0); return true; }, u.id);
+  if (!there) { console.log('use', u.id, 'gone (slice dropped)'); continue; }
   await step(0.6);
   const cur = await ev(() => window.nf.interaction.current?.spot.id ?? null);
   await t.press('X'); await step(0.4);

@@ -46,7 +46,7 @@ interface Slice {
 
 /** which faces of which blocks front a road: [band, face (0 = north edge, 1 = south edge)] */
 const ROAD_FACES: [number, 0 | 1][] = [[0, 1], [1, 0], [1, 1], [2, 0], [2, 1]];
-const KINDS: LotKind[] = ['gas', 'diner', 'motel', 'park', 'carpark', 'site', 'market'];
+const KINDS: LotKind[] = ['gas', 'diner', 'motel', 'park', 'carpark', 'site', 'market', 'depot'];
 
 export class Outskirts {
   group = new THREE.Group();

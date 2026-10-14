@@ -11,11 +11,16 @@
   },
   "dependencies": {
     "@dgreenheck/ez-tree": "^1.1.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@fontsource/instrument-serif": "^5.3.0",
     "@supabase/realtime-js": "^2.117.1",
     "@supabase/supabase-js": "^2.117.1",
     "convex": "^1.46.0",
     "firebase": "^12.19.0",
-    "three": "^0.186.0"
+    "stats-gl": "^4.2.3",
+    "three": "^0.186.0",
+    "zzfx": "^1.4.0"
   },
   "devDependencies": {
     "@types/three": "^0.186.0",
