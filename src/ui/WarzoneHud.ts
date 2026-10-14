@@ -4,6 +4,8 @@ import { glyph, hintRow } from '../input/glyphs';
 import type { Action } from '../input/actions';
 import type { CapturePoint, Unit } from '../modes/warzone/Soldier';
 import type { Loadout } from '../modes/warzone/weapons';
+import { WEAPON } from '../modes/warzone/arsenal';
+import { Minimap } from './Minimap';
 
 /**
  * WARZONE's interface: the score and the clock at the top with the three
@@ -45,6 +47,17 @@ export class WarzoneHud {
   private magEl: HTMLElement;
   private reserveEl: HTMLElement;
   private otherEl: HTMLElement;
+  private modeEl: HTMLElement;
+  private gearEl: HTMLElement;
+  private flashEl: HTMLElement;
+  private stunEl: HTMLElement;
+  private lastGear = '';
+  private streakEl: HTMLElement;
+  private progEl: HTMLElement;
+  minimap = new Minimap();
+  private radioEl: HTMLElement;
+  private lastStreak = '';
+  private scopeEl: HTMLElement;
   private reloadEl: HTMLElement;
   private cross: HTMLElement;
   private dot: HTMLElement;
@@ -96,8 +109,16 @@ export class WarzoneHud {
     this.magEl = h('b');
     this.reserveEl = h('span', { class: 'wz-gun__res' });
     this.otherEl = h('span', { class: 'wz-gun__other meta' });
+    this.modeEl = h('span', { class: 'wz-gun__mode meta' });
+    this.gearEl = h('div', { class: 'wz-gear' });
+    this.streakEl = h('div', { class: 'wz-streaks' });
+    this.radioEl = h('div', { class: 'wz-radio' });
+    this.progEl = h('div', { class: 'wz-prog' }, h('span', { class: 'meta' }), h('i', {}, h('b')));
+    this.flashEl = h('div', { class: 'wz-flash' });
+    this.stunEl = h('div', { class: 'wz-stun' });
+    this.scopeEl = h('div', { class: 'wz-scope' }, h('i', { class: 'wz-scope__h' }), h('i', { class: 'wz-scope__v' }));
     this.reloadEl = h('i', { class: 'wz-gun__reload' });
-    const gun = h('div', { class: 'wz-gun' }, this.gunEl, h('div', { class: 'wz-gun__ammo' }, this.magEl, this.reserveEl), this.reloadEl, this.otherEl);
+    const gun = h('div', { class: 'wz-gun' }, h('div', { class: 'wz-gun__head' }, this.modeEl, this.gunEl), h('div', { class: 'wz-gun__ammo' }, this.magEl, this.reserveEl), this.reloadEl, this.otherEl, this.gearEl);
     this.cross = h('div', { class: 'wz-cross' }, h('i'), h('i'), h('i'), h('i'));
     this.dot = h('div', { class: 'wz-dot' });
     this.hitEl = h('div', { class: 'wz-hit' }, h('i'), h('i'), h('i'), h('i'));
@@ -113,7 +134,7 @@ export class WarzoneHud {
       this.deathEl,
       this.loadTitle,
       this.loadCards,
-      h('div', { class: 'wz-load__help' }, h('span', { class: 'hintrow' }, glyph('tabPrev'), glyph('tabNext'), h('span', { class: 'meta' }, 'Loadout')), h('span', { class: 'hintrow' }, glyph('jump'), h('span', { class: 'meta' }, 'Deploy'))),
+      h('div', { class: 'wz-load__help' }, h('span', { class: 'hintrow' }, glyph('tabPrev'), glyph('tabNext'), h('span', { class: 'meta' }, 'Loadout')), h('span', { class: 'hintrow' }, glyph('interact'), h('span', { class: 'meta' }, 'Gunsmith')), h('span', { class: 'hintrow' }, glyph('jump'), h('span', { class: 'meta' }, 'Deploy'))),
     );
     this.boardEl = h('div', { class: 'wz-board' });
     this.hints = h('div', { class: 'wz-hints' }, ...HINTS.map(([a, t]) => hintRow(a, t)));
@@ -146,6 +167,14 @@ export class WarzoneHud {
       vitals,
       gun,
       this.cross,
+      this.minimap.el,
+      this.radioEl,
+      this.minimap.compass,
+      this.scopeEl,
+      this.streakEl,
+      this.progEl,
+      this.stunEl,
+      this.flashEl,
       this.dot,
       this.hitEl,
       this.annEl,
@@ -190,9 +219,34 @@ export class WarzoneHud {
     this.clockEl.textContent = `${Math.floor(c / 60)}:${String(c % 60).padStart(2, '0')}`;
   }
 
-  points(ps: CapturePoint[], team: 0 | 1) {
+  /** Your squad on the radio: a line that fades. */
+  radio(name: string, text: string) {
+    const row = h('div', { class: 'wz-radio__line' }, h('b', {}, name), ` ${text}`);
+    this.radioEl.prepend(row);
+    while (this.radioEl.children.length > 3) this.radioEl.lastChild!.remove();
+    setTimeout(() => row.classList.add('is-gone'), 3500);
+    setTimeout(() => row.remove(), 4200);
+  }
+
+  /** Hardline hides the map, the compass and the markers. */
+  hardline(on: boolean) {
+    this.el.classList.toggle('is-hardline', on);
+  }
+
+  /** A held action's progress in the middle of the screen (planting, defusing); null hides it. */
+  progress(label: string | null, k: number) {
+    setOn(this.progEl, !!label);
+    if (!label) return;
+    (this.progEl.firstChild as HTMLElement).textContent = label;
+    (this.progEl.lastChild!.firstChild as HTMLElement).style.transform = `scaleX(${Math.min(1, Math.max(0, k)).toFixed(3)})`;
+  }
+
+  points(ps: CapturePoint[], team: 0 | 1, labels?: string[]) {
+    this.pointEls.forEach((e, i) => (e.style.display = i < ps.length ? '' : 'none'));
     ps.forEach((p, i) => {
       const e = this.pointEls[i];
+      const label = labels?.[i] ?? p.id;
+      if (e.lastChild!.textContent !== label) e.lastChild!.textContent = label;
       e.dataset.owner = p.owner < 0 ? 'none' : p.owner === team ? 'us' : 'them';
       e.dataset.cap = p.capTeam < 0 ? 'none' : p.capTeam === team ? 'us' : 'them';
       e.classList.toggle('is-contested', p.contested);
@@ -201,10 +255,13 @@ export class WarzoneHud {
   }
 
   /** The points, where they are on screen (or at the edge, pointing the way). */
-  markers(ps: CapturePoint[], cam: THREE.PerspectiveCamera, me: Unit) {
+  markers(ps: CapturePoint[], cam: THREE.PerspectiveCamera, me: Unit, labels?: string[]) {
     const W = innerWidth, H = innerHeight;
+    this.markerEls.forEach((e, i) => (e.style.display = i < ps.length ? '' : 'none'));
     ps.forEach((p, i) => {
       const e = this.markerEls[i];
+      const label = labels?.[i] ?? p.id;
+      if (e.firstChild!.textContent !== label) e.firstChild!.textContent = label;
       const v = this.v.set(p.pos.x, p.pos.y + 3, p.pos.z).project(cam);
       let x = v.x, y = v.y;
       const behind = v.z > 1;
@@ -223,12 +280,15 @@ export class WarzoneHud {
   }
 
   /** Names over your teammates' heads. */
-  tags(units: (Unit & { rig?: unknown })[], cam: THREE.PerspectiveCamera, me: Unit) {
+  /** Your squad's names over their heads; enemies only when a sensor gives them away. */
+  tags(units: (Unit & { rig?: unknown })[], cam: THREE.PerspectiveCamera, me: Unit, revealed?: (u: Unit) => boolean) {
     const W = innerWidth, H = innerHeight;
     units.forEach((u, i) => {
       const e = this.tagEls[i];
       const d = u.pos.distanceTo(cam.position);
-      const show = u.alive && u.team === me.team && d < 60;
+      const spotted = u.alive && u.team !== me.team && !!revealed?.(u);
+      e.classList.toggle('is-enemy', spotted);
+      const show = (u.alive && u.team === me.team && d < 60) || spotted;
       if (!show) {
         e.style.display = 'none';
         return;
@@ -251,20 +311,55 @@ export class WarzoneHud {
     this.armorEl.style.transform = `scaleX(${Math.max(0, armor / 50).toFixed(3)})`;
   }
 
-  weapon(name: string, mag: number, reserve: number, other: string, reload: number | null) {
+  /** Lethal and tactical left; `cook` 0..1 a frag in the hand; `charge` a remote charge waiting. */
+  gear(lethal: string, ln: number, tactical: string, tn: number, cook: number | null, charge: boolean) {
+    const key = `${lethal}${ln}${tactical}${tn}${cook == null ? '' : cook.toFixed(2)}${charge}`;
+    if (key === this.lastGear) return;
+    this.lastGear = key;
+    this.gearEl.replaceChildren(
+      h('span', { class: `wz-gear__item${ln ? '' : ' is-out'}${cook != null ? ' is-cook' : ''}` }, glyph('lethal'), h('b', {}, charge ? 'Detonate' : lethal), h('i', {}, `×${ln}`)),
+      h('span', { class: `wz-gear__item${tn ? '' : ' is-out'}` }, glyph('tactical'), h('b', {}, tactical), h('i', {}, `×${tn}`)),
+      ...(cook != null ? [h('i', { class: 'wz-gear__cook', style: `transform:scaleX(${cook.toFixed(3)})` })] : []),
+    );
+  }
+
+  /** The streak ladder: kills this life against what each one costs, and what's ready to use. */
+  streaks(list: { name: string; kills: number }[], kills: number, ready: string[]) {
+    const key = `${kills}|${ready.join()}`;
+    if (key === this.lastStreak) return;
+    this.lastStreak = key;
+    // nothing to show before the first kill (the controls are on screen then)
+    if (!kills && !ready.length) return this.streakEl.replaceChildren();
+    this.streakEl.replaceChildren(
+      ...(ready.length ? [h('div', { class: 'wz-streaks__ready' }, glyph('streak'), h('b', {}, ready[0]), ready.length > 1 ? h('i', {}, `+${ready.length - 1}`) : null)] : []),
+      ...list.map((s) => h('span', { class: `wz-streaks__step${kills >= s.kills ? ' is-done' : ''}`, title: s.name }, h('i', {}, String(s.kills)), h('em', {}, s.name))),
+    );
+  }
+
+  /** Flashed (white, fading) and stunned (a blue smear at the edges). */
+  blind(flash: number, stun: number) {
+    this.flashEl.style.opacity = flash > 0 ? Math.min(1, flash / 1.2).toFixed(3) : '0';
+    this.stunEl.style.opacity = stun > 0 ? Math.min(0.85, stun / 2).toFixed(3) : '0';
+  }
+
+  /** `mag` -1: a blade (nothing to count). */
+  weapon(name: string, mag: number, reserve: number, other: string, reload: number | null, mode = '') {
     this.gunEl.textContent = name;
-    this.magEl.textContent = String(mag);
-    this.magEl.classList.toggle('is-low', mag <= 3);
-    this.reserveEl.textContent = `/ ${reserve}`;
+    this.modeEl.textContent = mode;
+    this.magEl.textContent = mag < 0 ? '—' : String(mag);
+    this.magEl.classList.toggle('is-low', mag >= 0 && mag <= 3);
+    this.reserveEl.textContent = mag < 0 ? '' : `/ ${reserve}`;
     this.otherEl.textContent = other;
     this.reloadEl.style.transform = `scaleX(${reload == null ? 0 : reload.toFixed(3)})`;
     this.reloadEl.classList.toggle('is-on', reload != null);
   }
 
-  crosshair(c: { spread: number; enemy: boolean; aiming: boolean; fp?: boolean } | null) {
+  /** `scope`: looking through a magnified optic (the view goes dark round the glass). */
+  crosshair(c: { spread: number; enemy: boolean; aiming: boolean; fp?: boolean; scope?: boolean } | null) {
     const on = !!c && !(c.aiming && c.fp);
     setOn(this.cross, on);
-    setOn(this.dot, !!c && !!c.fp && c.aiming);
+    setOn(this.dot, !!c && !!c.fp && c.aiming && !c.scope);
+    setOn(this.scopeEl, !!c && !!c.fp && !!c.scope);
     if (!c) return;
     this.cross.style.setProperty('--s', `${Math.max(5, Math.min(90, c.spread)).toFixed(1)}px`);
     this.cross.classList.toggle('is-enemy', c.enemy);
@@ -303,16 +398,20 @@ export class WarzoneHud {
     this.annT = kind === 'pickup' ? 1 : 2.2;
   }
 
-  loadout(on: boolean, list?: Loadout[], sel = 0, first = false) {
+  loadout(on: boolean, list?: Loadout[], sel = 0, first = false, force = false) {
     setOn(this.loadEl, on);
     if (!on || !list) return;
     const key = `${sel}|${first}`;
+    if (force) this.lastLoadout = '';
     if (key === this.lastLoadout) return;
     this.lastLoadout = key;
     this.loadTitle.textContent = first ? 'Choose a loadout' : 'Next life';
     this.loadCards.replaceChildren(
-      ...list.map((l, i) => h('div', { class: `wz-card${i === sel ? ' is-sel' : ''}` }, h('b', {}, l.name), h('span', { class: 'meta' }, l.line))),
+      ...list.map((l, i) =>
+        h('div', { class: `wz-card${i === sel ? ' is-sel' : ''}${l.custom ? ' is-custom' : ''}` }, h('b', {}, l.name), h('span', { class: 'meta' }, l.line), h('em', { class: 'meta' }, `${WEAPON[l.primary]?.name ?? ''} · ${WEAPON[l.secondary]?.name ?? ''}`)),
+      ),
     );
+    this.loadCards.children[sel]?.scrollIntoView({ block: 'nearest' });
   }
 
   death(d: { name: string; gun: string; head: boolean; t: number } | null) {

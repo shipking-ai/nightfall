@@ -69,6 +69,23 @@ export const tex = {
       }
     }),
 
+  /** Merrow Savings Bank, brass on black */
+  bank: () =>
+    canvas(512, 96, (c, w, h) => {
+      c.fillStyle = '#0a0908';
+      c.fillRect(0, 0, w, h);
+      c.fillStyle = '#d8b878';
+      c.font = `500 34px ${SANS}`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.letterSpacing = '10px';
+      c.fillText('MERROW SAVINGS', w / 2 + 5, h / 2 - 12);
+      c.font = `22px ${SERIF}`;
+      c.letterSpacing = '16px';
+      c.fillStyle = '#a89060';
+      c.fillText('B A N K', w / 2 + 8, h / 2 + 24);
+    }),
+
   pharmacy: () =>
     canvas(512, 96, (c, w, h) => {
       c.fillStyle = '#07090a';

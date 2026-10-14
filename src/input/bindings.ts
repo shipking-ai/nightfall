@@ -43,15 +43,26 @@ export const DEFAULT_BINDINGS: Record<Action, Binding> = {
   steerLeft: { kbm: ['KeyA', 'ArrowLeft'], pad: [] },
   steerRight: { kbm: ['KeyD', 'ArrowRight'], pad: [] },
   handbrake: { kbm: ['Space'], pad: ['A', 'RB'] },
+  boost: { kbm: ['ShiftLeft', 'ShiftRight'], pad: ['X'] },
   horn: { kbm: ['KeyH'], pad: ['LS'] },
   exitVehicle: { kbm: ['KeyE'], pad: ['B', 'Y'] },
   radioNext: { kbm: ['KeyR'], pad: ['Right'] },
   radioPrev: { kbm: ['Shift+KeyR'], pad: ['Left'] },
   screen: { kbm: ['KeyV'], pad: ['Up'] },
+  carCamera: { kbm: ['KeyC'], pad: ['Down'] },
+  // Powers get their own keys. Everything they were sharing is already taken by
+  // something that matters: E is interact (getting in a car), Q cycles weapons,
+  // R reloads, F attacks, V is the car screen. On foot these three are free.
+  powerUse: { kbm: ['KeyV'], pad: ['RB'] },
+  powerPrev: { kbm: ['WheelUp', 'KeyX'], pad: ['LB'] },
+  powerNext: { kbm: ['WheelDown', 'KeyZ'], pad: ['RB'] },
 
   melee: { kbm: ['KeyV'], pad: ['RS'] },
   scoreboard: { kbm: ['Tab'], pad: ['View'] },
   armor: { kbm: ['Digit4'], pad: ['Up'] },
+  lethal: { kbm: ['KeyG'], pad: ['RB'] },
+  tactical: { kbm: ['KeyZ'], pad: ['LB'] },
+  streak: { kbm: ['Digit5', 'KeyB'], pad: ['Down'] },
 
   light: { kbm: ['Mouse0', 'KeyJ'], pad: ['X'] },
   heavy: { kbm: ['Mouse2', 'KeyK'], pad: ['Y'] },

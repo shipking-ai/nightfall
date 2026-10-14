@@ -1,5 +1,5 @@
 /**
- * NIGHTFALL is one city with four ways to be in it. A mode is not a separate
+ * NIGHTFALL is one city with five ways to be in it. A mode is not a separate
  * game: it's a set of rules for the same simulation (who's in the streets,
  * whether anything can hurt you, what the interface shows), plus, for the two
  * competitive modes, a match controller layered on top (modes/Warzone.ts,
@@ -8,7 +8,7 @@
  * Everything below reads as configuration on purpose: the world, characters,
  * animation, vehicles, lighting and saves are shared by all four.
  */
-export type ModeId = 'city' | 'afterhours' | 'warzone' | 'fight';
+export type ModeId = 'city' | 'afterhours' | 'warzone' | 'fight' | 'rpg';
 
 export interface ModeRules {
   id: ModeId;
@@ -112,6 +112,27 @@ export const MODES: Record<ModeId, ModeRules> = {
     sharedCity: false,
     shot: 5,
   },
+  rpg: {
+    id: 'rpg',
+    title: 'RPG',
+    line: 'The night ends. The world opens.',
+    detail: 'At 05:29 the clock keeps going. Past District 03: other cities, open country, mountains, desert, the sea. A life to make, people who remember you, and things out there nobody has explained.',
+    input: 'Controller or keyboard',
+    combat: 'street',
+    police: false,
+    crime: true,
+    quests: false,
+    unease: 0.6,
+    crowd: true,
+    traffic: true,
+    vehicles: true,
+    interiors: true,
+    discovery: true,
+    emotes: true,
+    photo: true,
+    sharedCity: false,
+    shot: 7,
+  },
   fight: {
     id: 'fight',
     title: 'Fight',
@@ -135,4 +156,4 @@ export const MODES: Record<ModeId, ModeRules> = {
   },
 };
 
-export const MODE_ORDER: ModeId[] = ['warzone', 'fight', 'city', 'afterhours'];
+export const MODE_ORDER: ModeId[] = ['warzone', 'fight', 'city', 'afterhours', 'rpg'];

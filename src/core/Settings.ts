@@ -1,7 +1,11 @@
 import { Emitter } from './Emitter';
 import { readJSON, writeJSON } from './storage';
 
-export type Quality = 'low' | 'medium' | 'high';
+/**
+ * 'auto' is the default: it works out what the machine can do, then keeps
+ * adjusting while you play. The other four are you holding a specific tier.
+ */
+export type Quality = 'auto' | 'low' | 'medium' | 'high' | 'cinematic';
 
 export interface SettingsData {
   quality: Quality;
@@ -25,6 +29,8 @@ export interface SettingsData {
   padSensY: number;
   /** look speed while aiming, as a fraction */
   padAimSens: number;
+  /** slow the look in proportion to a scope's magnification (mouse and stick) */
+  zoomSens: boolean;
   /** extra turn speed at the edge of the stick, 0..1 */
   padAccel: number;
   padDeadzone: number;
@@ -53,7 +59,7 @@ export interface SettingsData {
   drawDistance: 'near' | 'medium' | 'far';
 
   /** the last way of playing you picked */
-  lastMode: 'city' | 'afterhours' | 'warzone' | 'fight';
+  lastMode: 'city' | 'afterhours' | 'warzone' | 'fight' | 'rpg';
 }
 
 const KEY = 'nightfall.settings.v1';
@@ -64,7 +70,9 @@ function defaults(): SettingsData {
   const touch = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
   const weak = (navigator.hardwareConcurrency ?? 8) <= 4 || touch;
   return {
-    quality: weak ? 'low' : 'medium',
+    // 'auto': we work out what this machine can do the first time we run here,
+    // and keep adjusting while playing. Never worse than what we used to guess.
+    quality: 'auto',
     shadows: !weak,
     postfx: true,
     atmosphere: true,
@@ -80,6 +88,7 @@ function defaults(): SettingsData {
     padSensX: 1,
     padSensY: 1,
     padAimSens: 0.6,
+    zoomSens: true,
     padAccel: 0.5,
     padDeadzone: 0.14,
     padCurve: 'dynamic',
@@ -115,13 +124,29 @@ export function distanceBudget(d: SettingsData['drawDistance']) {
 export function budget(q: Quality) {
   switch (q) {
     case 'low':
-      return { pixelRatio: Math.min(devicePixelRatio, 1) * 0.8, rain: 3500, pointLights: 4, shadowSize: 512, msaa: 0 };
+      return { pixelRatio: Math.min(devicePixelRatio, 1) * 0.8, rain: 3500, pointLights: 4, shadowSize: 512, msaa: 0, ao: false, shafts: false };
     case 'medium':
-      return { pixelRatio: Math.min(devicePixelRatio, 1.25), rain: 7000, pointLights: 6, shadowSize: 1024, msaa: 0 };
+      return { pixelRatio: Math.min(devicePixelRatio, 1.25), rain: 7000, pointLights: 6, shadowSize: 1024, msaa: 0, ao: false, shafts: false };
     case 'high':
-      return { pixelRatio: Math.min(devicePixelRatio, 1.75), rain: 11000, pointLights: 8, shadowSize: 2048, msaa: 4 };
+      return { pixelRatio: Math.min(devicePixelRatio, 1.75), rain: 11000, pointLights: 8, shadowSize: 2048, msaa: 4, ao: true, shafts: false };
+    case 'cinematic':
+      // the expensive one: ambient occlusion, light shafts, soft shadows and
+      // more of everything. Only auto-detected onto a machine that can hold it.
+      return { pixelRatio: Math.min(devicePixelRatio, 2), rain: 14000, pointLights: 10, shadowSize: 2048, msaa: 4, ao: true, shafts: true };
+    default:
+      // 'auto' is resolved to a concrete tier before it ever reaches here
+      return budget('medium');
   }
 }
+
+/** The four tiers a user can hold, in the order the settings screen shows them. */
+export const QUALITIES: { id: Quality; label: string }[] = [
+  { id: 'auto', label: 'Auto' },
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'cinematic', label: 'Cinematic' },
+];
 
 export class Settings extends Emitter<{ change: { key: keyof SettingsData; data: SettingsData } }> {
   data: SettingsData;

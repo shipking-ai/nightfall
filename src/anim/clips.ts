@@ -1,5 +1,6 @@
 import { defineClip, type Ease, type Key } from './Animator';
 import type { Channel } from './pose';
+import './actions';
 
 /**
  * The animation library: every authored movement in the game.
@@ -683,6 +684,99 @@ defineClip({ name: 'gun.melee', dur: 0.65, mask: 'upper', keys: [
 defineClip({ name: 'gun.pistolAim', dur: 1, loop: true, mask: 'upper', keys: [
   k(0, { ...R(1.45, -0.05, 0.12, 0.2, 0, 1), ...L(1.25, -0.1, 0.5, 0.95, 0, 1), spRy: -0.12 }),
   k(1, { ...R(1.45, -0.05, 0.12, 0.2, 0, 1), ...L(1.25, -0.1, 0.5, 0.95, 0, 1), spRy: -0.12 }),
+] });
+
+/* ═══════════════════════════ powers ═══════════════════════════ */
+// The powers (systems/Powers.ts). You never choose them, so the way your body
+// discovers one matters more than the way it uses it: each activation starts in
+// the wrong shape — a hand that has just noticed something — and the wrongness
+// travels up through the spine into the head before the hands know what to do.
+// Every one has an anticipation, a hold, and a settle back to neutral.
+
+/** LIFT — the hand goes up first, palm open, and only then does the arm follow */
+defineClip({ name: 'power.lift', dur: 1.5, hold: true, keys: [
+  k(0, { ...ALL_N }),
+  // anticipation: the fingers spread before the arm has moved at all
+  k(0.22, { ...R(0, 0.1, 0.18, -0.2, 0.3, 4), ...L(0, 0.1, 0.18, -0.2, 0.3, 4), nkRx: -0.1, spRx: 0.06 }, 'out'),
+  // the arm rises, slow, and the spine arches after it
+  k(0.72, { ...R(-1.5, 0.34, 0.1, -0.15, -0.15, 4), ...L(-1.35, 0.42, 0.14, 0.15, -0.15, 4), spRx: -0.24, spRz: 0.06, nkRx: -0.3, nkRz: 0.08, rootY: 0.05 }, 'out', 'charge'),
+  // hold: everything suspended, the head tipped back to look at what is rising
+  k(1.15, { ...R(-1.58, 0.3, 0.08, -0.1, -0.2, 4), ...L(-1.44, 0.46, 0.12, 0.1, -0.2, 4), spRx: -0.2, spRz: 0.05, nkRx: -0.42, nkRz: 0.06, rootY: 0.04 }),
+  // settle: it comes down out of the body, not the arms
+  k(1.5, { ...ALL_N, spRx: 0.08, rootY: -0.02 }, 'in'),
+] });
+
+defineClip({ name: 'power.liftUse', dur: 0.7, mask: 'upper', keys: [
+  k(0, { ...R(-1.5, 0.32, 0.1, -0.1, -0.2, 4), ...L(-1.4, 0.44, 0.12, 0.1, -0.2, 4), spRx: -0.22, nkRx: -0.34 }),
+  k(0.16, { ...R(-1.72, 0.26, 0.04, -0.05, -0.3, 4), ...L(-1.62, 0.5, 0.08, 0.05, -0.3, 4), spRx: -0.3, nkRx: -0.5, rootY: 0.07 }, 'out', 'charge'),
+  k(0.7, { ...R(-1.5, 0.32, 0.1, -0.1, -0.2, 4), ...L(-1.4, 0.44, 0.12, 0.1, -0.2, 4), spRx: -0.22, nkRx: -0.34 }, 'in'),
+] });
+
+/** STILL — the body braces and stops; the stillness is the whole performance */
+defineClip({ name: 'power.still', dur: 2.4, hold: true, keys: [
+  k(0, { ...ALL_N }),
+  // the arms come in tight and the elbows lock, like bracing for a blow
+  k(0.3, { ...R(0.25, 0.06, 1.5, -0.5, 0.5, 1), ...L(0.25, 0.06, 1.5, 0.5, 0.5, 1), spRx: 0.16, spRz: 0, nkRx: 0.12, pelRz: 0.05 }, 'out'),
+  // everything goes dead still: head level, shoulders level, nothing moving
+  k(0.8, { ...R(0.18, 0.02, 1.72, -0.55, 0.62, 1), ...L(0.18, 0.02, 1.72, 0.55, 0.62, 1), spRx: 0.2, spRz: 0, spRy: 0, nkRx: 0.06, nkRy: 0, nkRz: 0, pelRy: 0, pelRz: 0.02, rootY: -0.04, blink: 1 }, 'out', 'charge'),
+  // held: an unnerving amount of time doing nothing
+  k(1.9, { ...R(0.18, 0.02, 1.72, -0.55, 0.62, 1), ...L(0.18, 0.02, 1.72, 0.55, 0.62, 1), spRx: 0.2, spRz: 0, nkRx: 0.05, rootY: -0.04, blink: 1 }),
+  k(2.4, { ...ALL_N, spRx: 0.06 }, 'in'),
+] });
+
+defineClip({ name: 'power.stillUse', dur: 1.1, mask: 'upper', keys: [
+  k(0, { ...R(0.18, 0.02, 1.72, -0.55, 0.62, 1), ...L(0.18, 0.02, 1.72, 0.55, 0.62, 1), spRx: 0.2 }),
+  k(0.2, { ...R(0.14, 0.0, 1.86, -0.6, 0.7, 1), ...L(0.14, 0.0, 1.86, 0.6, 0.7, 1), spRx: 0.26, nkRx: 0.02, rootY: -0.06 }, 'out', 'charge'),
+  k(1.1, { ...R(0.18, 0.02, 1.72, -0.55, 0.62, 1), ...L(0.18, 0.02, 1.72, 0.55, 0.62, 1), spRx: 0.2, rootY: -0.04 }, 'in'),
+] });
+
+/** BURN — a cupped hand, and light gathered into it rather than thrown from it */
+defineClip({ name: 'power.burn', dur: 1.3, hold: true, keys: [
+  k(0, { ...ALL_N }),
+  // the hand cups in front of the chest, and the other comes over it
+  k(0.26, { ...R(0.62, 0.14, 1.42, -0.62, -0.3, 4), ...L(0.78, 0.2, 1.2, 0.5, -0.35, 4), spRx: 0.14, nkRx: 0.16 }, 'out'),
+  // the spine folds over the hands; the head comes down to watch them
+  k(0.66, { ...R(0.92, 0.05, 1.86, -0.75, -0.5, 4), ...L(1.08, 0.12, 1.66, 0.6, -0.5, 4), spRx: 0.34, spRy: -0.08, nkRx: 0.42, rootY: -0.05 }, 'out', 'charge'),
+  k(1.0, { ...R(0.95, 0.04, 1.9, -0.75, -0.5, 4), ...L(1.1, 0.12, 1.7, 0.6, -0.5, 4), spRx: 0.36, spRy: -0.08, nkRx: 0.45, rootY: -0.05 }),
+  k(1.3, { ...ALL_N, spRx: 0.08 }, 'in'),
+] });
+
+defineClip({ name: 'power.burnUse', dur: 0.6, mask: 'upper', keys: [
+  k(0, { ...R(0.92, 0.05, 1.86, -0.75, -0.5, 4), ...L(1.08, 0.12, 1.66, 0.6, -0.5, 4), spRx: 0.34, nkRx: 0.42 }),
+  k(0.12, { ...R(1.3, 0.02, 1.5, -0.5, -0.4, 4), ...L(1.42, 0.08, 1.34, 0.42, -0.4, 4), spRx: 0.16, nkRx: 0.1, rootY: 0.03 }, 'out', 'charge'),
+  k(0.6, { ...R(0.92, 0.05, 1.86, -0.75, -0.5, 4), ...L(1.08, 0.12, 1.66, 0.6, -0.5, 4), spRx: 0.34, nkRx: 0.42 }, 'in'),
+] });
+
+/** PALE — the body decides it was never there: shoulders drop, head turns away */
+defineClip({ name: 'power.pale', dur: 2.0, hold: true, keys: [
+  k(0, { ...ALL_N }),
+  // the shoulders go nowhere, and the head turns off the world
+  k(0.3, { ...R(0, 0.05, 0.42, -0.25, 0.2, 0), ...L(0, 0.05, 0.42, 0.25, 0.2, 0), spRx: -0.05, spRy: 0.1, nkRy: 0.34, nkRx: 0.06 }, 'out'),
+  k(0.7, { ...R(0, 0.03, 0.34, -0.2, 0.3, 0), ...L(0, 0.03, 0.34, 0.2, 0.3, 0), spRx: -0.08, spRy: 0.14, nkRy: 0.42, nkRx: 0.1, rootY: -0.03, blink: 1 }, 'out', 'charge'),
+  k(1.6, { ...R(0, 0.03, 0.34, -0.2, 0.3, 0), ...L(0, 0.03, 0.34, 0.2, 0.3, 0), spRx: -0.08, spRy: 0.14, nkRy: 0.42, nkRx: 0.1, rootY: -0.03 }),
+  k(2.0, { ...ALL_N }, 'in'),
+] });
+
+defineClip({ name: 'power.paleUse', dur: 0.9, mask: 'upper', keys: [
+  k(0, { ...R(0, 0.03, 0.34, -0.2, 0.3, 0), ...L(0, 0.03, 0.34, 0.2, 0.3, 0), spRy: 0.14, nkRy: 0.42 }),
+  k(0.18, { ...R(0.05, 0.02, 0.26, -0.16, 0.34, 0), ...L(0.05, 0.02, 0.26, 0.16, 0.34, 0), spRy: 0.2, nkRy: 0.56, rootY: -0.05 }, 'out', 'charge'),
+  k(0.9, { ...R(0, 0.03, 0.34, -0.2, 0.3, 0), ...L(0, 0.03, 0.34, 0.2, 0.3, 0), spRy: 0.14, nkRy: 0.42 }, 'in'),
+] });
+
+/** HOOK — the shoulder leads and the hand is dragged after it, which is wrong */
+defineClip({ name: 'power.hook', dur: 1.4, hold: true, keys: [
+  k(0, { ...ALL_N }),
+  // the arm shoots across the body and the head goes the other way
+  k(0.18, { ...R(0.5, 0.5, 1.0, -0.9, 0.4, 1), ...L(0.5, 0.5, 1.0, 0.9, 0.4, 1), spRy: -0.2, spRx: 0.08 }, 'out'),
+  k(0.5, { ...R(1.85, 0.3, 0.32, -1.15, 0.2, 1), ...L(1.6, 0.55, 0.5, 1.05, 0.2, 1), spRy: -0.42, spRx: 0.16, nkRy: -0.34, nkRx: 0.1, rootX: -0.04, rootZ: 0.03 }, 'out', 'charge'),
+  k(1.0, { ...R(1.9, 0.28, 0.3, -1.18, 0.18, 1), ...L(1.64, 0.56, 0.48, 1.06, 0.18, 1), spRy: -0.44, spRx: 0.17, nkRy: -0.36, nkRx: 0.1, rootX: -0.04, rootZ: 0.03 }),
+  k(1.4, { ...ALL_N, spRy: -0.06 }, 'in'),
+] });
+
+defineClip({ name: 'power.hookUse', dur: 0.55, mask: 'upper', keys: [
+  k(0, { ...R(1.85, 0.3, 0.32, -1.15, 0.2, 1), ...L(1.6, 0.55, 0.5, 1.05, 0.2, 1), spRy: -0.42, nkRy: -0.34 }),
+  k(0.1, { ...R(2.3, 0.18, 0.18, -1.3, 0.1, 1), ...L(2.0, 0.62, 0.34, 1.15, 0.1, 1), spRy: -0.62, nkRy: -0.5, rootX: -0.07 }, 'out', 'charge'),
+  k(0.55, { ...R(1.85, 0.3, 0.32, -1.15, 0.2, 1), ...L(1.6, 0.55, 0.5, 1.05, 0.2, 1), spRy: -0.42, nkRy: -0.34 }, 'in'),
 ] });
 
 /* ═══════════════════════════ shared poses ═══════════════════════════ */

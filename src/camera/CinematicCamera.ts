@@ -21,6 +21,7 @@ export const SHOTS: Shot[] = [
   // mode previews (never in the title rotation)
   { caption: 'Pier 9 Yard · the containers', from: v(76.5, 1.5, 44), to: v(76, 1.9, 36), lookFrom: v(74, 2.4, -20), lookTo: v(73, 2.6, -24), duration: 16 },
   { caption: 'Harbor Lane crossing', from: v(9, 1.1, 66), to: v(6.5, 1.35, 63), lookFrom: v(-3, 1.6, 51), lookTo: v(-2, 1.8, 52), duration: 16 },
+  { caption: 'The bridge · the far bank', from: v(-3, 1.9, 170), to: v(-2, 2.1, 186), lookFrom: v(40, 30, 640), lookTo: v(30, 34, 640), duration: 18 },
 ];
 
 /** the shots the title sequence cycles through */

@@ -2,15 +2,17 @@ import { h, setOn, wait } from './dom';
 import type { Entry } from '../data/archive';
 import type { Action } from '../input/actions';
 import { glyph, hintRow } from '../input/glyphs';
+import { ESCAPE_R, fmtMoney } from '../systems/Robbery';
 
 /** What the player is doing, for the controls strip: only what applies is shown. */
-export type ControlContext = 'foot' | 'armed' | 'car' | 'taxi' | 'boat' | 'swim' | 'afterhours';
+export type ControlContext = 'foot' | 'armed' | 'car' | 'taxi' | 'boat' | 'swim' | 'afterhours' | 'rpg';
 
 const CONTROL_SETS: Record<ControlContext, [Action | 'moveStick' | 'lookStick', string][]> = {
   foot: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['jump', 'Jump'], ['interact', 'Interact'], ['emote', 'Emotes'], ['map', 'Map'], ['pause', 'Pause']],
   afterhours: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['interact', 'Interact'], ['photo', 'Photo mode'], ['radioNext', 'Headphones'], ['emote', 'Emotes · say'], ['map', 'Map'], ['pause', 'Pause']],
+  rpg: [['moveStick', 'Move'], ['lookStick', 'Look'], ['sprint', 'Run'], ['jump', 'Jump'], ['interact', 'Talk · go in · search'], ['map', 'Casefile'], ['pause', 'Pause']],
   armed: [['aim', 'Aim'], ['attack', 'Fire'], ['reload', 'Reload'], ['nextWeapon', 'Switch weapon']],
-  car: [['throttle', 'Accelerate'], ['brake', 'Brake · reverse'], ['moveStick', 'Steer'], ['handbrake', 'Handbrake'], ['horn', 'Horn'], ['radioNext', 'Radio'], ['exitVehicle', 'Get out']],
+  car: [['throttle', 'Accelerate'], ['brake', 'Brake · reverse'], ['moveStick', 'Steer'], ['boost', 'Boost'], ['handbrake', 'Handbrake'], ['horn', 'Horn'], ['radioNext', 'Radio'], ['exitVehicle', 'Get out']],
   taxi: [['lookStick', 'Look around'], ['radioNext', 'Radio'], ['exitVehicle', 'Ask to stop']],
   boat: [['throttle', 'Throttle'], ['brake', 'Reverse'], ['moveStick', 'Steer'], ['handbrake', 'Slow down'], ['exitVehicle', 'Step off']],
   swim: [['moveStick', 'Swim'], ['sprint', 'Swim harder'], ['jump', 'Climb out at the quay']],
@@ -49,6 +51,11 @@ export class Hud {
   private hint: HTMLElement;
   private controls: HTMLElement;
   private disc: HTMLElement;
+  private boostBar: HTMLElement;
+  private boostEl: HTMLElement;
+  private robLabel: HTMLElement;
+  private robBar: HTMLElement;
+  private robEl: HTMLElement;
   private promptGlyph: HTMLElement;
   private controlsCtx: ControlContext | null = null;
   private controlsT = 0;
@@ -82,12 +89,49 @@ export class Hud {
     this.toastEl = h('div', { class: 'hud__toast', role: 'status' });
     this.controls = h('div', { class: 'hud__controls' });
     this.disc = h('div', { class: 'discovery', role: 'status' });
-    this.el = h('section', { class: 'layer is-passive hud' }, this.hurtEl, this.loc, this.quest, this.stars, this.cross, this.health, this.weapon, this.toastEl, this.disc, this.barkEl, this.caption, this.prompt, this.hint, this.controls);
+    // the boost reservoir, shown only in a car that has one
+    this.boostBar = h('i');
+    this.boostEl = h('div', { class: 'hud__boost', role: 'meter', 'aria-label': 'Boost' }, this.boostBar);
+    // the robbery: what's happening, and how far you have to run
+    this.robLabel = h('span', { class: 'hud__rob-label' });
+    this.robBar = h('i');
+    this.robEl = h('div', { class: 'hud__rob', role: 'status' }, this.robLabel, h('div', { class: 'hud__rob-track' }, this.robBar));
+    this.el = h('section', { class: 'layer is-passive hud' }, this.hurtEl, this.loc, this.quest, this.stars, this.cross, this.health, this.weapon, this.toastEl, this.disc, this.barkEl, this.caption, this.prompt, this.boostEl, this.robEl, this.hint, this.controls);
     root.append(this.el);
   }
 
   show(on: boolean) {
     setOn(this.el, on);
+  }
+
+  /**
+   * The boost gauge. `left` is what's in the reservoir, `burning` whether it's
+   * being spent right now. Hidden entirely in a car that has no boost, so the
+   * key does the same thing everywhere instead of silently doing nothing.
+   */
+  boost(left: number | null, burning: boolean) {
+    const on = left != null;
+    setOn(this.boostEl, on);
+    if (!on) return;
+    this.boostBar.style.transform = `scaleX(${Math.max(0, Math.min(1, left!))})`;
+    this.boostEl.classList.toggle('is-burning', burning);
+  }
+
+  /**
+ * The bank robbery readout: the wheel while you're turning it, then how far
+ * you have to get. `null` when nothing is going on.
+ */
+  rob(v: { progress: number; stage: string; distance: number; haul: number } | null) {
+    setOn(this.robEl, !!v);
+    if (!v) return;
+    const taking = v.stage === 'turning';
+    this.robLabel.textContent = taking
+      ? v.progress > 0
+        ? 'Turning the wheel'
+        : 'The vault'
+      : `${fmtMoney(v.haul)} · get ${Math.max(0, ESCAPE_R - v.distance).toFixed(0)} m clear`;
+    this.robBar.style.transform = `scaleX(${taking ? v.progress : 1 - Math.min(1, v.distance / ESCAPE_R)})`;
+    this.robEl.classList.toggle('is-running', v.stage === 'taken');
   }
 
   location(name: string, code: string) {
@@ -155,8 +199,11 @@ export class Hud {
     this.healthBar.style.width = `${Math.max(0, c.health)}%`;
     this.health.classList.toggle('is-low', c.health < 30);
     this.health.setAttribute('aria-valuenow', String(Math.round(c.health)));
-    this.stars.replaceChildren(...[0, 1, 2, 3, 4].map((i) => h('span', { class: i < c.stars ? 'on' : '' }, '\u2605')));
+    // eight, so the military has somewhere to go
+    this.stars.replaceChildren(...[0, 1, 2, 3, 4, 5, 6, 7].map((i) => h('span', { class: i < c.stars ? 'on' : '' }, '\u2605')));
     this.stars.classList.toggle('is-hot', c.hot);
+    // past five the stars change colour: the police have handed it over
+    this.stars.classList.toggle('is-military', c.stars >= 6);
     this.weapon.replaceChildren(h('span', { class: 'meta' }, c.weapon), h('b', {}, c.ammo));
   }
 

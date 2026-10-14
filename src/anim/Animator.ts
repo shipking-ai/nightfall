@@ -60,7 +60,12 @@ export class Clip {
     }
     const mask = def.mask ? new Set(MASKS[def.mask]) : null;
     for (const tr of byCh.values()) if (!mask || mask.has(tr.c)) this.tracks.push(tr);
+    this.legs = !def.additive && this.tracks.some((tr) => tr.c === C.knL || tr.c === C.knR || tr.c === C.hipLf || tr.c === C.hipRf);
+    this.pelvis = this.tracks.some((tr) => tr.c === C.pelY);
   }
+  /** keys the legs (and the pelvis height) */
+  legs = false;
+  pelvis = false;
 
   get name() {
     return this.def.name;
@@ -312,5 +317,21 @@ export class Animator {
 
   clear() {
     this.layers.length = 0;
+  }
+
+  /**
+   * How much the playing clips drive the legs (0..1), and whether they set
+   * the pelvis height themselves: the body then stands on the clip's legs
+   * instead of the gait's (a kneel lowers the hips; the feet stay down).
+   */
+  legs(): { w: number; pelvis: boolean } {
+    let w = 0, pelvis = false;
+    for (const l of this.layers) {
+      if (l.w <= 0 || !l.clip.legs) continue;
+      const e = l.w * l.w * (3 - 2 * l.w);
+      if (e > w) w = e;
+      if (l.clip.pelvis) pelvis = true;
+    }
+    return { w, pelvis };
   }
 }

@@ -64,6 +64,24 @@ export class Lighting {
     }
   }
 
+  /** RPG: the key light is the sun by day (or the moon), from wherever it is in the sky. */
+  setKeyDirection(dir: THREE.Vector3, distance = 110) {
+    this.moonOffset.copy(dir).normalize().multiplyScalar(distance);
+    if (this.moonOffset.y < 8) this.moonOffset.y = 8;
+    this.lightZ.copy(this.moonOffset).normalize();
+    this.lightX.set(0, 1, 0).cross(this.lightZ).normalize();
+    this.lightY.copy(this.lightZ).cross(this.lightX);
+  }
+
+  /** RPG: lamps that stream in and out with the world (District 03's are fixed). */
+  setExtraLamps(extra: Lamp[]) {
+    const base = this.baseLamps ?? (this.baseLamps = this.lamps.slice());
+    this.lamps = base.concat(extra);
+    this.candidates = this.lamps.filter((l) => l.pooled);
+    this.assign(false);
+  }
+  private baseLamps: Lamp[] | null = null;
+
   setShadows(on: boolean, size: number) {
     this.moon.castShadow = on;
     if (this.moon.shadow.mapSize.x !== size * 2) {

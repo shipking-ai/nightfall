@@ -12,14 +12,14 @@ export const worldUniforms = {
   uWet: { value: 0.85 }, // ground wetness
 };
 
-export const STYLE_INDEX = { stone: 0, brick: 1, concrete: 2, glass: 3, plain: 4, metal: 5 } as const;
+export const STYLE_INDEX = { stone: 0, brick: 1, concrete: 2, glass: 3, plain: 4, metal: 5, stucco: 6, adobe: 7, timber: 8, panel: 9, siding: 10 } as const;
 
 /* ─────────────────────────────────────────────────────────────
    Facade material — procedural windows, storefronts, weathering.
    Per-building parameters arrive as vertex attributes so the whole
    city can be merged into a handful of draw calls.
      aBld = (seed, floorHeight, windowSpacing, litRatio [<0 = blank wall])
-     aTop = (roofHeight, styleIndex)
+     aTop = (roofHeight, styleIndex[, baseHeight]) — base defaults to 0 (District 03 stands at sea level)
    ───────────────────────────────────────────────────────────── */
 
 function patchFacade(shader: THREE.WebGLProgramParametersWithUniforms) {
@@ -29,11 +29,11 @@ function patchFacade(shader: THREE.WebGLProgramParametersWithUniforms) {
       '#include <common>',
       `#include <common>
 attribute vec4 aBld;
-attribute vec2 aTop;
+attribute vec3 aTop;
 varying vec3 vWPos;
 varying vec3 vWNrm;
 flat varying vec4 vBld;
-flat varying vec2 vTop;`,
+flat varying vec3 vTop;`,
     )
     .replace(
       '#include <begin_vertex>',
@@ -55,7 +55,7 @@ uniform float uWet;
 varying vec3 vWPos;
 varying vec3 vWNrm;
 flat varying vec4 vBld;
-flat varying vec2 vTop;
+flat varying vec3 vTop;
 ${NOISE}`,
     )
     .replace(
@@ -68,7 +68,7 @@ ${NOISE}`,
   float winW = vBld.z;
   float litR = vBld.w;
   float style = vTop.y;
-  float roofY = vTop.x;
+  float roofY = vTop.x - vTop.z;
 
   vec3 wallCol;
   float rough = 0.86;
@@ -77,11 +77,23 @@ ${NOISE}`,
   else if (style < 2.5) wallCol = vec3(0.2, 0.205, 0.205);
   else if (style < 3.5) wallCol = vec3(0.07, 0.08, 0.09);
   else if (style < 4.5) wallCol = vec3(0.22, 0.22, 0.215);
-  else wallCol = vec3(0.19, 0.2, 0.2);
+  else if (style < 5.5) wallCol = vec3(0.19, 0.2, 0.2);
+  // the other cities (RPG): colour comes from the building's seed
+  else if (style < 6.5) {
+    float k = fract(seed * 0.618);
+    wallCol = k < 0.3 ? vec3(0.62, 0.6, 0.55) : k < 0.5 ? vec3(0.6, 0.52, 0.4) : k < 0.65 ? vec3(0.55, 0.38, 0.32) : k < 0.8 ? vec3(0.42, 0.5, 0.55) : vec3(0.58, 0.48, 0.28);
+  }
+  else if (style < 7.5) wallCol = mix(vec3(0.46, 0.33, 0.21), vec3(0.52, 0.28, 0.18), fract(seed * 0.37));
+  else if (style < 8.5) wallCol = mix(vec3(0.17, 0.11, 0.07), vec3(0.26, 0.17, 0.1), fract(seed * 0.51));
+  else if (style < 9.5) wallCol = mix(vec3(0.3, 0.3, 0.29), vec3(0.34, 0.31, 0.27), fract(seed * 0.29));
+  else {
+    float k = fract(seed * 0.73);
+    wallCol = k < 0.3 ? vec3(0.6, 0.6, 0.58) : k < 0.5 ? vec3(0.36, 0.45, 0.52) : k < 0.7 ? vec3(0.4, 0.46, 0.38) : k < 0.85 ? vec3(0.58, 0.52, 0.34) : vec3(0.3, 0.3, 0.32);
+  }
 
   bool xFacing = abs(n.x) > abs(n.z);
   float u = xFacing ? vWPos.z : vWPos.x;
-  float y = vWPos.y;
+  float y = vWPos.y - vTop.z;
   float grain = nf_noise(vec2(u, y) * 0.4 + seed * 7.0);
   float streak = nf_noise(vec2(u * 1.3, y * 0.05) + seed * 3.0);
   vec3 col = wallCol * (0.78 + 0.34 * grain) * (0.8 + 0.28 * streak);
@@ -95,7 +107,23 @@ ${NOISE}`,
   } else if (n.y < -0.5) {
     col = wallCol * 0.4;
   } else {
-    if (style > 4.5) {
+    if (style > 7.5 && style < 8.5) {
+      // timber: vertical boards
+      col *= 0.8 + 0.2 * step(0.08, fract(u * 3.3));
+      rough = 0.8;
+    }
+    if (style > 8.5 && style < 9.5) {
+      // precast panels
+      vec2 pc = fract(vec2(u / 3.0, y / 2.9));
+      col *= mix(0.62, 1.0, step(0.03, pc.x) * step(0.04, pc.y));
+      col = mix(col, vec3(0.18, 0.12, 0.08), smoothstep(0.6, 0.95, streak) * 0.4);
+    }
+    if (style > 9.5) {
+      // clapboard siding
+      col *= 0.82 + 0.18 * smoothstep(0.0, 0.15, fract(y * 4.2));
+      rough = 0.6;
+    }
+    if (style > 4.5 && style < 5.5) {
       // corrugated cladding
       col *= 0.78 + 0.22 * sin(u * 9.0);
       col = mix(col, vec3(0.2, 0.12, 0.07), smoothstep(0.55, 0.9, streak) * 0.5);
@@ -113,7 +141,7 @@ ${NOISE}`,
       col = mix(col, vec3(0.16, 0.15, 0.14), clamp(mortar, 0.0, 1.0) * 0.35);
     }
 
-    if (litR >= 0.0 && style < 4.5) {
+    if (litR >= 0.0 && (style < 4.5 || style > 5.5)) {
       float gh = floorH * 1.3;
       if (y > gh && y < roofY - 1.1) {
         float fy0 = (y - gh) / floorH;
@@ -123,8 +151,9 @@ ${NOISE}`,
         float cx = floor(fu0);
         float fx = fract(fu0);
         float mask;
-        if (style > 2.5) mask = step(0.05, fx) * step(fx, 0.95) * step(0.08, fy) * step(fy, 0.93);
-        else if (style > 1.5) mask = step(0.1, fx) * step(fx, 0.9) * step(0.3, fy) * step(fy, 0.8);
+        if (style > 2.5 && style < 5.5) mask = step(0.05, fx) * step(fx, 0.95) * step(0.08, fy) * step(fy, 0.93);
+        else if ((style > 1.5 && style < 2.5) || (style > 8.5 && style < 9.5)) mask = step(0.1, fx) * step(fx, 0.9) * step(0.3, fy) * step(fy, 0.8);
+        else if (style > 6.5 && style < 7.5) mask = step(0.34, fx) * step(fx, 0.66) * step(0.25, fy) * step(fy, 0.75);
         else mask = step(0.24, fx) * step(fx, 0.76) * step(0.18, fy) * step(fy, 0.84);
         if (mask > 0.5) {
           float h = nf_hash(vec2(cx, cy) + seed * vec2(13.1, 7.7));
@@ -147,7 +176,7 @@ ${NOISE}`,
           } else if (style > 2.5) {
             col = vec3(0.02, 0.025, 0.03);
           }
-        } else if (style > 2.5) {
+        } else if (style > 2.5 && style < 5.5) {
           col = vec3(0.1, 0.105, 0.11) * (0.8 + 0.3 * grain);
           rough = 0.4;
         }
@@ -247,6 +276,45 @@ export function createGroundMaterial(kind: 0 | 1 | 2): THREE.MeshStandardMateria
   base = mix(base, base * 0.35, puddle);
   diffuseColor.rgb = base;
   roughnessFactor = rough;
+}`,
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#include <normal_fragment_maps>
+{
+  // relief: the joints between paving stones, the grain of asphalt, the patching of concrete
+  // (a height pattern, tilted into the normal; faded out with distance so it doesn't shimmer)
+  float fade = 1.0 - smoothstep(12.0, 38.0, length(vViewPosition));
+  if (fade > 0.0) {
+    vec2 p = vWPos.xz;
+    float e = 0.012;
+    vec3 hh = vec3(nf_groundH(p), nf_groundH(p + vec2(e, 0.0)), nf_groundH(p + vec2(0.0, e)));
+    vec2 g = vec2(hh.y - hh.x, hh.z - hh.x) / e;
+    // (a puddle is flat water)
+    g *= fade * (1.0 - smoothstep(0.57, 0.63, nf_fbm(p * 0.06)) * uWet);
+    normal = normalize(normal + (viewMatrix * vec4(-g.x, 0.0, -g.y, 0.0)).xyz);
+  }
+}`,
+      )
+      .replace(
+        'varying vec3 vWPos;\n' + NOISE,
+        `varying vec3 vWPos;\n${NOISE}
+float nf_groundH(vec2 p) {
+  #if ${kind} == 0
+    return nf_noise(p * 9.0) * 0.004 + nf_noise(p * 33.0) * 0.0018;
+  #elif ${kind} == 1
+    vec2 tp = p / vec2(0.9, 1.35);
+    vec2 t = fract(tp);
+    float edge = min(min(t.x, 1.0 - t.x) * 0.9, min(t.y, 1.0 - t.y) * 1.35);
+    // each stone sits a little proud, a little tilted; the joints are sunk
+    vec2 id = floor(tp);
+    float tilt = (nf_hash(id) - 0.5) * 0.004 * (t.x - 0.5) + (nf_hash(id + 7.1) - 0.5) * 0.004 * (t.y - 0.5);
+    return -0.006 * (1.0 - smoothstep(0.0, 0.035, edge)) + tilt + nf_noise(p * 24.0) * 0.0008;
+  #else
+    vec2 t = fract(p / 6.0);
+    float edge = min(min(t.x, 1.0 - t.x), min(t.y, 1.0 - t.y)) * 6.0;
+    return -0.004 * (1.0 - smoothstep(0.0, 0.02, edge)) + nf_noise(p * 5.0) * 0.003 + nf_noise(p * 21.0) * 0.001;
+  #endif
 }`,
       );
   };

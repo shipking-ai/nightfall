@@ -1,5 +1,10 @@
 import * as THREE from 'three';
-import { LOD, newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
+import { styleFor, approach, turnToward } from '../anim/gait';
+import { Ragdoll } from '../anim/Ragdoll';
+import { feel, gaze, moodFor } from '../anim/face';
+import { LOD, buildRig, newMotion, newRig, solve, stepPhase, visibleParts, type Body, type Motion, type Outfit, type PartKey, type Rig } from './Humanoid';
+import { newPose } from '../anim/pose';
+import type { Collision } from '../world/Collision';
 import { FigureBatch } from './FigureBatch';
 import { Animator } from '../anim/Animator';
 import '../anim/clips';
@@ -15,11 +20,15 @@ type Mode = NpcSpot['mode'] | 'walk' | 'watcher' | 'cop' | 'crook';
 
 /** police on foot, kept at the end of the list (never in city snapshots: wanted levels are yours alone) */
 const COPS = 6;
+/** people the outskirts can borrow (Crowd.lend) */
+const EXTRAS = 16;
 /** criminals, kept after the police (also never in snapshots) */
 const CROOKS = 4;
 type CrookState = 'idle' | 'approach' | 'flee' | 'hostile' | 'loiter';
 
 export interface Npc {
+  /** hidden for standing far from you (Crowd.update brings them back) */
+  away?: boolean;
   mode: Mode;
   pos: THREE.Vector3;
   yaw: number;
@@ -47,6 +56,9 @@ export interface Npc {
   wrongYaw: number; // facing somewhere no one would face
   glitchT: number;
   glowOn: boolean;
+  /** eyes: a glance at you (seconds left), and the wait before the next */
+  glance: number;
+  glanceWait: number;
   // cars: a flinch, a step back, a long look after it
   alarm: number;
   alarmX: number;
@@ -85,7 +97,7 @@ export interface Npc {
   speaking: boolean;
   talkT: number;
   /** something quietly wrong with them right now */
-  horror: { kind: 'stare' | 'backwards' | 'repeat' | 'nothing'; t: number; x: number; z: number; n: number } | null;
+  horror: { kind: 'stare' | 'backwards' | 'repeat' | 'nothing' | 'smile' | 'wave' | 'follow'; t: number; x: number; z: number; n: number } | null;
   /** last frame's speed, for the lean into starts and stops */
   lastV: number;
   /** multiplayer: the host's latest word on this person (followers only) */
@@ -107,9 +119,23 @@ export class Crowd {
   group = new THREE.Group();
   npcs: Npc[] = [];
   private batch: FigureBatch;
+  /**
+   * One ragdoll per figure, allocated lazily. A body only exists once something
+   * has hit them hard enough to want one; until then it costs nothing.
+   */
+  rag: (Ragdoll | null)[] = [];
+  /** the city's boxes, so a flung body has something to hit */
+  private ragCol: Collision | null = null;
+  /** scratch pose the ragdoll writes into */
+  private pose = newPose();
   private rng = mulberry32(77);
   /** everyone but the police and the criminals */
   citizens = 0;
+  /** the ones the outskirts borrow: [extrasFrom, extrasTo) */
+  private extrasFrom = 0;
+  private extrasTo = 0;
+  /** which outskirts spot each borrowed person is standing at */
+  private lent = new Map<string, number>();
   /** index of the first criminal */
   crooksFrom = 0;
   /** a criminal shoots at you */
@@ -187,6 +213,15 @@ export class Crowd {
     this.watcher = this.make('watcher', new THREE.Vector3(), 0, 'watcher');
     this.watcher.visible = false;
     this.npcs.push(this.watcher);
+    // people lent to the outskirts (lend): put away until somewhere out there wants them
+    this.extrasFrom = this.npcs.length;
+    for (let i = 0; i < EXTRAS; i++) {
+      const n = this.make('look', new THREE.Vector3(0, -50, 0), 0, archetypeFor(rng, rng.pick(['smoke', 'wait', 'talk', 'look'] as const)));
+      n.visible = false;
+      n.culled = true;
+      this.npcs.push(n);
+    }
+    this.extrasTo = this.npcs.length;
     this.citizens = this.npcs.length;
     // the police, off duty until someone gives them a reason
     for (let i = 0; i < COPS; i++) {
@@ -242,11 +277,17 @@ export class Crowd {
     motion.weight = rng.range(-1, 1);
     motion.cold = outfit.garment === 'tee' || outfit.garment === 'scrubs' ? 0.25 : persona.age > 0.7 ? 0.15 : 0;
     const irng = mulberry32(Math.floor(rng.next() * 1e9));
+    // how they walk and the face they wear when nothing's happening
+    motion.style = styleFor(persona, irng.next, { arche: person.arche, bulk: outfit.bulk, femme: Math.min(1, (body.bust ?? 0) * 1.6), toeOut: body.toeOut });
+    moodFor(motion.face, persona, person.arche);
+    const anim = new Animator();
+    // underdressed for the night: a shiver that comes and goes, under everything else
+    if (motion.cold > 0.2) anim.play('react.shiver', { group: 'shiver', loop: true, weight: 0.8, at: rng.range(0, 1) });
     return {
-      arche: person.arche, persona, anim: new Animator(), idle: new IdleDirector(persona, irng.next), friend: null, speaking: false, talkT: 0, horror: null, lastV: 0,
+      arche: person.arche, persona, anim, idle: new IdleDirector(persona, irng.next), friend: null, speaking: false, talkT: 0, horror: null, lastV: 0,
       mode, pos, yaw, body, outfit, motion, rig: newRig(), lod: -1, parts: new Set(),
       timer: rng.range(2, 8), s: 0, dir: 1, lateral: 0, speed: 0, v: 0, paused: 0, hidden: 0,
-      lookT: rng.range(2, 6), lookTarget: 0, visible: true, frozen: 0, wrongYaw: 0, glitchT: 0, glowOn: false,
+      lookT: rng.range(2, 6), lookTarget: 0, visible: true, frozen: 0, wrongYaw: 0, glitchT: 0, glowOn: false, glance: 0, glanceWait: rng.range(2, 10),
       alarm: 0, alarmX: 0, alarmZ: 0, recoil: 0, recoilX: 0, recoilZ: 0,
       voice: randomVoice(this.voiceRng.next, body.height), sayCd: 0, talked: 0, stareT: 0,
       hp: 100, dead: -1, panic: 0, panicX: 0, panicZ: 0, baseArms: null, fireT: 1,
@@ -278,11 +319,43 @@ export class Crowd {
       const fresh = n.alarm < 2.6;
       if (fresh) n.alarm = 4 + Math.random() * 1.5;
       if (fresh && byPlayer && d < 8 && speed > 5) this.say(n, 'nearMiss');
+
+      // Something is coming at them and fast enough to matter: get out of the
+      // road rather than flinch. Walkers run for the kerb and keep going; people
+      // standing about back off and turn away. A driver who doesn't slow for
+      // people finds they've emptied the pavement in front of them.
+      if (speed > 5 && along > -1.5 && along < speed * 2.2 + 5 && Math.abs(side) < 5 && n.recoil <= 0 && n.panic <= 0) {
+        const urgency = speed > 9 ? 1 : speed > 7 ? 0.6 : 0.3;
+        // away from the car's line, on the side they're already leaning
+        const away = side >= 0 ? 1 : -1;
+        const ax = uz * away, az = -ux * away;
+        // and a little backwards, away from it
+        const bx = -ux, bz = -uz;
+        if (n.mode === 'walk') {
+          n.panic = Math.max(n.panic, 3.5 + urgency * 3);
+          // panic flees *from* the source, so it has to be where the car is
+          n.panicX = x;
+          n.panicZ = z;
+          n.recoil = Math.max(n.recoil, 0.8 * urgency + 0.3);
+          n.recoilX = ax * 0.8 + bx * 0.5 * urgency;
+          n.recoilZ = az * 0.8 + bz * 0.5 * urgency;
+        } else {
+          n.recoil = Math.max(n.recoil, 0.5 * urgency + 0.25);
+          n.recoilX = ax;
+          n.recoilZ = az;
+          n.lookTarget = wrap(Math.atan2(-ux, -uz) - n.yaw);
+          if (speed > 7) n.anim.play('react.nearMiss', { group: 'react', fadeIn: 0.05 });
+        }
+      }
       // close and fast: a jump back; otherwise a flinch and a look
       if (fresh && n.mode !== 'sit') {
         n.idle.interrupt(n.anim);
-        if (d < 4.5 && speed > 6) n.anim.play('react.startle', { group: 'react', fadeIn: 0.05 });
-        else if (inPath) n.anim.play('react.flinch', { group: 'flinch', fadeIn: 0.05 });
+        if (d < 4.5 && speed > 6) {
+          n.anim.play('react.nearMiss', { group: 'react', fadeIn: 0.05 });
+          feel(n.motion.face, 'surprise', 1, 0.6);
+          feel(n.motion.face, 'fear', 0.7, 3);
+        } else if (inPath) n.anim.play('react.flinch', { group: 'flinch', fadeIn: 0.05 });
+        if (byPlayer && speed > 8 && d < 6) feel(n.motion.face, 'angry', 0.8, 5);
         // and after it's gone, what they think of the driver
         if (byPlayer && speed > 8 && d < 6) setTimeout(() => n.alarm > 0 && n.anim.play(Math.random() < 0.6 ? 'emote.angry' : 'emote.shake', { group: 'gesture', fadeIn: 0.25 }), 900);
       }
@@ -308,12 +381,19 @@ export class Crowd {
       n.alarm = Math.max(n.alarm, 2.2 + Math.random());
       n.alarmX = x;
       n.alarmZ = z;
+      // a jolt, and a look round at it
+      if (d < radius * 0.6 && n.mode !== 'sit' && !n.anim.playing('react')) {
+        n.anim.play('react.horn', { group: 'react', fadeIn: 0.04, mirror: (n.pos.x - x) * Math.cos(n.yaw) - (n.pos.z - z) * Math.sin(n.yaw) < 0 });
+        feel(n.motion.face, 'surprise', 0.8, 0.5);
+      }
       if (d < nd) (near = n), (nd = d);
     }
     // one of them answers back, not the whole street
     if (byPlayer && near && Math.random() < 0.6) {
       this.say(near, 'honked');
-      near.anim.play(Math.random() < 0.5 ? 'emote.angry' : 'emote.shoo', { group: 'gesture', fadeIn: 0.3 });
+      const who = near;
+      feel(who.motion.face, 'angry', 0.85, 4);
+      setTimeout(() => who.anim.play(Math.random() < 0.5 ? 'react.annoyed' : 'emote.shoo', { group: 'gesture', fadeIn: 0.3 }), 700);
     }
   }
 
@@ -328,7 +408,10 @@ export class Crowd {
       n.alarmX = x;
       n.alarmZ = z;
       n.idle.interrupt(n.anim);
-      n.anim.play(d < 8 && n.mode !== 'sit' ? 'react.startle' : 'react.flinch', { group: 'react', fadeIn: 0.05 });
+      // close to a blast: turn away, arms round the head
+      n.anim.play(d < 8 && n.mode !== 'sit' ? 'react.shield' : 'react.flinch', { group: 'react', fadeIn: 0.05 });
+      feel(n.motion.face, 'fear', 1, 6);
+      feel(n.motion.face, 'surprise', 1, 0.5);
       if (d < nd) (near = n), (nd = d);
     }
     if (near) {
@@ -407,6 +490,13 @@ export class Crowd {
     this.lastPlayer.copy(player);
     const fwd = camera.getWorldDirection(this.tmpFwd);
     this.chatterT -= dt;
+    // Pale: the district stops noticing you. Nobody looks, nobody reacts, and
+    // you are not a thing that happened to them.
+    if (this.pale > 0) {
+      this.pale -= dt;
+      for (const n of this.npcs) if (n.visible) n.stareT = 0;
+      return;
+    }
     for (const n of this.npcs) {
       if (n.sayCd > 0) n.sayCd -= dt;
       if (!n.visible) continue;
@@ -516,10 +606,13 @@ export class Crowd {
   }
 
   /** Hurt someone. Returns true if that put them down. */
-  damage(i: number, dmg: number, from: THREE.Vector3): boolean {
+  damage(i: number, dmg: number, from: THREE.Vector3, hitY?: number, force = false): boolean {
     const n = this.npcs[i];
     if (!n || n.dead >= 0) return false;
     n.hp -= dmg;
+    // the wound shows on them: that part of their clothes (or skin) soaks dark
+    const at = hitY != null ? (hitY - n.pos.y) / (1.76 * n.body.height) : 0.62 + Math.random() * 0.15;
+    this.batch.stain(i, at, Math.min(1, dmg / 40));
     this.scatter(n.pos.x, n.pos.z, 26, from);
     const dx = n.pos.x - from.x, dz = n.pos.z - from.z, d = Math.hypot(dx, dz) || 1;
     // where the hit came from, in their own frame: front, back, left, right
@@ -532,6 +625,8 @@ export class Crowd {
       n.recoilZ = dz / d;
       const clip = Math.abs(along) > Math.abs(side) ? (along > 0 ? 'react.hitFront' : 'react.hitBack') : side > 0 ? 'react.hitLeft' : 'react.hitRight';
       n.anim.play(clip, { group: 'hit', fadeIn: 0.03, fadeOut: 0.2 });
+      feel(n.motion.face, 'pain', 1, 1.6);
+      feel(n.motion.face, 'fear', 0.8, 8);
       this.say(n, 'hurt', true);
       return false;
     }
@@ -540,7 +635,87 @@ export class Crowd {
     n.motion.speed = 0;
     n.anim.stop();
     n.anim.play(along >= 0 ? 'react.deathBack' : 'react.deathForward', { group: 'death', fadeIn: 0.06, stay: true });
+    // Something that hit them hard enough to kill them throws the body: the
+    // clip plays, then they lie where it left them.
+    if (force) {
+      // stand the figure up first, so the body starts from the pose it was in
+      this.q.setFromAxisAngle(this.up, n.yaw);
+      this.scl.setScalar(n.body.height);
+      this.root.compose(n.pos, this.q, this.scl);
+      solve(n.rig, this.root, n.body, n.outfit, n.motion, performance.now() / 1000, n.anim);
+      this.catchRag(i, n).launch(this.root, n.body, from, 4.5 + Math.min(6, dmg * 0.14));
+    }
     return true;
+  }
+
+  /** The ragdoll for figure i, made if it isn't there yet. */
+  private catchRag(i: number, n: Npc): Ragdoll {
+    let r = this.rag[i];
+    if (!r) this.rag[i] = r = new Ragdoll(n.body.height);
+    if (this.ragCol) r.setCollision(this.ragCol);
+    return r;
+  }
+
+  /**
+   * Knock someone away from a car, hard enough to move them and stagger them.
+   * Walkers carry it as a lateral shove off their route; everyone else slides.
+   */
+  toss(n: Npc, vx: number, vz: number) {
+    if (n.dead >= 0) return;
+    const s = Math.hypot(vx, vz);
+    if (s < 0.5) return;
+    n.recoil = Math.max(n.recoil, Math.min(1.4, 0.35 + s * 0.06));
+    n.recoilX = vx / s;
+    n.recoilZ = vz / s;
+    // and they lose their footing for a moment
+    n.paused = Math.max(n.paused, Math.min(2.5, 0.4 + s * 0.08));
+    n.frozen = 0;
+    n.alarm = Math.max(n.alarm, 4);
+  }
+
+  /**
+   * Everyone on foot, so a car can find them and knock them down. Rebuilt each
+   * frame rather than cached: the objects close over their index.
+   */
+  bodies(out: { pos: THREE.Vector3; dead: number; visible: boolean; hurt: (dmg: number, from: THREE.Vector3, force: boolean) => boolean; knockDown: (x: number, z: number) => void; toss: (vx: number, vz: number) => void }[]): void {
+    out.length = 0;
+    for (let i = 0; i < this.npcs.length; i++) {
+      const n = this.npcs[i];
+      if (n.dead >= 0 || !n.visible) continue;
+      out.push({
+        pos: n.pos,
+        dead: n.dead,
+        visible: n.visible,
+        hurt: (dmg, from, force) => this.damage(i, dmg, from, undefined, force),
+        knockDown: (x, z) => this.knockDown(i, x, z),
+        toss: (vx, vz) => this.toss(n, vx, vz),
+      });
+    }
+  }
+
+  /**
+   * Hit by a car and it wasn't the end: thrown down, a moment on the ground,
+   * then up again (slowly), and they don't forget it.
+   */
+  knockDown(i: number, fromX: number, fromZ: number) {
+    const n = this.npcs[i];
+    if (!n || n.dead >= 0) return;
+    this.toss(n, 0, 0);
+    n.idle.interrupt(n.anim);
+    n.anim.stop(undefined, 0.05);
+    n.yaw = Math.atan2(fromX - n.pos.x, fromZ - n.pos.z); // thrown back, away from it
+    n.anim.play('react.knockdown', { group: 'down', fadeIn: 0.04, stay: true });
+    feel(n.motion.face, 'pain', 1, 4);
+    feel(n.motion.face, 'fear', 0.9, 12);
+    n.frozen = 3.6;
+    n.v = 0;
+    n.motion.speed = 0;
+    setTimeout(() => {
+      if (n.dead >= 0) return;
+      n.anim.stop('down', 0.2);
+      n.anim.play('react.getUp', { group: 'react', fadeIn: 0.15 });
+      n.panic = Math.max(n.panic, 6);
+    }, 2400);
   }
 
   /** Gunfire at (x,z): people run from `from` (walkers) or freeze with their hands up. */
@@ -557,6 +732,8 @@ export class Crowd {
         else if (n.mode === 'walk') n.anim.play('react.flinch', { group: 'flinch', fadeIn: 0.05 });
       }
       n.panic = 9 + Math.random() * 5;
+      feel(n.motion.face, 'surprise', 1, 0.5);
+      feel(n.motion.face, 'fear', 0.7 + 0.3 * n.persona.nervous, n.panic);
       n.panicX = from.x;
       n.panicZ = from.z;
       n.alarm = Math.max(n.alarm, 3);
@@ -608,12 +785,13 @@ export class Crowd {
         if (d > 45) n.visible = false;
         continue;
       }
-      n.yaw = Math.atan2(dx, dz);
-      const v = d > 11 ? 4.4 : 0;
-      n.pos.x += (dx / d) * v * dt;
-      n.pos.z += (dz / d) * v * dt;
+      n.yaw += turnToward(n.yaw, Math.atan2(dx, dz), n.v, dt);
+      const v = approach(n.v, d > 11 ? 4.4 : 0, dt, 3.2, 5.5);
+      n.pos.x += Math.sin(n.yaw) * v * dt;
+      n.pos.z += Math.cos(n.yaw) * v * dt;
       n.pos.y += (player.y - n.pos.y) * Math.min(1, dt * 2);
       n.v = v;
+      feel(m.face, 'focus', 0.8, 1);
       m.speed = v;
       m.armR = d < 24 ? 'aim' : 'free';
       stepPhase(m, dt);
@@ -888,6 +1066,7 @@ export class Crowd {
   /** Keep a share of ordinary people in the streets (population setting). */
   setDensity(k: number) {
     for (let i = 0; i < this.citizens; i++) {
+      if (i >= this.extrasFrom && i < this.extrasTo) continue;
       const n = this.npcs[i];
       if (n === this.watcher || n.mode === 'stare') continue;
       // a fixed shuffle, so the same people stay home each time
@@ -897,6 +1076,72 @@ export class Crowd {
       if (n.culled && !was) n.visible = false;
       if (!n.culled && was && n.mode !== 'walk') n.visible = true;
       if (!n.culled && was && n.mode === 'walk') (n.hidden = 0), (n.visible = true);
+    }
+  }
+
+  /**
+   * The outskirts have nobody of their own: they borrow from a small pool.
+   * Each wanted spot (nearest first) gets someone standing there in its pose;
+   * spots no longer wanted give their person back. Pairs talking face each
+   * other.
+   */
+  lend(spots: (NpcSpot & { key: string })[]) {
+    const want = new Set(spots.map((s) => s.key));
+    for (const [key, i] of this.lent) {
+      if (want.has(key)) continue;
+      const n = this.npcs[i];
+      if (n.friend) n.friend.friend = null;
+      n.friend = null;
+      n.culled = true;
+      n.visible = false;
+      this.lent.delete(key);
+    }
+    const busy = new Set(this.lent.values());
+    const free: number[] = [];
+    for (let i = this.extrasFrom; i < this.extrasTo; i++) if (!busy.has(i)) free.push(i);
+    const fresh: Npc[] = [];
+    for (const s of spots) {
+      if (this.lent.has(s.key)) continue;
+      const i = free.pop();
+      if (i === undefined) break;
+      const n = this.npcs[i];
+      this.lent.set(s.key, i);
+      n.mode = s.mode;
+      n.pos.copy(s.pos);
+      n.yaw = s.yaw;
+      n.dead = -1;
+      n.hp = 100;
+      n.panic = 0;
+      n.horror = null;
+      this.rag[i] = null;
+      n.motion.armL = n.motion.armR = 'free';
+      if (s.mode === 'phone') n.motion.armR = 'phone';
+      if (s.mode === 'smoke') n.motion.armR = 'smoke';
+      if (s.mode === 'sit') n.motion.armL = n.motion.armR = 'rest';
+      if (s.mode === 'wait' || s.mode === 'look') n.motion.armL = n.motion.armR = 'pockets';
+      this.batch.dress(i, n.outfit, n.motion.armR === 'smoke' ? 0xff7a30 : 0xbfd4ff, n.body);
+      n.culled = false;
+      n.visible = true;
+      n.away = false;
+      n.lod = -1;
+      fresh.push(n);
+    }
+    for (const n of fresh) {
+      if (n.mode !== 'talk' || n.friend) continue;
+      let best: Npc | null = null, bd = 3;
+      for (const i of this.lent.values()) {
+        const o = this.npcs[i];
+        if (o === n || o.mode !== 'talk' || o.friend) continue;
+        const d = o.pos.distanceTo(n.pos);
+        if (d < bd) (best = o), (bd = d);
+      }
+      if (best) {
+        n.friend = best;
+        best.friend = n;
+        n.speaking = true;
+        n.talkT = 2 + Math.random() * 3;
+        best.talkT = n.talkT;
+      }
     }
   }
 
@@ -912,8 +1157,56 @@ export class Crowd {
     this.enabled = on;
   }
   enabled = true;
+  /** seconds of Pale left: while it runs, nobody notices you */
+  pale = 0;
+  /** seconds of Still left: while it runs, the district does not move */
+  still = 0;
+
+  /** which way the camera looks (for the ones that only move when you aren't looking) */
+  private lastCamYaw = 0;
+  private camDir = new THREE.Vector3();
+
+  /**
+   * Put an ordinary person on the street at `at`, facing `yaw`. Used when
+   * somebody who was driving is put out on the road: they should be standing
+   * next to the car, not teleported out of a driver seat with no explanation.
+   * Returns the NPC if one was free.
+   */
+  dropBystander(at: THREE.Vector3, yaw: number) {
+    for (let i = 0; i < this.citizens; i++) {
+      const n = this.npcs[i];
+      if (n === this.watcher || n.dead >= 0) continue;
+      // a slot currently in use by somebody else on screen: leave them be
+      if (n.visible && n.mode !== 'walk') continue;
+      if (n.visible && n.pos.distanceTo(at) < 12) continue;
+      n.visible = true;
+      n.pos.set(at.x, at.y, at.z);
+      n.yaw = yaw;
+      n.v = 0;
+      n.mode = 'talk';
+      n.route = undefined;
+      n.lod = -1;
+      // startled: they look at what just happened to them and back away
+      n.alarm = 4;
+      n.alarmX = at.x;
+      n.alarmZ = at.z;
+      n.recoil = 0.4;
+      n.recoilX = Math.sin(yaw);
+      n.recoilZ = Math.cos(yaw);
+      n.idle.interrupt(n.anim);
+      return n;
+    }
+    return null;
+  }
+
+  /** The world's boxes, so a thrown body has something to land against. */
+  setCollision(col: Collision) {
+    this.ragCol = col;
+  }
 
   update(dt: number, t: number, player: THREE.Vector3 | null, camera: THREE.Camera) {
+    camera.getWorldDirection(this.camDir);
+    this.lastCamYaw = Math.atan2(this.camDir.x, this.camDir.z);
     if (!this.enabled) return;
     const camPos = camera.position;
     this.pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -923,14 +1216,47 @@ export class Crowd {
     this.policeUpdate(dt, player, this.wanted, this.spawnAt);
     this.crooksUpdate(dt, player);
 
+    // Still: the district stops. Not slows — stops, mid-stride, mid-sentence,
+    // and holds there for the length of it. Nothing moves but you.
+    const frozen = this.still > 0;
+    if (frozen) this.still -= dt;
+
     this.npcs.forEach((n, i) => {
-      if (n.culled) {
+      if (frozen) {
+        // held: no movement, no reactions, no new behaviour. The pose still
+        // solves so the bodies read as people caught mid-motion rather than
+        // switched off.
+        n.v = 0;
+        n.motion.speed = 0;
+        n.motion.turn = 0;
+        n.anim.update(dt * 0.02);
+        if (!n.visible) {
+          this.batch.hide(i);
+          n.lod = -1;
+          return;
+        }
+        this.q.setFromAxisAngle(this.up, n.yaw + n.wrongYaw);
+        this.scl.setScalar(n.body.height);
+        this.root.compose(n.pos, this.q, this.scl);
+        solve(n.rig, this.root, n.body, n.outfit, n.motion, t, null);
+        this.batch.write(i, n.rig, n.parts, false);
+        return;
+      }
+      // people standing somewhere (a doorway, a sofa indoors) far from you: not simulated or drawn at all
+      const away = !!player && n.mode !== 'walk' && n.mode !== 'cop' && n.mode !== 'crook' && n.mode !== 'watcher' && n.dead < 0 && (n.pos.x - player.x) ** 2 + (n.pos.z - player.z) ** 2 > 8100;
+      if (n.culled || away) {
         if (n.lod !== -1 || n.visible) {
+          if (away && n.visible) n.away = true;
           n.visible = false;
           this.batch.hide(i);
           n.lod = -1;
         }
         return;
+      }
+      // back in range: show the ones we hid for being far away
+      if (n.away) {
+        n.away = false;
+        n.visible = true;
       }
       if (n.dead >= 0) this.down(n, dt, player);
       else if (n.mode === 'cop' || n.mode === 'crook') {
@@ -968,16 +1294,37 @@ export class Crowd {
         n.parts = visibleParts(n.outfit, d);
       }
       // unease: a moment where a body moves the way a body shouldn't
+      // the eyes get there before the head: people glance at you as you pass
+      if (player && n.dead < 0 && d < 12) {
+        const f = n.motion.face;
+        if (n.glance > 0) {
+          n.glance -= dt;
+          const rel = wrap(Math.atan2(player.x - n.pos.x, player.z - n.pos.z) - n.yaw) - n.motion.lookYaw;
+          if (Math.abs(rel) < 1.4) gaze(f, THREE.MathUtils.clamp(rel * 2.4, -1, 1), THREE.MathUtils.clamp((player.y + 1.6 - n.pos.y - 1.6 * n.body.height) * 0.3, -0.5, 0.5));
+          if (n.glance <= 0) gaze(f, NaN, NaN);
+        } else if ((n.glanceWait -= dt) <= 0) {
+          n.glanceWait = (3 + Math.random() * 9) * (1.3 - n.persona.nervous);
+          n.glance = 0.5 + Math.random() * (1 + n.persona.confidence);
+        }
+      }
       if (n.glitchT > 0) {
         n.glitchT -= dt;
         const k = 1 - Math.abs(1 - n.glitchT / 0.45);
         n.motion.glitch = Math.max(0, Math.min(1, k * 1.6));
       } else n.motion.glitch = 0;
 
-      this.q.setFromAxisAngle(this.up, n.yaw + n.wrongYaw);
-      this.scl.setScalar(n.body.height);
-      this.root.compose(n.pos, this.q, this.scl);
-      solve(n.rig, this.root, n.body, n.outfit, n.motion, t, animate ? n.anim : null);
+      const rag = this.rag[i];
+      if (rag && rag.alive) {
+        // the body is where the physics put it, and posed from its bones
+        rag.root(this.root, rag.yaw, n.body.height);
+        rag.pose(this.pose, n.body);
+        buildRig(n.rig, this.root, n.body, n.outfit, this.pose);
+      } else {
+        this.q.setFromAxisAngle(this.up, n.yaw + n.wrongYaw);
+        this.scl.setScalar(n.body.height);
+        this.root.compose(n.pos, this.q, this.scl);
+        solve(n.rig, this.root, n.body, n.outfit, n.motion, t, animate ? n.anim : null);
+      }
       const prop = n.anim.hasProp('ember') || n.anim.hasProp('phone');
       this.batch.write(i, n.rig, n.parts, n.glowOn || prop);
     });
@@ -1030,6 +1377,9 @@ export class Crowd {
         n.lookTarget = Math.atan2(dx, dz) - n.yaw;
       }
     }
+    // and they don't walk through each other: a walker reads the few people
+    // around them and steps wide, or slows and lets them pass
+    this.avoid(n, dt);
     m.lookYaw += (THREE.MathUtils.clamp(wrap(n.lookTarget), -1.1, 1.1) - m.lookYaw) * Math.min(1, dt * 3);
     if (n.paused <= 0 && n.lookTarget !== 0 && rng.next() < dt * 0.5) n.lookTarget *= 0.5;
     m.lookPitch = n.outfit.umbrella ? 0.08 : m.armR === 'pockets' ? 0.1 : 0;
@@ -1064,6 +1414,67 @@ export class Crowd {
     const dy = wrap(want - n.yaw) * Math.min(1, dt * 4);
     m.turn = dy / Math.max(dt, 1e-3);
     n.yaw += dy;
+  }
+
+/** Whether something is being watched right now (the uneasy watcher). */
+  get watched() {
+    return this.watcher.visible;
+  }
+
+  /**
+   * A power goes off nearby: everyone close enough to feel it looks up, and the
+   * ones who were already afraid look further away.
+   */
+  startle(at: THREE.Vector3, r: number) {
+    this.shock(at.x, at.z);
+    for (const n of this.npcs) {
+      if (!this.canReact(n)) continue;
+      if (Math.hypot(n.pos.x - at.x, n.pos.z - at.z) > r) continue;
+      n.idle.interrupt(n.anim);
+      n.lookTarget = wrap(Math.atan2(at.x - n.pos.x, at.z - n.pos.z) - n.yaw);
+      n.alarm = Math.max(n.alarm, 2.5);
+      n.recoil = Math.max(n.recoil, 0.4);
+      n.recoilX = (n.pos.x - at.x) / r;
+      n.recoilZ = (n.pos.z - at.z) / r;
+    }
+  }
+
+  /**
+   * Walkers and people standing about don't collide, so two on the same pavement
+ * drift through each other. This reads the neighbours and either steps wide
+ * (a walker, as a lateral offset from their route) or slows and turns to let
+ * them past. Only the nearest few are considered, and only ones in front.
+ */
+  private avoid(n: Npc, dt: number) {
+    if (n.dead >= 0 || n.frozen > 0 || !n.visible) return;
+    const fx = Math.sin(n.yaw), fz = Math.cos(n.yaw);
+    for (const o of this.npcs) {
+      if (o === n || o.dead >= 0 || !o.visible || o.mode === 'cop' || o.mode === 'crook') continue;
+      const dx = o.pos.x - n.pos.x, dz = o.pos.z - n.pos.z;
+      const d2 = dx * dx + dz * dz;
+      const near = 2.3;
+      if (d2 > near * near || d2 < 1e-4) continue;
+      // only what is in front of us, or we react to people behind us too
+      const ahead = (dx * fx + dz * fz) / Math.sqrt(d2);
+      const side = (dx * fz - dz * fx) / Math.sqrt(d2);
+      if (ahead < -0.35) continue;
+      const d = Math.sqrt(d2);
+      // get out of the way: sideways, away from them
+      const push = (near - d) * 0.9;
+      if (n.mode === 'walk') {
+        // to the side they're already on, so we pass rather than merge
+        const want = (side >= 0 ? 1 : -1) * push * 0.5;
+        n.lateral += (want - n.lateral) * Math.min(1, dt * 4);
+        n.lateral = THREE.MathUtils.clamp(n.lateral, -1.6, 1.6);
+      } else {
+        n.pos.x += (side >= 0 ? -1 : 1) * push * dt * 1.4;
+        n.pos.z += (side >= 0 ? 1 : -1) * push * dt * 1.4;
+      }
+      // and look where we're going, which is where they are
+      n.lookTarget = wrap(Math.atan2(dx, dz) - n.yaw);
+      // if we can't get past, slow down rather than shove through
+      if (d < 1.1 && ahead > 0.5) n.v *= 1 - Math.min(1, dt * 3);
+    }
   }
 
   /** Two people who know each other pass in the street: a wave. */
@@ -1175,6 +1586,8 @@ export class Crowd {
       // now and then a shared laugh
       if (this.rng.chance(0.18)) for (const who of [n, f]) who.anim.play('emote.laugh', { group: 'social', fadeIn: 0.3 });
     }
+    m.face.talk += ((n.speaking ? 1 : 0) - m.face.talk) * Math.min(1, dt * 6);
+    if (f) gaze(m.face, THREE.MathUtils.clamp((wrap(Math.atan2(f.pos.x - n.pos.x, f.pos.z - n.pos.z) - n.yaw) - m.lookYaw) * 2, -1, 1), 0);
     if (n.speaking) {
       if (!n.anim.playing('social')) n.anim.play('emote.talk', { group: 'social', loop: true, fadeIn: 0.5, speed: 0.85 + 0.3 * n.persona.energy, mirror: n.persona.leftHanded });
     } else {
@@ -1195,9 +1608,12 @@ export class Crowd {
     if (roll < 0.3) this.summonWatcher(player, camPos);
     else if (roll < 0.48) this.freezeSomeone(player);
     else if (roll < 0.62) this.glitchSomeone(player, camPos);
-    else if (roll < 0.76) this.haunt('stare', player);
-    else if (roll < 0.86) this.haunt('backwards', player);
-    else if (roll < 0.94) this.haunt('repeat', player);
+    else if (roll < 0.7) this.haunt('stare', player);
+    else if (roll < 0.77) this.haunt('backwards', player);
+    else if (roll < 0.83) this.haunt('repeat', player);
+    else if (roll < 0.88) this.haunt('smile', player);
+    else if (roll < 0.92) this.haunt('wave', player);
+    else if (roll < 0.96) this.haunt('follow', player);
     else this.haunt('nothing', player);
   }
 
@@ -1208,11 +1624,12 @@ export class Crowd {
    * stops, looks at a patch of dark that's empty, and backs away from it.
    * Then they're ordinary again.
    */
-  private haunt(kind: 'stare' | 'backwards' | 'repeat' | 'nothing', player: THREE.Vector3) {
+  private haunt(kind: 'stare' | 'backwards' | 'repeat' | 'nothing' | 'smile' | 'wave' | 'follow', player: THREE.Vector3) {
     const pool = this.npcs.slice(0, this.citizens).filter((n) => {
       if (!n.visible || n.mode === 'watcher' || n.mode === 'stare' || n.frozen > 0 || n.horror || n.dead >= 0) return false;
       const d = n.pos.distanceTo(player);
       if (kind === 'backwards') return n.mode === 'walk' && d > 8 && d < 30;
+      if (kind === 'follow') return n.mode !== 'sit' && n.mode !== 'walk' && n.mode !== 'talk' && d > 12 && d < 30;
       return d > 6 && d < 26 && this.frustum.containsPoint(_tmp.copy(n.pos).setY(1.5));
     });
     if (!pool.length) {
@@ -1220,7 +1637,7 @@ export class Crowd {
       return;
     }
     const n = this.rng.pick(pool);
-    n.horror = { kind, t: kind === 'stare' ? 14 : kind === 'backwards' ? 5 : kind === 'repeat' ? 12 : 9, x: 0, z: 0, n: 0 };
+    n.horror = { kind, t: kind === 'stare' ? 14 : kind === 'backwards' ? 5 : kind === 'repeat' ? 12 : kind === 'follow' ? 40 : kind === 'wave' ? 12 : 9, x: 0, z: 0, n: 0 };
     if (kind === 'nothing') {
       // a point in the dark, a few metres off to their side
       const a = n.yaw + (this.rng.chance(0.5) ? 1 : -1) * this.rng.range(1.2, 2.2);
@@ -1274,6 +1691,43 @@ export class Crowd {
       }
       case 'backwards':
         break; // walk() handles it
+      case 'smile': {
+        // they look at you, and smile, and hold it a second too long
+        const want = wrap(Math.atan2(player.x - n.pos.x, player.z - n.pos.z) - n.yaw);
+        m.lookYaw += (THREE.MathUtils.clamp(want, -1.2, 1.2) - m.lookYaw) * Math.min(1, dt * 1.5);
+        gaze(m.face, 0, 0);
+        if (h.n === 0) {
+          h.n = 1;
+          n.anim.play('horror.smile', { group: 'face', fadeIn: 0.3 });
+        }
+        m.blinkT = Math.max(m.blinkT, 2);
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        break;
+      }
+      case 'wave':
+        // a wave that's a beat too slow, and doesn't stop when it should
+        if (h.n === 0) {
+          h.n = 1;
+          n.anim.play('horror.wave', { group: 'gesture', fadeIn: 0.8, loop: true });
+        }
+        m.lookYaw += (THREE.MathUtils.clamp(wrap(Math.atan2(player.x - n.pos.x, player.z - n.pos.z) - n.yaw), -1.2, 1.2) - m.lookYaw) * Math.min(1, dt * 1.2);
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        if (h.t < 0.6) n.anim.stop('gesture', 0.6);
+        break;
+      case 'follow': {
+        // keeps the same distance behind you; stops when you turn to look
+        const dx = player.x - n.pos.x, dz = player.z - n.pos.z, d = Math.hypot(dx, dz);
+        const facing = Math.sin(this.lastCamYaw) * -dx + Math.cos(this.lastCamYaw) * -dz > d * 0.6;
+        const go = !facing && d > 14 ? 1.25 : 0;
+        n.yaw += turnToward(n.yaw, Math.atan2(dx, dz), n.v, dt);
+        n.v = approach(n.v, go, dt, 1.5, 3);
+        n.pos.x += Math.sin(n.yaw) * n.v * dt;
+        n.pos.z += Math.cos(n.yaw) * n.v * dt;
+        m.speed = n.v;
+        if (n.mode === 'walk') n.paused = Math.max(n.paused, 0.3);
+        if (facing) m.breath -= dt; // and holds still, even its breath
+        break;
+      }
     }
   }
 

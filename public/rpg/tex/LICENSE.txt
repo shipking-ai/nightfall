@@ -1,0 +1,1 @@
+Normal maps from emmelleppi/normal-maps via @pmndrs/assets, CC0 1.0.

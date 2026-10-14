@@ -22,7 +22,7 @@ export const expand = (a: Rect, d: number): Rect => r(a.x0 - d, a.z0 - d, a.x1 +
 export const BOUNDS = r(-150, -200, 150, 164);
 export const PAD_H = 0.15;
 
-export type Style = 'stone' | 'brick' | 'concrete' | 'glass' | 'plain' | 'metal';
+export type Style = 'stone' | 'brick' | 'concrete' | 'glass' | 'plain' | 'metal' | 'stucco' | 'adobe' | 'timber' | 'panel' | 'siding';
 
 export interface Road {
   name: string;
@@ -58,7 +58,7 @@ export const BLOCKS: Block[] = [
   { id: 'AW1', rect: r(-34, -120, -13, -50), district: 'avenue', h: [26, 48], styles: ['stone', 'stone', 'concrete'], lot: [14, 24] },
   { id: 'AW2', rect: r(-34, -30, -13, 44), district: 'avenue', h: [22, 40], styles: ['stone', 'brick', 'glass'], lot: [12, 22], gaps: [[6, 11]] },
   { id: 'AW3', rect: r(-34, 64, -13, 132), district: 'avenue', h: [20, 36], styles: ['stone', 'brick', 'concrete'], lot: [12, 20] },
-  { id: 'AE1', rect: r(13, -120, 34, -50), district: 'avenue', h: [30, 58], styles: ['glass', 'stone', 'concrete'], lot: [16, 26] },
+  { id: 'AE1', rect: r(13, -120, 34, -50), district: 'avenue', h: [30, 58], styles: ['glass', 'stone', 'concrete'], lot: [16, 26], gaps: [[46, 59]] },
   { id: 'AE2', rect: r(13, -30, 34, 44), district: 'avenue', h: [24, 44], styles: ['stone', 'stone', 'brick'], lot: [12, 22] },
   { id: 'AE3', rect: r(13, 64, 34, 132), district: 'avenue', h: [18, 34], styles: ['brick', 'concrete', 'stone'], lot: [12, 20], gaps: [[30, 36]] },
 
@@ -172,4 +172,12 @@ export const CAR_ROUTES: CarRoute[] = [
   { pts: [[180, -41.5], [-4.5, -41.5], [-4.5, 55.5], [180, 55.5]] },
   { pts: [[-180, 142.6], [180, 142.6]] },
   { pts: [[180, 52.5], [-180, 52.5]] },
+  // straight through along the harbour and the river, both ways
+  { pts: [[-180, 55.5], [180, 55.5]] },
+  { pts: [[180, 139.8], [-180, 139.8]] },
+  // the Avenue south of Linden Street, down to the edge of the district, and back up
+  { pts: [[-180, -38.5], [-4.5, -38.5], [-4.5, -130]] },
+  { pts: [[4.5, -130], [4.5, -38.5], [180, -38.5]] },
+  { pts: [[180, -41.5], [-4.5, -41.5], [-4.5, -130]] },
+  { pts: [[4.5, -130], [4.5, -41.5], [-180, -41.5]] },
 ];

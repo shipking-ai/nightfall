@@ -45,9 +45,17 @@ export class Photographer {
     return !!this.plates[plate];
   }
 
+  private busy = new Set<string>();
+
+  /**
+   * Take the photograph: one render into a target, then the pixels are read back
+   * without stalling the frame (the GPU hands them over when it's done) and
+   * developed after. A plate already being taken isn't taken twice.
+   */
   capture(plate: string, time: string) {
     const p = PLATES[plate];
-    if (!p) return;
+    if (!p || this.busy.has(plate)) return;
+    this.busy.add(plate);
     this.cam.position.copy(p.pos);
     this.cam.lookAt(p.look);
     this.cam.updateMatrixWorld();
@@ -58,10 +66,40 @@ export class Photographer {
     this.renderer.render(this.scene, this.cam);
     this.output.render(this.renderer, this.rtOut, this.rtScene, 0, false);
     const px = new Uint8Array(W * H * 4);
-    this.renderer.readRenderTargetPixels(this.rtOut, 0, 0, W, H, px);
+    const read = this.renderer.readRenderTargetPixelsAsync(this.rtOut, 0, 0, W, H, px);
     this.renderer.setRenderTarget(prevTarget);
     this.restore();
+    void read.then(() => this.develop(plate, time, px)).catch(() => {}).finally(() => this.busy.delete(plate));
+  }
 
+  private worker: Worker | null = null;
+  private waiting = new Map<number, (url: string | null) => void>();
+  private nextId = 1;
+
+  /** Flip, draw and encode the plate in a worker (a JPEG on the main thread is a long stall); fall back to here if workers can't. */
+  private develop(plate: string, time: string, px: Uint8Array): Promise<void> {
+    const keep = (url: string | null) => {
+      if (!url) return;
+      this.plates[plate] = { src: url, time };
+      writeJSON(KEY, this.plates);
+    };
+    if (typeof OffscreenCanvas !== 'undefined' && typeof Worker !== 'undefined') {
+      if (!this.worker) {
+        this.worker = new Worker(new URL('./plate.worker.ts', import.meta.url), { type: 'module' });
+        this.worker.onmessage = (e: MessageEvent<{ id: number; url: string | null }>) => {
+          this.waiting.get(e.data.id)?.(e.data.url);
+          this.waiting.delete(e.data.id);
+        };
+      }
+      const id = this.nextId++;
+      return new Promise((done) => {
+        this.waiting.set(id, (url) => {
+          keep(url);
+          done();
+        });
+        this.worker!.postMessage({ id, px, w: W, h: H, q: 0.82 }, [px.buffer]);
+      });
+    }
     const c = document.createElement('canvas');
     c.width = W;
     c.height = H;
@@ -69,8 +107,18 @@ export class Photographer {
     const img = g.createImageData(W, H);
     for (let y = 0; y < H; y++) img.data.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
     g.putImageData(img, 0, 0);
-    this.plates[plate] = { src: c.toDataURL('image/jpeg', 0.82), time };
-    writeJSON(KEY, this.plates);
+    return new Promise((done) => {
+      c.toBlob((blob) => {
+        if (!blob) return done();
+        const fr = new FileReader();
+        fr.onload = () => {
+          keep(String(fr.result));
+          done();
+        };
+        fr.onerror = () => done();
+        fr.readAsDataURL(blob);
+      }, 'image/jpeg', 0.82);
+    });
   }
 
   clear() {

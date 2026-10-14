@@ -1,7 +1,17 @@
+// the type, self-hosted (OFL 1.1, via Fontsource): no third-party request, and it's there offline
+import '@fontsource/ibm-plex-sans/300.css';
+import '@fontsource/ibm-plex-sans/300-italic.css';
+import '@fontsource/ibm-plex-sans/400.css';
+import '@fontsource/ibm-plex-sans/500.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import '@fontsource/instrument-serif/400.css';
+import '@fontsource/instrument-serif/400-italic.css';
 import './styles/main.css';
 import './styles/controller.css';
 import './styles/fight.css';
 import './styles/warzone.css';
+import './styles/rpg.css';
 import { App } from './core/App';
 
 function supportsWebGL2() {
@@ -26,6 +36,7 @@ if (!supportsWebGL2()) {
   if (import.meta.env.DEV) {
     (window as unknown as { nf: App }).nf = app;
     import('./dev/lineup').then((m) => ((window as unknown as { nfLineup: unknown }).nfLineup = m.makeLineup));
+    import('./rpg/game/quests').then((m) => ((app as unknown as { rpgMain: unknown }).rpgMain = m.mainPlaces));
   }
   app.boot().catch((err) => {
     console.error(err);

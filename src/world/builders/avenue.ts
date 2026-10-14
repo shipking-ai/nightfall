@@ -44,7 +44,9 @@ export function buildAvenue(ctx: WorldContext) {
     ctx.steam.push(new THREE.Vector3(x, 0.05, z));
   }
 
-  // parked cars in the kerb lane
+  // Parked cars in the kerb lane. More kinds than there were: a van and a
+  // pickup are now drivable, and there's an estate, a hatch and a taxi in the
+  // street alongside the saloons and the electric cars.
   const parked: [number, number, number, object?][] = [
     [-7.4, -100, Math.PI],
     [-7.4, -64, Math.PI, { drive: true }],
@@ -55,6 +57,15 @@ export function buildAvenue(ctx: WorldContext) {
     [7.4, 92, 0, { drive: true }],
     [-7.4, 104, Math.PI],
     [7.4, 118, 0],
+    // further down, the rest of the fleet
+    [-7.4, -44, Math.PI, { drive: true, kind: 'van' }],
+    [-7.4, -12, Math.PI, { kind: 'hatch' }],
+    [7.4, -30, 0, { drive: true, kind: 'pickup' }],
+    [7.4, 8, 0, { drive: true, kind: 'taxi' }],
+    [-7.4, 34, Math.PI, { drive: true, kind: 'police' }],
+    [-7.4, 62, Math.PI, { drive: true, kind: 'hatch' }],
+    [7.4, 76, 0, { drive: true, kind: 'sports' }],
+    [-7.4, 130, Math.PI, { drive: true, kind: 'van', screen: true }],
   ];
   for (const [x, z, ry, o] of parked) parkedCar(ctx, x, z, ry, rng.pick(CAR_COLORS), o);
 
@@ -70,6 +81,7 @@ export function buildAvenue(ctx: WorldContext) {
   ctx.lamp(new THREE.Vector3(10.6, 3.6, hz), 'interior', { intensity: 30, range: 12, halo: 0.6 });
   ctx.lamp(new THREE.Vector3(12.2, 10.5, hz - 4.6), 'warm', { pooled: false, cone: false, halo: 1.6, streak: 1.6, ground: 0.15 });
   ctx.npcSpots.push({ pos: new THREE.Vector3(12.0, 0.15, hz + 4.4), yaw: -Math.PI / 2, mode: 'smoke' });
+
 
   /* Pharmacy — west side, the one cold light on the street */
   const pz = 30;
